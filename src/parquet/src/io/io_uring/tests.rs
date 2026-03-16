@@ -81,13 +81,17 @@ impl BackendKind {
             BackendKind::MultiBlocking => {
                 async move { multi_blocking_uring::read(path, range, direct_io) }.boxed()
             }
-            BackendKind::ThreadPool => thread_pool_uring::read(path, range, direct_io, true).boxed(),
+            BackendKind::ThreadPool => {
+                thread_pool_uring::read(path, range, direct_io, true).boxed()
+            }
         }
     }
 
     fn write_future(self, path: PathBuf, data: Bytes) -> IoFuture<()> {
         match self {
-            BackendKind::Shared => async move { single_uring::write(path, &data, false).await }.boxed(),
+            BackendKind::Shared => {
+                async move { single_uring::write(path, &data, false).await }.boxed()
+            }
             BackendKind::MultiAsync => {
                 async move { multi_async_uring::write(path, &data, false).await }.boxed()
             }
@@ -161,9 +165,9 @@ fn read_write_roundtrip_non_blocking_uring() {
 
     let (tmpdir, path) = seed_file(&original);
     let path_clone = path.clone();
-    let read_bytes = executor.run_to_completion(async move {
-        runtime::read(path_clone, None).await
-    }).unwrap_or_else(|err| panic!("read failed: {err}"));
+    let read_bytes = executor
+        .run_to_completion(async move { runtime::read(path_clone, None).await })
+        .unwrap_or_else(|err| panic!("read failed: {err}"));
     assert_eq!(
         read_bytes.as_ref(),
         original.as_slice(),
@@ -173,16 +177,12 @@ fn read_write_roundtrip_non_blocking_uring() {
     let new_payload: Vec<u8> = (0..64).map(|i| (i as u8).wrapping_add(1)).collect();
     let bytes = Bytes::from(new_payload.clone());
     let path_clone = path.clone();
-    executor.run_to_completion(async move {
-        runtime::write(path_clone, &bytes.clone()).await
-    }).unwrap_or_else(|err| panic!("write failed: {err}"));
+    executor
+        .run_to_completion(async move { runtime::write(path_clone, &bytes.clone()).await })
+        .unwrap_or_else(|err| panic!("write failed: {err}"));
 
     let on_disk = fs::read(&path).expect("failed to read updated file");
-    assert_eq!(
-        on_disk,
-        new_payload,
-        "wrote unexpected data",
-    );
+    assert_eq!(on_disk, new_payload, "wrote unexpected data",);
 
     drop(tmpdir);
 }

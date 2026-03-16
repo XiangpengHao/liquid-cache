@@ -1,8 +1,19 @@
 use std::{
-    collections::VecDeque, fs::OpenOptions, future::Future, io, ops::Range, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, sync::{
+    collections::VecDeque,
+    fs::OpenOptions,
+    future::Future,
+    io,
+    ops::Range,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    path::PathBuf,
+    pin::Pin,
+    sync::{
         OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-    }, task::{Context, Poll}, thread, time::{Duration, Instant}
+    },
+    task::{Context, Poll},
+    thread,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -42,7 +53,7 @@ static ENABLED: AtomicBool = AtomicBool::new(true);
 struct Submission {
     task: Box<dyn IoTask>,
     completion_tx: oneshot::Sender<Box<dyn IoTask>>,
-    pending_completions: usize,   // No. of pending completions. Will be populated later by the uring worker
+    pending_completions: usize, // No. of pending completions. Will be populated later by the uring worker
     completions: Vec<cqueue::Entry>,
 }
 
@@ -164,7 +175,7 @@ struct UringWorker {
     submitted_tasks: Vec<Option<Submission>>,
     /**
      * When using fixed buffers, a single task can produce multiple submission queue entries.
-     * It is possible that we aren't able to submit all of them at one go. Hold them in an 
+     * It is possible that we aren't able to submit all of them at one go. Hold them in an
      * intermediate queue in that case
      */
     queued_entries: VecDeque<squeue::Entry>,
@@ -176,10 +187,13 @@ struct UringWorker {
 
 impl UringWorker {
     #[allow(clippy::new_ret_no_self)]
-    fn new(channel: crossbeam_channel::Receiver<Submission>, register_buffers: bool) -> UringWorker {
+    fn new(
+        channel: crossbeam_channel::Receiver<Submission>,
+        register_buffers: bool,
+    ) -> UringWorker {
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
         let ring = builder
-            .setup_single_issuer()      // Only the worker thread will issue IO and poll completions
+            .setup_single_issuer() // Only the worker thread will issue IO and poll completions
             .setup_defer_taskrun()
             // .setup_iopoll()
             // .setup_sqpoll(50000)
@@ -222,7 +236,7 @@ impl UringWorker {
 
     fn drain_intermediate_queue(&mut self) {
         {
-            let sq = &mut self.ring.submission();            
+            let sq = &mut self.ring.submission();
             while !sq.is_full() && !self.queued_entries.is_empty() {
                 let sqe = self.queued_entries.pop_front().unwrap();
                 unsafe {
@@ -251,11 +265,9 @@ impl UringWorker {
             self.queued_submissions += sqes.len() as u32;
             submission.set_completions(sqes.len());
             let mut tasks_submitted = 0;
-            
+
             for sqe in sqes.iter_mut() {
-                let res = unsafe {
-                    sq.push(&sqe.clone().user_data(token as u64))
-                };
+                let res = unsafe { sq.push(&sqe.clone().user_data(token as u64)) };
                 if res.is_err() {
                     break;
                 }
@@ -263,7 +275,8 @@ impl UringWorker {
                 sq.sync();
             }
             for i in tasks_submitted..sqes.len() {
-                self.queued_entries.push_back(sqes[i].clone().user_data(token as u64));
+                self.queued_entries
+                    .push_back(sqes[i].clone().user_data(token as u64));
             }
             self.submitted_tasks[token as usize] = Some(submission);
         }
@@ -276,7 +289,12 @@ impl UringWorker {
             flags.insert(EnterFlags::GETEVENTS);
             loop {
                 let res = unsafe {
-                    self.ring.submitter().enter::<libc::sigset_t>(self.queued_submissions, 0, flags.bits(), None)
+                    self.ring.submitter().enter::<libc::sigset_t>(
+                        self.queued_submissions,
+                        0,
+                        flags.bits(),
+                        None,
+                    )
                 };
                 match res {
                     Ok(_num_entries) => {
@@ -307,7 +325,7 @@ impl UringWorker {
                         .as_ref()
                         .expect("Task not found in submitted tasks")
                         .pending_completions;
-                    
+
                     if pending_completions == 1 {
                         let mut submission = self.submitted_tasks[token]
                             .take()
@@ -384,7 +402,7 @@ where
                 UringState::Submitted(mut receiver) => match Pin::new(&mut receiver).poll(cx) {
                     Poll::Ready(Ok(task)) => {
                         if ensure_registered() {
-                             liquid_parquet::io_completed!(|| self.id);
+                            liquid_parquet::io_completed!(|| self.id);
                         }
                         let typed_task = task
                             .into_any()
@@ -437,18 +455,18 @@ pub(crate) async fn read(
         let read_task = FixedFileReadTask::build(effective_range.clone(), &file, direct_io);
         // Fall back to normal read if fixed buffers are not available
         if read_task.is_ok() {
-            return submit_async_task(read_task.unwrap()).await.into_result()
+            return submit_async_task(read_task.unwrap()).await.into_result();
         }
     }
     let read_task = FileReadTask::build(effective_range, file, direct_io);
-    return submit_async_task(read_task).await.into_result()
+    return submit_async_task(read_task).await.into_result();
 }
 
 pub(crate) async fn write(
     path: PathBuf,
     data: &Bytes,
     direct_io: bool,
-    use_fixed_buffers: bool
+    use_fixed_buffers: bool,
 ) -> Result<(), std::io::Error> {
     let file = OpenOptions::new()
         .create(true)
@@ -458,6 +476,7 @@ pub(crate) async fn write(
         .open(path)
         .expect("failed to create file");
 
-    let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), direct_io, use_fixed_buffers);
+    let write_task =
+        FileWriteTask::build(data.clone(), file.as_raw_fd(), direct_io, use_fixed_buffers);
     submit_async_task(write_task).await.into_result()
 }

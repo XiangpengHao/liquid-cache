@@ -1,4 +1,20 @@
-use std::{cell::RefCell, collections::VecDeque, fs::OpenOptions, ops::Range, os::{fd::AsRawFd as _, unix::fs::OpenOptionsExt}, path::PathBuf, pin::Pin, rc::Rc, sync::{atomic::{AtomicBool, Ordering}, OnceLock}, task::{Context, Poll, Waker}, thread::{self, JoinHandle}, time::{Duration, Instant}};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    fs::OpenOptions,
+    ops::Range,
+    os::{fd::AsRawFd as _, unix::fs::OpenOptionsExt},
+    path::PathBuf,
+    pin::Pin,
+    rc::Rc,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker},
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
 
 use async_executor::LocalExecutor;
 use bytes::Bytes;
@@ -65,7 +81,10 @@ impl UringExecutor {
 
     /// Spawns a task in the uring runtime by sending it to a randomly chosen worker's channel.
     /// The result is received through a oneshot channel.
-    pub fn spawn<F: Future + Send + 'static>(self: &mut Self, future: F) -> oneshot::Receiver<F::Output>
+    pub fn spawn<F: Future + Send + 'static>(
+        self: &mut Self,
+        future: F,
+    ) -> oneshot::Receiver<F::Output>
     where
         F::Output: Send + 'static,
     {
@@ -86,7 +105,10 @@ impl UringExecutor {
     }
 
     /// Spawn a batch of tasks on the io_uring runtime, balancing across workers (round-robin).
-    pub fn spawn_many<F: Future + Send + 'static>(self: &mut Self, futures: &mut Vec<F>) -> crossbeam_channel::Receiver<F::Output>
+    pub fn spawn_many<F: Future + Send + 'static>(
+        self: &mut Self,
+        futures: &mut Vec<F>,
+    ) -> crossbeam_channel::Receiver<F::Output>
     where
         F::Output: Send + 'static,
     {
@@ -97,7 +119,9 @@ impl UringExecutor {
             let f = Box::pin(f);
             let task = async move {
                 let output = f.await;
-                sender_clone.send(output).expect("Failed to send back result");
+                sender_clone
+                    .send(output)
+                    .expect("Failed to send back result");
             };
             let idx = i % num_workers;
             self.senders[idx]
@@ -132,7 +156,7 @@ struct RuntimeWorker {
     submitted_tasks: Vec<Option<AsyncTask>>,
     /**
      * When using fixed buffers, a single task can produce multiple submission queue entries.
-     * It is possible that we aren't able to submit all of them at one go. Hold them in an 
+     * It is possible that we aren't able to submit all of them at one go. Hold them in an
      * intermediate queue in that case
      */
     queued_entries: VecDeque<squeue::Entry>,
@@ -146,7 +170,7 @@ impl RuntimeWorker {
     pub fn new() -> RuntimeWorker {
         let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
         let ring = builder
-            .setup_single_issuer()      // Only the worker thread will issue IO and poll completions
+            .setup_single_issuer() // Only the worker thread will issue IO and poll completions
             .setup_defer_taskrun()
             .build(URING_NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
@@ -154,14 +178,15 @@ impl RuntimeWorker {
             log::warn!("Failed to register fixed buffers with runtime worker ring");
         }
         let mut tokens = VecDeque::<u16>::with_capacity(MAX_CONCURRENT_TASKS as usize);
-        let mut inflight_tasks = Vec::<Option<AsyncTask>>::with_capacity(MAX_CONCURRENT_TASKS as usize);
+        let mut inflight_tasks =
+            Vec::<Option<AsyncTask>>::with_capacity(MAX_CONCURRENT_TASKS as usize);
         for i in 0..MAX_CONCURRENT_TASKS {
             tokens.push_back(i as u16);
             inflight_tasks.push(None);
         }
-        
+
         RuntimeWorker {
-            ring, 
+            ring,
             submitted_tasks: inflight_tasks,
             tokens,
             queued_entries: VecDeque::with_capacity(URING_NUM_ENTRIES as usize),
@@ -212,7 +237,7 @@ impl RuntimeWorker {
 
     fn drain_intermediate_queue(&mut self) {
         {
-            let sq = &mut self.ring.submission();           
+            let sq = &mut self.ring.submission();
             while !sq.is_full() && !self.queued_entries.is_empty() {
                 let sqe = self.queued_entries.pop_front().unwrap();
                 unsafe {
@@ -234,9 +259,7 @@ impl RuntimeWorker {
         let mut sqes_submitted = 0;
 
         for sqe in sqes.iter() {
-            let res = unsafe {
-                sq.push(&sqe.clone().user_data(token as u64))
-            };
+            let res = unsafe { sq.push(&sqe.clone().user_data(token as u64)) };
             if res.is_err() {
                 // submission queue is full
                 break;
@@ -246,7 +269,8 @@ impl RuntimeWorker {
             sq.sync();
         }
         for i in sqes_submitted..sqes.len() {
-            self.queued_entries.push_back(sqes[i].clone().user_data(token as u64));
+            self.queued_entries
+                .push_back(sqes[i].clone().user_data(token as u64));
         }
     }
 
@@ -282,10 +306,10 @@ fn worker_main_loop(receiver: crossbeam_channel::Receiver<ExecutorTask>) {
                 loop {
                     let res = unsafe {
                         worker.ring.submitter().enter::<libc::sigset_t>(
-                            worker.queued_submissions as u32, 
-                            0, 
-                            flags.bits(), 
-                            None
+                            worker.queued_submissions as u32,
+                            0,
+                            flags.bits(),
+                            None,
                         )
                     };
                     match res {
@@ -316,14 +340,16 @@ struct AsyncTask {
     pub inner: Rc<RefCell<dyn IoTask>>,
     waker: Waker,
     completed: *mut AtomicBool,
-    pending_completions: usize,   // No. of pending completions. Will be populated later by the uring worker
+    pending_completions: usize, // No. of pending completions. Will be populated later by the uring worker
     completions: Vec<cqueue::Entry>,
 }
 
 impl AsyncTask {
     #[inline]
     fn complete(self) {
-        self.inner.borrow_mut().complete(self.completions.iter().collect());
+        self.inner
+            .borrow_mut()
+            .complete(self.completions.iter().collect());
         unsafe {
             (*self.completed).store(true, Ordering::Relaxed);
         }
@@ -346,8 +372,7 @@ impl AsyncTask {
     }
 }
 
-enum UringState
-{
+enum UringState {
     Undecided,
     Created,
     Submitted,
@@ -363,8 +388,7 @@ where
     id: u64,
 }
 
-unsafe impl<T> Send for UringFuture<T>
-where T: IoTask + 'static, {}
+unsafe impl<T> Send for UringFuture<T> where T: IoTask + 'static {}
 
 impl<T> UringFuture<T>
 where
@@ -415,7 +439,7 @@ where
                         self.state = UringState::Submitted;
                         return Poll::Pending;
                     }
-                }
+                },
                 UringState::Undecided => unreachable!("state cannot be undecided during poll"),
             }
         }
@@ -471,5 +495,8 @@ pub(crate) async fn write(path: PathBuf, data: &Bytes) -> Result<(), std::io::Er
         .expect("failed to create file");
 
     let write_task = FileWriteTask::build(data.clone(), file.as_raw_fd(), true, false);
-    submit_async_task(write_task).await.borrow_mut().get_result()
+    submit_async_task(write_task)
+        .await
+        .borrow_mut()
+        .get_result()
 }

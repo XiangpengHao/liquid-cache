@@ -251,7 +251,11 @@ impl LiquidCacheParquet {
         fixed_buffer_pool_size_mb: usize,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let io_context = Arc::new(ParquetIoContext::new(cache_dir.clone(), io_mode, fixed_buffer_pool_size_mb));
+        let io_context = Arc::new(ParquetIoContext::new(
+            cache_dir.clone(),
+            io_mode,
+            fixed_buffer_pool_size_mb,
+        ));
         let cache_storage_builder = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_cache_bytes(max_cache_bytes)

@@ -89,7 +89,7 @@ pub(super) async fn write(
     data: Bytes,
 ) -> Result<(), std::io::Error> {
     match io_mode {
-        IoMode::Uring =>  {
+        IoMode::Uring => {
             #[cfg(target_os = "linux")]
             {
                 super::io_uring::thread_pool_uring::write(path, &data, false, false).await
