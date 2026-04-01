@@ -36,6 +36,12 @@ io-uring = "0.7.10"
 libc = "0.2.177"
 crossbeam-channel = "0.5.15"
 crossbeam-queue = "0.3.11"
+async-task = "4"
+concurrent-queue = "2"
+futures-lite = "2"
+pin-project-lite = "0.2"
+slab = "0.4"
+fastrand = "2"
 
 [dev-dependencies]
 tempfile = "3.23.0"

@@ -58,7 +58,7 @@ pub(super) async fn read(
         IoMode::UringNonBlocking => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::runtime::read(path, range).await
+                super::io_uring::work_stealing::read(path, range).await
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -132,7 +132,7 @@ pub(super) async fn write(
         IoMode::UringNonBlocking => {
             #[cfg(target_os = "linux")]
             {
-                super::io_uring::runtime::write(path, &data).await
+                super::io_uring::work_stealing::write(path, &data).await
             }
             #[cfg(not(target_os = "linux"))]
             {

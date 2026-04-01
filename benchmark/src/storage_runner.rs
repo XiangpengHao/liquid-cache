@@ -13,7 +13,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column};
 use datafusion::scalar::ScalarValue;
 use liquid_cache_common::IoMode;
-use liquid_cache_parquet::{SimpleIoContext, UringExecutor};
+use liquid_cache_parquet::{SimpleIoContext, WorkStealingUringRuntime};
 use liquid_cache_storage::cache::{
     EntryID, LiquidCache, LiquidCacheBuilder, LiquidPolicy, NoHydration, TranscodeSqueezeEvict,
 };
@@ -277,7 +277,7 @@ fn run_single_iter(
     storage: Arc<LiquidCache>,
     entry_ids: &Vec<EntryID>,
     batch_lengths: &Vec<usize>,
-    executor: &mut UringExecutor,
+    executor: &mut WorkStealingUringRuntime,
 ) {
     // 2) Partition batch indices evenly across workers.
     let batches_per_partition = num_batches / num_partitions;
@@ -394,7 +394,7 @@ fn run_bench(
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build();
 
-    let mut executor = UringExecutor::new(num_workers);
+    let mut executor = WorkStealingUringRuntime::new(num_workers);
     let storage_clone = storage.clone();
     let query_owned = query.clone();
     let (num_batches, entry_ids, batch_lengths) = executor.run_to_completion(async move {
