@@ -302,19 +302,16 @@ thread_local! {
 
 struct RuntimeWorker {
     task_receiver: Option<crossbeam_channel::Receiver<ExecutorTask>>,
-    local: VecDeque<Runnable>,
     active_tasks: Rc<Cell<u32>>,
-    /// Runnables woken while polling; drained into `local` at the start of each `try_tick`.
-    pending: Rc<RefCell<VecDeque<Runnable>>>,
+    local: Rc<RefCell<VecDeque<Runnable>>>,
 }
 
 impl RuntimeWorker {
     fn new() -> RuntimeWorker {
         RuntimeWorker {
             task_receiver: None,
-            local: VecDeque::with_capacity(64),
             active_tasks: Rc::new(Cell::new(0)),
-            pending: Rc::new(RefCell::new(VecDeque::new())),
+            local: Rc::new(RefCell::new(VecDeque::new())),
         }
     }
 
@@ -323,23 +320,22 @@ impl RuntimeWorker {
     }
     
     fn try_tick(&mut self) {
-        self.local
-            .extend(self.pending.borrow_mut().drain(..));
-
-        let mut runnable = self.local.pop_front();
+        let mut runnable = self.local.borrow_mut().pop_front();
         if runnable.is_none() && self.active_tasks.get() < MAX_ACTIVE_TASKS_PER_THREAD {
             if let Ok(future) = self.task_receiver.as_mut().unwrap().try_recv() {
                 self.active_tasks.set(self.active_tasks.get().saturating_add(1));
                 let active_tasks = Rc::clone(&self.active_tasks);
-                let pending = Rc::clone(&self.pending);
+                let local_clone = Rc::clone(&self.local);
                 let wrapped = async move {
                     future.await;
                     active_tasks.set(active_tasks.get().saturating_sub(1));
                 };
                 let schedule = move |r: Runnable| {
-                    pending.borrow_mut().push_back(r);
+                    local_clone.borrow_mut().push_back(r);
                 };
-                let (r, _) = unsafe { async_task::spawn_unchecked(wrapped, schedule) };
+                let (r, task) = unsafe { async_task::spawn_unchecked(wrapped, schedule) };
+                // Dropping `Task` would cancel the future and drop the oneshot sender (RecvError).
+                task.detach();
                 runnable = Some(r);
             }
         }
