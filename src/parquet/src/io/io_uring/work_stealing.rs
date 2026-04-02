@@ -143,6 +143,7 @@ impl IoDriver {
     fn new() -> IoDriver {
         let ring = IoUring::<squeue::Entry, cqueue::Entry>::builder()
             .setup_single_issuer()
+            .setup_defer_taskrun()
             .build(URING_NUM_ENTRIES)
             .expect("Failed to build IoUring instance");
 

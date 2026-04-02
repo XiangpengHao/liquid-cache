@@ -9,7 +9,6 @@ pub(crate) mod single_uring;
 
 pub(crate) mod local_runtime;
 
-mod executor;
 pub(crate) mod work_stealing;
 
 #[cfg(test)]
