@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use datafusion::{
-    logical_expr::Operator,
-    physical_plan::{
-        PhysicalExpr,
-        expressions::{BinaryExpr, DynamicFilterPhysicalExpr, LikeExpr, Literal},
-    },
-    scalar::ScalarValue,
+use datafusion_common::ScalarValue;
+use datafusion_expr_common::operator::Operator;
+use datafusion_physical_expr::PhysicalExpr;
+use datafusion_physical_expr::expressions::{
+    BinaryExpr, DynamicFilterPhysicalExpr, LikeExpr, Literal,
 };
 
 use crate::utils::get_bytes_needle;

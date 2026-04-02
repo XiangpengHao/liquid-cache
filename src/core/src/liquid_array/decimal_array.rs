@@ -8,10 +8,14 @@ use arrow::buffer::{BooleanBuffer, ScalarBuffer};
 use arrow::datatypes::{Decimal128Type, Decimal256Type, DecimalType, UInt64Type, i256};
 use arrow_schema::DataType;
 use bytes::Bytes;
-use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::{
+use datafusion_common::ScalarValue;
+use datafusion_expr_common::columnar_value::ColumnarValue;
+use datafusion_expr_common::operator::Operator as DFOperator;
+use datafusion_physical_expr::PhysicalExpr;
+use datafusion_physical_expr::expressions::{
     BinaryExpr, Column, DynamicFilterPhysicalExpr, Literal,
 };
+use datafusion_physical_expr_common::datum::apply_cmp;
 use num_traits::ToPrimitive;
 
 use super::{
@@ -392,7 +396,6 @@ impl LiquidDecimalQuantizedArray {
     }
 
     fn literal_to_u64(&self, literal: &Literal) -> Option<u64> {
-        use datafusion::common::ScalarValue;
         match literal.value() {
             ScalarValue::Decimal128(Some(v), _precision, scale) => {
                 if *scale != self.meta.scale {
@@ -583,8 +586,6 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
         }
 
         use arrow::array::cast::AsArray;
-        use datafusion::logical_expr::ColumnarValue;
-        use datafusion::physical_expr_common::datum::apply_cmp;
 
         let full = self.hydrate_full_arrow().await;
         let selection_array = BooleanArray::new(filter.clone(), None);
@@ -595,24 +596,12 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
         let lhs = ColumnarValue::Array(filtered_arr);
         let rhs = ColumnarValue::Scalar(literal.value().clone());
         let result = match binary_expr.op() {
-            datafusion::logical_expr::Operator::NotEq => {
-                apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
-            }
-            datafusion::logical_expr::Operator::Eq => {
-                apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
-            }
-            datafusion::logical_expr::Operator::Lt => {
-                apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
-            }
-            datafusion::logical_expr::Operator::LtEq => {
-                apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
-            }
-            datafusion::logical_expr::Operator::Gt => {
-                apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
-            }
-            datafusion::logical_expr::Operator::GtEq => {
-                apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
-            }
+            DFOperator::NotEq => apply_cmp(DFOperator::NotEq, &lhs, &rhs),
+            DFOperator::Eq => apply_cmp(DFOperator::Eq, &lhs, &rhs),
+            DFOperator::Lt => apply_cmp(DFOperator::Lt, &lhs, &rhs),
+            DFOperator::LtEq => apply_cmp(DFOperator::LtEq, &lhs, &rhs),
+            DFOperator::Gt => apply_cmp(DFOperator::Gt, &lhs, &rhs),
+            DFOperator::GtEq => apply_cmp(DFOperator::GtEq, &lhs, &rhs),
             _ => {
                 let fallback = self.filter(filter).await;
                 return eval_predicate_on_array(fallback, liquid_expr);
@@ -641,9 +630,9 @@ mod tests {
     use crate::cache::{CacheExpression, TestSqueezeIo};
     use arrow::array::Decimal128Builder;
     use arrow::buffer::BooleanBuffer;
-    use datafusion::logical_expr::Operator as DFOperator;
-    use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
-    use datafusion::scalar::ScalarValue;
+    use datafusion_common::ScalarValue;
+    use datafusion_expr_common::operator::Operator as DFOperator;
+    use datafusion_physical_expr::expressions::{BinaryExpr, Column, Literal};
     use futures::executor::block_on;
     use std::sync::Arc;
 

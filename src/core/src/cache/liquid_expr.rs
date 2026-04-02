@@ -1,12 +1,11 @@
 use arrow_schema::DataType;
-use datafusion::logical_expr::Operator;
-use datafusion::physical_expr::ScalarFunctionExpr;
-use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::{
+use datafusion_common::ScalarValue;
+use datafusion_expr_common::operator::Operator;
+use datafusion_physical_expr::expressions::{
     BinaryExpr, CastColumnExpr, CastExpr, Column, DynamicFilterPhysicalExpr, LikeExpr, Literal,
     TryCastExpr,
 };
-use datafusion::scalar::ScalarValue;
+use datafusion_physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 
 use crate::cache::CacheExpression;
 use crate::sync::Arc;
@@ -205,8 +204,8 @@ fn is_numeric_like(data_type: &DataType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::common::ScalarValue;
-    use datafusion::physical_plan::expressions::{BinaryExpr, Column, LikeExpr};
+    use datafusion_common::ScalarValue;
+    use datafusion_physical_expr::expressions::{BinaryExpr, Column, LikeExpr};
 
     #[test]
     fn validates_byte_comparison_with_literal() {

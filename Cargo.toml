@@ -43,6 +43,10 @@ parquet = { version = "57.3.0", features = [
 parquet-variant-json = { version = "57.3.0" }
 parquet-variant-compute = { version = "57.3.0" }
 datafusion = { version = "52.1.0" }
+datafusion-common = { version = "52.1.0" }
+datafusion-expr-common = { version = "52.1.0" }
+datafusion-physical-expr = { version = "52.1.0" }
+datafusion-physical-expr-common = { version = "52.1.0" }
 datafusion-proto = { version = "52.1.0" }
 async-trait = "0.1.89"
 futures = { version = "0.3.32", default-features = false, features = ["std"] }

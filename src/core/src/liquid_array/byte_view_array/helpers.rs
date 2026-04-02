@@ -2,7 +2,7 @@ use arrow::array::{
     BooleanArray, BooleanBufferBuilder, UInt16Array, cast::AsArray, types::UInt16Type,
 };
 use arrow::buffer::BooleanBuffer;
-use datafusion::physical_plan::PhysicalExpr;
+use datafusion_physical_expr::PhysicalExpr;
 use std::sync::Arc;
 
 use super::LiquidByteViewArray;

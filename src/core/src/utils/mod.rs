@@ -10,7 +10,7 @@ use arrow::{
     datatypes::{BinaryType, ByteArrayType, DecimalType, UInt16Type, Utf8Type},
 };
 use arrow_schema::DataType;
-use datafusion::scalar::ScalarValue;
+use datafusion_common::ScalarValue;
 pub(crate) mod byte_cache;
 mod variant_schema;
 mod variant_utils;

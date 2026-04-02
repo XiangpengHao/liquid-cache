@@ -19,7 +19,10 @@ futures = { workspace = true }
 object_store = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 liquid-cache-common = { workspace = true }
-datafusion = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr-common = { workspace = true }
+datafusion-physical-expr = { workspace = true }
+datafusion-physical-expr-common = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 fastlanes = "0.5.0"
@@ -48,6 +51,7 @@ clap = { version = "4.5.60", features = ["derive"] }
 divan = "0.1.21"
 kani-verifier = "0.67.0"
 insta = { workspace = true }
+datafusion = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
