@@ -30,7 +30,7 @@ serde_json = { workspace = true }
 t4 = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.25.0"
+tempfile = "3.27.0"
 divan = "0.1"
 rand = "0.10.0"
 shuttle = "0.8.1"

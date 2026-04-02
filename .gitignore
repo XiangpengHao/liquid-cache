@@ -17,3 +17,5 @@ perf.data*
 .zed
 .vscode
 probex*.parquet
+.codex
+

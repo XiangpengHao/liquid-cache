@@ -22,5 +22,5 @@ t4 = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
-tempfile = "3.25.0"
+tempfile = "3.27.0"
 parquet = { workspace = true }
