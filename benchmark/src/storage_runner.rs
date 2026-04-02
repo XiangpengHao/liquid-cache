@@ -277,8 +277,8 @@ fn run_single_iter(
     storage: Arc<LiquidCache>,
     entry_ids: &Vec<EntryID>,
     batch_lengths: &Vec<usize>,
-    executor: &mut WorkStealingUringRuntime,
-) {
+    executor: &WorkStealingUringRuntime,
+) -> (std::time::Duration, usize) {
     // 2) Partition batch indices evenly across workers.
     let batches_per_partition = num_batches / num_partitions;
     let num_cols = query.columns_to_load().len();
@@ -331,11 +331,12 @@ fn run_single_iter(
         );
     }
     log::info!(
-        "Partitions: {}, Time: {:.3}s, Total rows: {}",
+        "Partitions: {}, wall: {:.3}s, total rows: {}",
         num_partitions,
         elapsed.as_secs_f64(),
         total_rows
     );
+    (elapsed, total_rows)
 }
 
 fn write_flamegraph(
@@ -394,7 +395,7 @@ fn run_bench(
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build();
 
-    let mut executor = WorkStealingUringRuntime::new(num_workers);
+    let executor = WorkStealingUringRuntime::new(num_workers);
     let storage_clone = storage.clone();
     let query_owned = query.clone();
     let (num_batches, entry_ids, batch_lengths) = executor.run_to_completion(async move {
@@ -414,6 +415,10 @@ fn run_bench(
         (num_batches, entry_ids, batch_lengths)
     });
 
+    // Baseline after cache load so iteration deltas exclude setup work on the same workers.
+    let mut prev_runnable_wall_total_ns = executor.total_runnable_wall_nanos();
+    let mut prev_per_worker_wall_ns = executor.worker_runnable_wall_nanos();
+
     for i in 0..num_iter {
         liquid_cache_benchmarks::tracepoints::iteration_start(query_index as u32, i as u32);
         let io_guard = DiskIoGuard::new();
@@ -429,14 +434,43 @@ fn run_bench(
             None
         };
 
-        run_single_iter(
+        let (iter_wall, _rows) = run_single_iter(
             num_batches,
             num_partitions,
             &query,
             storage.clone(),
             &entry_ids,
             &batch_lengths,
-            &mut executor,
+            &executor,
+        );
+
+        let runnable_wall_total_ns = executor.total_runnable_wall_nanos();
+        let runnable_this_iter_ns =
+            runnable_wall_total_ns.saturating_sub(prev_runnable_wall_total_ns);
+        prev_runnable_wall_total_ns = runnable_wall_total_ns;
+
+        let per_worker_now = executor.worker_runnable_wall_nanos();
+        let per_worker_delta_ms: Vec<f64> = per_worker_now
+            .iter()
+            .zip(prev_per_worker_wall_ns.iter())
+            .map(|(now, prev)| now.saturating_sub(*prev) as f64 / 1e6)
+            .collect();
+        prev_per_worker_wall_ns = per_worker_now;
+
+        let wall_ns = iter_wall.as_nanos() as u64;
+        // Summed across workers; can exceed wall clock when workers run in parallel.
+        let wall_minus_runnable_sum_ns = wall_ns.saturating_sub(runnable_this_iter_ns);
+
+        log::info!(
+            "Iteration {}: Runnable::run wall +{:.3} ms this iter (cumulative {:.3} ms); \
+             iteration wall {:.3} s; wall minus summed run delta (saturating) {:.3} ms; \
+             per-worker +delta ms {:?}",
+            i,
+            runnable_this_iter_ns as f64 / 1e6,
+            runnable_wall_total_ns as f64 / 1e6,
+            iter_wall.as_secs_f64(),
+            wall_minus_runnable_sum_ns as f64 / 1e6,
+            per_worker_delta_ms,
         );
 
         let (disk_read, disk_written) = io_guard.stop();

@@ -9,7 +9,8 @@ use std::{
     pin::Pin,
     rc::Rc,
     sync::{
-        Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll, Waker},
     thread::{self, JoinHandle},
@@ -51,9 +52,19 @@ const URING_BATCH_SIZE: u32 = 8;
 const URING_SYSCALL_INTERVAL_US: u64 = 5;
 const MAX_ACTIVE_TASKS_PER_THREAD: u32 = 5;
 
+/// Local io_uring + work-stealing executor.
+///
+/// ## Runnable timing
+///
+/// [`WorkStealingUringRuntime::worker_runnable_wall_nanos`] accumulates **wall-clock** time each worker
+/// spends inside [`Runnable::run`] (one async-task poll). It does **not** include idle time between
+/// ticks, io_uring `enter`, or time blocked in syscalls outside `run`. It is **not** OS thread CPU time
+/// (`CLOCK_THREAD_CPUTIME_ID`).
 pub struct WorkStealingUringRuntime {
     _workers: Vec<JoinHandle<()>>,
     sender: crossbeam_channel::Sender<ExecutorTask>,
+    /// One counter per worker; same `Arc` as installed on that worker’s [`RuntimeWorker`].
+    worker_runnable_wall_nanos: Vec<Arc<AtomicU64>>,
 }
 
 impl WorkStealingUringRuntime {
@@ -62,19 +73,41 @@ impl WorkStealingUringRuntime {
         let (sender, receiver) = crossbeam_channel::unbounded();
 
         let mut workers = Vec::new();
+        let mut worker_runnable_wall_nanos = Vec::with_capacity(num_threads);
         for i in 0..num_threads {
+            let counter = Arc::new(AtomicU64::new(0));
+            worker_runnable_wall_nanos.push(Arc::clone(&counter));
             let receiver_clone = receiver.clone();
             let worker = thread::Builder::new()
                 .name(format!("ws-io-worker-{}", i))
-                .spawn(move || worker_main_loop(receiver_clone))
+                .spawn(move || worker_main_loop(receiver_clone, counter))
                 .expect("Failed to spawn worker");
             workers.push(worker);
         }
 
         WorkStealingUringRuntime {
             _workers: workers,
-            sender
+            sender,
+            worker_runnable_wall_nanos,
         }
+    }
+
+    /// Wall time each worker has spent inside `Runnable::run()`, **nanoseconds**, indexed by worker id.
+    ///
+    /// See struct-level docs for semantics.
+    pub fn worker_runnable_wall_nanos(&self) -> Vec<u64> {
+        self.worker_runnable_wall_nanos
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .collect()
+    }
+
+    /// Sum of [`Self::worker_runnable_wall_nanos`] across workers.
+    pub fn total_runnable_wall_nanos(&self) -> u64 {
+        self.worker_runnable_wall_nanos
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .sum()
     }
 
     /// Spawn a future on the runtime; the result is returned through a oneshot channel.
@@ -251,10 +284,13 @@ impl IoDriver {
     }
 }
 
-fn worker_main_loop(receiver: crossbeam_channel::Receiver<ExecutorTask>) {
+fn worker_main_loop(
+    receiver: crossbeam_channel::Receiver<ExecutorTask>,
+    runnable_wall_nanos: Arc<AtomicU64>,
+) {
     EXECUTOR.with(|worker| {
         let mut worker = worker.borrow_mut();
-        worker.set_receiver(receiver);
+        worker.set_context(receiver, runnable_wall_nanos);
     });
     loop {
         EXECUTOR.with(|worker| {
@@ -305,6 +341,7 @@ struct RuntimeWorker {
     task_receiver: Option<crossbeam_channel::Receiver<ExecutorTask>>,
     active_tasks: Rc<Cell<u32>>,
     local: Rc<RefCell<VecDeque<Runnable>>>,
+    runnable_wall_nanos: Option<Arc<AtomicU64>>,
 }
 
 impl RuntimeWorker {
@@ -313,11 +350,17 @@ impl RuntimeWorker {
             task_receiver: None,
             active_tasks: Rc::new(Cell::new(0)),
             local: Rc::new(RefCell::new(VecDeque::new())),
+            runnable_wall_nanos: None,
         }
     }
 
-    fn set_receiver(&mut self, receiver: crossbeam_channel::Receiver<ExecutorTask>) {
+    fn set_context(
+        &mut self,
+        receiver: crossbeam_channel::Receiver<ExecutorTask>,
+        runnable_wall_nanos: Arc<AtomicU64>,
+    ) {
         self.task_receiver = Some(receiver);
+        self.runnable_wall_nanos = Some(runnable_wall_nanos);
     }
     
     fn try_tick(&mut self) {
@@ -341,7 +384,11 @@ impl RuntimeWorker {
             }
         }
         if let Some(r) = runnable {
+            let start = Instant::now();
             r.run();
+            if let Some(c) = self.runnable_wall_nanos.as_ref() {
+                c.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            }
         }
     }
 }
