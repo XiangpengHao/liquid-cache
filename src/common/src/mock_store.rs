@@ -6,8 +6,9 @@ use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream::BoxStream};
 use object_store::PutMultipartOptions;
 use object_store::{
-    Attributes, Error, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMode, PutOptions, PutPayload, PutResult, Result, path::Path,
+    Attributes, CopyOptions, Error, GetOptions, GetResult, GetResultPayload, ListResult,
+    MultipartUpload, ObjectMeta, ObjectStore, PutMode, PutOptions, PutPayload, PutResult, Result,
+    path::Path,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -27,11 +28,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// and put a new object.
 ///
 /// ```rust
-/// # use liquid_cache_common::mock_store::MockStore;
-/// # use object_store::{path::Path, GetOptions, PutPayload, ObjectMeta, ObjectStore};
-/// # use futures::TryStreamExt;
-/// # use bytes::Bytes;
-/// # async fn test() -> Result<(), object_store::Error> {
+/// use liquid_cache_common::mock_store::MockStore;
+/// use object_store::{path::Path, GetOptions, PutPayload, ObjectMeta, ObjectStore};
+/// use futures::TryStreamExt;
+/// use bytes::Bytes;
+/// use object_store::ObjectStoreExt;
+/// async fn test() -> Result<(), object_store::Error> {
 /// let store = MockStore::new_with_files(10, 1024 * 10); // 10 files of 10KB each
 /// let paths: Vec<ObjectMeta> = store.list(None).try_collect().await?;
 ///
@@ -46,8 +48,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// let path = Path::from("11.parquet");
 /// let payload = PutPayload::from(Bytes::from_static(b"test data"));
 /// store.put(&path, payload).await?;
-/// # Ok(())
-/// # }
+/// Ok(())
+/// }
 /// ```
 ///
 #[derive(Debug, Default)]
@@ -273,9 +275,6 @@ impl ObjectStore for MockStore {
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         let entry = self.entry(location)?;
 
-        // Atomically increment the count. This is a fast, lock-free operation.
-        entry.access_count.fetch_add(1, Ordering::SeqCst);
-
         let e_tag = entry.e_tag.to_string();
 
         let meta = ObjectMeta {
@@ -286,6 +285,19 @@ impl ObjectStore for MockStore {
             version: None,
         };
         options.check_preconditions(&meta)?;
+
+        if options.head {
+            let stream = futures::stream::empty().boxed();
+            return Ok(GetResult {
+                payload: GetResultPayload::Stream(stream),
+                attributes: entry.attributes,
+                meta,
+                range: 0..0,
+            });
+        }
+
+        // Atomically increment the count. This is a fast, lock-free operation.
+        entry.access_count.fetch_add(1, Ordering::SeqCst);
 
         let (range, data) = match options.range {
             Some(range) => {
@@ -311,23 +323,6 @@ impl ObjectStore for MockStore {
             meta,
             range,
         })
-    }
-
-    async fn head(&self, location: &Path) -> Result<ObjectMeta> {
-        let entry = self.entry(location)?;
-
-        Ok(ObjectMeta {
-            location: location.clone(),
-            last_modified: entry.last_modified,
-            size: entry.data.len() as u64,
-            e_tag: Some(entry.e_tag.to_string()),
-            version: None,
-        })
-    }
-
-    async fn delete(&self, location: &Path) -> Result<()> {
-        self.storage.write().unwrap().map.remove(location);
-        Ok(())
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
@@ -386,7 +381,7 @@ impl ObjectStore for MockStore {
             };
 
             if parts.next().is_some() {
-                common_prefixes.insert(prefix.child(common_prefix));
+                common_prefixes.insert(prefix.clone().join(common_prefix));
             } else {
                 let object = ObjectMeta {
                     location: k.clone(),
@@ -413,12 +408,15 @@ impl ObjectStore for MockStore {
         unreachable!("MockStore does not support multipart upload")
     }
 
-    async fn copy(&self, _from: &Path, _to: &Path) -> Result<()> {
-        unreachable!("MockStore does not support copy")
+    fn delete_stream(
+        &self,
+        _locations: BoxStream<'static, Result<Path>>,
+    ) -> BoxStream<'static, Result<Path>> {
+        unreachable!("MockStore does not support delete")
     }
 
-    async fn copy_if_not_exists(&self, _from: &Path, _to: &Path) -> Result<()> {
-        unreachable!("MockStore does not support copy_if_not_exists")
+    async fn copy_opts(&self, _from: &Path, _to: &Path, _options: CopyOptions) -> Result<()> {
+        unreachable!("MockStore does not support copy")
     }
 }
 
@@ -426,6 +424,7 @@ impl ObjectStore for MockStore {
 mod tests {
     use super::*;
     use futures::TryStreamExt;
+    use object_store::ObjectStoreExt;
 
     async fn setup_test_store() -> MockStore {
         let store = MockStore::new_with_files(10, 1024 * 10); // 10 files of 10KB
@@ -525,24 +524,6 @@ mod tests {
         let meta = store.head(&new_path).await.unwrap();
         assert_eq!(meta.size, 9);
         assert_eq!(meta.location, new_path);
-    }
-
-    #[tokio::test]
-    async fn test_delete() {
-        let store = setup_test_store().await;
-        let path_to_delete = Path::from("5.parquet");
-
-        store.delete(&path_to_delete).await.unwrap();
-
-        // Verify the file is deleted
-        let err = store.head(&path_to_delete).await.unwrap_err();
-        assert!(
-            matches!(err, Error::NotFound { .. }),
-            "Expected NotFound error after delete, but got {err:?}"
-        );
-
-        let paths: Vec<ObjectMeta> = store.list(None).try_collect().await.unwrap();
-        assert_eq!(paths.len(), 9, "Store should have 9 files after deletion");
     }
 
     #[tokio::test]
@@ -660,16 +641,5 @@ mod tests {
 
         assert_eq!(store.get_file_count(), 11);
         assert_eq!(store.get_store_size(), 10 * 1024 * 10 + new_data_len);
-
-        // Delete one of the original files
-        let path_to_delete = Path::from("5.parquet");
-        store.delete(&path_to_delete).await.unwrap();
-
-        assert_eq!(store.get_file_count(), 10);
-        assert_eq!(
-            store.get_store_size(),
-            9 * 1024 * 10 + new_data_len,
-            "Store size should be reduced by the size of the deleted file"
-        );
     }
 }

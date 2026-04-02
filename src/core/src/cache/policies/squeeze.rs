@@ -272,7 +272,7 @@ fn build_shredding_schema(
 }
 
 fn extract_typed_values_for_path(typed_root: &StructArray, path: &str) -> Option<ArrayRef> {
-    let path = VariantPath::from(path);
+    let path = VariantPath::try_from(path).ok()?;
     if path.is_empty() {
         return None;
     }
@@ -534,9 +534,14 @@ mod tests {
         for (path, data_type) in entries.iter() {
             let typed_values = variant_get(
                 &base_arr,
-                GetOptions::new_with_path(VariantPath::from(*path)).with_as_type(Some(Arc::new(
-                    Field::new("typed_value", data_type.clone(), true),
-                ))),
+                GetOptions::new_with_path(
+                    VariantPath::try_from(*path).expect("variant path should parse"),
+                )
+                .with_as_type(Some(Arc::new(Field::new(
+                    "typed_value",
+                    data_type.clone(),
+                    true,
+                )))),
             )
             .unwrap();
 

@@ -829,7 +829,7 @@ impl PhysicalExprAdapterFactory for LineageExtractPhysicalExprAdapterFactory {
         &self,
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
-    ) -> Arc<dyn PhysicalExprAdapter> {
+    ) -> Result<Arc<dyn PhysicalExprAdapter>, DataFusionError> {
         self.base.create(logical_file_schema, physical_file_schema)
     }
 }

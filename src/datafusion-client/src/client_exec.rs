@@ -8,7 +8,6 @@ use arrow::array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::SchemaRef;
-use datafusion::common::Statistics;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr_adapter::{BatchAdapter, BatchAdapterFactory};
@@ -54,7 +53,7 @@ pub struct LiquidCacheClientExec {
     metrics: ExecutionPlanMetricsSet,
     uuid: Uuid,
     plan_registered: Arc<AtomicUsize>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl std::fmt::Debug for LiquidCacheClientExec {
@@ -69,12 +68,12 @@ impl LiquidCacheClientExec {
         cache_server: String,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
     ) -> Self {
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             remote_plan.equivalence_properties().clone(), // Equivalence Properties
             remote_plan.output_partitioning().clone(),    // Output Partitioning
             remote_plan.pipeline_behavior(),
             remote_plan.boundedness(),
-        );
+        ));
         let uuid = Uuid::new_v4();
         Self {
             remote_plan,
@@ -123,8 +122,8 @@ impl ExecutionPlan for LiquidCacheClientExec {
         "LiquidCacheClientExec"
     }
 
-    fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
-        self.remote_plan.properties()
+    fn properties(&self) -> &Arc<datafusion::physical_plan::PlanProperties> {
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -178,11 +177,6 @@ impl ExecutionPlan for LiquidCacheClientExec {
             create_stream_span,
         )))
     }
-
-    fn statistics(&self) -> Result<Statistics> {
-        self.remote_plan.partition_statistics(None)
-    }
-
     fn supports_limit_pushdown(&self) -> bool {
         self.remote_plan.supports_limit_pushdown()
     }
@@ -388,7 +382,7 @@ impl Stream for FlightStream {
                     }
                 } else {
                     let adapter = match BatchAdapterFactory::new(self.schema.clone())
-                        .make_adapter(batch.schema())
+                        .make_adapter(&batch.schema())
                     {
                         Ok(adapter) => adapter,
                         Err(e) => return Poll::Ready(Some(Err(e))),

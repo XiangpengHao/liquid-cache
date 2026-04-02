@@ -11,9 +11,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, stream::BoxStream};
 use object_store::{
-    Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
-    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
-    path::Path,
+    CopyOptions, Error, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
+    MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions,
+    PutPayload, PutResult, Result, path::Path,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -284,16 +284,15 @@ impl ObjectStore for ByteCache {
         unreachable!("ByteCache does not support multipart upload")
     }
 
-    async fn delete(&self, _location: &Path) -> Result<()> {
+    fn delete_stream(
+        &self,
+        _locations: BoxStream<'static, Result<Path>>,
+    ) -> BoxStream<'static, Result<Path>> {
         unreachable!("ByteCache does not support delete")
     }
 
-    async fn copy(&self, _from: &Path, _to: &Path) -> Result<()> {
+    async fn copy_opts(&self, _from: &Path, _to: &Path, _options: CopyOptions) -> Result<()> {
         unreachable!("ByteCache does not support copy")
-    }
-
-    async fn copy_if_not_exists(&self, _from: &Path, _to: &Path) -> Result<()> {
-        unreachable!("ByteCache does not support copy_if_not_exists")
     }
 }
 
