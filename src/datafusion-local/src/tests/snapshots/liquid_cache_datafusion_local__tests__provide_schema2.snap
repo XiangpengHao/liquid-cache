@@ -26,7 +26,7 @@ entries.memory.liquid: 1
 entries.memory.squeezed_liquid: 0
 entries.disk.liquid: 2
 entries.disk.arrow: 0
-usage.memory_bytes: 969892
+usage.memory_bytes: 949843
 usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
   get: 4
@@ -169,7 +169,7 @@ entries.memory.liquid: 1
 entries.memory.squeezed_liquid: 0
 entries.disk.liquid: 2
 entries.disk.arrow: 0
-usage.memory_bytes: 969892
+usage.memory_bytes: 949843
 usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
   get: 5
@@ -213,7 +213,7 @@ entries.memory.liquid: 3
 entries.memory.squeezed_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 1005281
+usage.memory_bytes: 985232
 usage.disk_bytes: 35000
 RuntimeStatsSnapshot:
   get: 4

@@ -19,12 +19,15 @@ futures = { workspace = true }
 object_store = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 liquid-cache-common = { workspace = true }
-datafusion = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr-common = { workspace = true }
+datafusion-physical-expr = { workspace = true }
+datafusion-physical-expr-common = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 fastlanes = "0.5.0"
 num-traits = "0.2.19"
-fsst-rs = "0.5.6"
+fsst-rs = "0.5.9"
 ahash = { workspace = true }
 tempfile = { workspace = true }
 congee = { workspace = true }
@@ -39,15 +42,16 @@ serde = { workspace = true }
 tempfile = { workspace = true }
 shuttle = "0.8.1"
 tokio-test = "0.4"
-tracing-subscriber = "0.3.22"
+tracing-subscriber = "0.3.23"
 rand = "0.10.0"
 serde.workspace = true
 serde_json = { workspace = true }
 mimalloc = "0.1.48"
-clap = { version = "4.5.60", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive"] }
 divan = "0.1.21"
 kani-verifier = "0.67.0"
 insta = { workspace = true }
+datafusion = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

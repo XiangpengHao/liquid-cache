@@ -7,9 +7,10 @@ mod byte_view_tests {
     };
     use arrow::buffer::BooleanBuffer;
     use arrow_schema::DataType;
-    use datafusion::logical_expr::Operator;
-    use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
-    use datafusion::scalar::ScalarValue;
+    use datafusion_common::ScalarValue;
+    use datafusion_expr_common::operator::Operator;
+    use datafusion_physical_expr::PhysicalExpr;
+    use datafusion_physical_expr::expressions::{BinaryExpr, Column, Literal};
     use rand::SeedableRng;
     use rand::prelude::*;
 
@@ -178,11 +179,10 @@ mod byte_view_tests {
         ]);
         let mask = BooleanBuffer::new_set(input.len());
 
-        let lit: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
+        let lit: Arc<dyn PhysicalExpr> =
             Arc::new(Literal::new(ScalarValue::Utf8(Some("hello".to_string()))));
-        let col: Arc<dyn datafusion::physical_plan::PhysicalExpr> = Arc::new(Column::new("c", 0));
-        let expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> =
-            Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
+        let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("c", 0));
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(col, Operator::Eq, lit));
 
         let liquid = make_byte_view(&input);
         let result =

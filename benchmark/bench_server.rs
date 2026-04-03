@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run both servers concurrently
     tokio::select! {
-        result = Server::builder().layer(FastraceServerLayer).add_service(flight).serve(args.address) => {
+        result = Server::builder().layer(FastraceServerLayer::default()).add_service(flight).serve(args.address) => {
             result?;
         },
         result = run_admin_server(args.admin_address, liquid_cache_datafusion_server) => {

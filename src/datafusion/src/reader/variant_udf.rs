@@ -198,7 +198,7 @@ impl ScalarUDFImpl for VariantGetUdf {
 
                 let res = variant_get(
                     variant_array,
-                    build_get_options(VariantPath::from(variant_path), &type_field),
+                    build_get_options(VariantPath::try_from(variant_path)?, &type_field),
                 )?;
 
                 ColumnarValue::Array(res)
@@ -216,7 +216,7 @@ impl ScalarUDFImpl for VariantGetUdf {
 
                 let res = variant_get(
                     &variant_array,
-                    build_get_options(VariantPath::from(variant_path), &type_field),
+                    build_get_options(VariantPath::try_from(variant_path)?, &type_field),
                 )?;
 
                 let scalar = ScalarValue::try_from_array(res.as_ref(), 0)?;
@@ -243,7 +243,10 @@ impl ScalarUDFImpl for VariantGetUdf {
 
                     let res = variant_get(
                         &arr,
-                        build_get_options(VariantPath::from(path.unwrap_or_default()), &type_field),
+                        build_get_options(
+                            VariantPath::try_from(path.unwrap_or_default())?,
+                            &type_field,
+                        ),
                     )?;
 
                     out.push(res);
@@ -266,7 +269,7 @@ impl ScalarUDFImpl for VariantGetUdf {
                     let path = path.unwrap_or_default();
                     let res = variant_get(
                         &variant_array,
-                        build_get_options(VariantPath::from(path), &type_field),
+                        build_get_options(VariantPath::try_from(path)?, &type_field),
                     )?;
 
                     out.push(res);

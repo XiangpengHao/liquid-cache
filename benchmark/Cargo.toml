@@ -16,27 +16,27 @@ tokio = { workspace = true }
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
-clap = { version = "4.5.60", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive"] }
 url = { workspace = true }
 mimalloc = "0.1.48"
 serde_json.workspace = true
 serde.workspace = true
-sysinfo = { version = "0.38.2", default-features = false, features = [
+sysinfo = { version = "0.38.4", default-features = false, features = [
 	"network",
 	"disk",
 ] }
 object_store = { workspace = true, features = ["http"] }
 parquet = { workspace = true }
 arrow = { workspace = true }
-fastrace = { version = "0.7.16" }
+fastrace = { version = "0.7.17" }
 fastrace-tonic = { workspace = true }
 fastrace-opentelemetry = "0.16"
 opentelemetry = "0.31.0"
 opentelemetry_sdk = "0.31.0"
-opentelemetry-otlp = { version = "0.31.0", features = ["trace", "grpc-tonic"] }
+opentelemetry-otlp = { version = "0.31.1", features = ["trace", "grpc-tonic"] }
 logforth = { version = "0.29.1", features = ["append-opentelemetry", "bridge-log"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json"] }
-uuid = { version = "1.21.0", features = ["v4"] }
+uuid = { version = "1.23.0", features = ["v4"] }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 usdt = "0.6"

@@ -26,7 +26,7 @@ use arrow::{
 use arrow_schema::{DataType, Field, Schema};
 pub use byte_view_array::LiquidByteViewArray;
 use bytes::Bytes;
-use datafusion::logical_expr::Operator as DFOperator;
+use datafusion_expr_common::operator::Operator as DFOperator;
 pub use decimal_array::LiquidDecimalArray;
 pub use fix_len_byte_array::LiquidFixedLenByteArray;
 pub use float_array::{LiquidFloat32Array, LiquidFloat64Array, LiquidFloatArray};

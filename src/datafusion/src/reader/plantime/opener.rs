@@ -200,7 +200,8 @@ impl FileOpener for LiquidParquetOpener {
 
             file_metrics.files_ranges_pruned_statistics.add_matched(1);
 
-            let mut options = ArrowReaderOptions::new().with_page_index(true);
+            let mut options = ArrowReaderOptions::new()
+                .with_page_index_policy(parquet::file::metadata::PageIndexPolicy::Required);
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
 
             // Begin by loading the metadata from the underlying reader (note
@@ -233,7 +234,7 @@ impl FileOpener for LiquidParquetOpener {
             let rewriter = expr_adapter_factory.create(
                 Arc::clone(&logical_file_schema),
                 Arc::clone(&physical_file_schema),
-            );
+            )?;
             let simplifier = PhysicalExprSimplifier::new(&physical_file_schema);
             predicate = predicate
                 .map(|p| simplifier.simplify(rewriter.rewrite(p)?))

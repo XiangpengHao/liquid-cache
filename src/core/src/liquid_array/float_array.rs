@@ -21,10 +21,11 @@ use arrow::{
     },
 };
 use arrow_schema::DataType;
-use datafusion::{
-    physical_plan::expressions::{BinaryExpr, Literal},
-    scalar::ScalarValue,
-};
+use datafusion_common::ScalarValue;
+use datafusion_expr_common::columnar_value::ColumnarValue;
+use datafusion_expr_common::operator::Operator as DFOperator;
+use datafusion_physical_expr::expressions::{BinaryExpr, Literal};
+use datafusion_physical_expr_common::datum::apply_cmp;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
@@ -1010,8 +1011,6 @@ where
 
                 // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
                 use arrow::array::cast::AsArray;
-                use datafusion::logical_expr::ColumnarValue;
-                use datafusion::physical_expr_common::datum::apply_cmp;
 
                 let full = self.hydrate_full_arrow().await;
                 let selection_array = BooleanArray::new(filter.clone(), None);
@@ -1022,24 +1021,12 @@ where
                 let lhs = ColumnarValue::Array(filtered_arr);
                 let rhs = ColumnarValue::Scalar(literal.value().clone());
                 let result = match op {
-                    datafusion::logical_expr::Operator::NotEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::NotEq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Eq => {
-                        apply_cmp(datafusion::logical_expr::Operator::Eq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Lt => {
-                        apply_cmp(datafusion::logical_expr::Operator::Lt, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::LtEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::LtEq, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::Gt => {
-                        apply_cmp(datafusion::logical_expr::Operator::Gt, &lhs, &rhs)
-                    }
-                    datafusion::logical_expr::Operator::GtEq => {
-                        apply_cmp(datafusion::logical_expr::Operator::GtEq, &lhs, &rhs)
-                    }
+                    DFOperator::NotEq => apply_cmp(DFOperator::NotEq, &lhs, &rhs),
+                    DFOperator::Eq => apply_cmp(DFOperator::Eq, &lhs, &rhs),
+                    DFOperator::Lt => apply_cmp(DFOperator::Lt, &lhs, &rhs),
+                    DFOperator::LtEq => apply_cmp(DFOperator::LtEq, &lhs, &rhs),
+                    DFOperator::Gt => apply_cmp(DFOperator::Gt, &lhs, &rhs),
+                    DFOperator::GtEq => apply_cmp(DFOperator::GtEq, &lhs, &rhs),
                     _ => {
                         let fallback = self.filter(filter).await;
                         return eval_predicate_on_array(fallback, liquid_expr);
@@ -1060,7 +1047,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use datafusion::logical_expr::Operator;
+    use datafusion_expr_common::operator::Operator;
+    use datafusion_physical_expr::PhysicalExpr;
     use futures::executor::block_on;
     use rand::{RngExt as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
@@ -1278,11 +1266,10 @@ mod tests {
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
         let mask = BooleanBuffer::from(vec![true; arr.len()]);
-        let build_expr =
-            |op: Operator, k: f32| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
-                let lit = Arc::new(Literal::new(ScalarValue::Float32(Some(k))));
-                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
-            };
+        let build_expr = |op: Operator, k: f32| -> Arc<dyn PhysicalExpr> {
+            let lit = Arc::new(Literal::new(ScalarValue::Float32(Some(k))));
+            Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+        };
 
         // Expect resolvable results without IO
         let resolvable_cases: Vec<(Operator, f32, bool)> = vec![
@@ -1374,11 +1361,10 @@ mod tests {
 
         let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
         let mask = BooleanBuffer::from(vec![true; arr.len()]);
-        let build_expr =
-            |op: Operator, k: f64| -> Arc<dyn datafusion::physical_plan::PhysicalExpr> {
-                let lit = Arc::new(Literal::new(ScalarValue::Float64(Some(k))));
-                Arc::new(BinaryExpr::new(lit.clone(), op, lit))
-            };
+        let build_expr = |op: Operator, k: f64| -> Arc<dyn PhysicalExpr> {
+            let lit = Arc::new(Literal::new(ScalarValue::Float64(Some(k))));
+            Arc::new(BinaryExpr::new(lit.clone(), op, lit))
+        };
 
         // Expect resolvable results without IO
         let resolvable_cases: Vec<(Operator, f64, bool)> = vec![
