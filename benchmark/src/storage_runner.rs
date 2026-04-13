@@ -9,6 +9,7 @@ use arrow::array::BooleanArray;
 use arrow::buffer::BooleanBuffer;
 use clap::Parser;
 use datafusion::logical_expr::Operator;
+use futures::future::join_all;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column};
 use datafusion::scalar::ScalarValue;
@@ -21,6 +22,7 @@ use logforth::filter::EnvFilter;
 use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 use std::fs::create_dir_all;
 use std::path::PathBuf;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
@@ -32,10 +34,11 @@ struct Args {
     #[arg(long)]
     query_index: usize,
 
-    /// Number of partitions (tasks to spawn on UringExecutor).
+    /// Number of partitions (tasks per iteration).
     #[arg(long)]
     partitions: usize,
 
+    /// Worker threads: io_uring work-stealing runtime size, or Tokio worker threads when `--io-mode std-blocking`.
     #[arg(long)]
     worker_threads: usize,
 
@@ -54,7 +57,7 @@ struct Args {
     #[arg(long = "flamegraph-dir")]
     flamegraph_dir: Option<PathBuf>,
 
-    /// IO mode: uring-non-blocking (default) or std-blocking.
+    /// IO mode: uring-non-blocking (default) or std-blocking. With std-blocking, partition futures run on a multi-thread Tokio runtime (`worker_threads` workers).
     #[arg(long = "io-mode", default_value = "uring-non-blocking")]
     io_mode: IoMode,
 }
@@ -185,9 +188,13 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     });
 
     q[20] = Some(FilterQuery {
-        filter_columns: vec![],
-        projection_columns: vec!["URL"],
-        predicates: vec![],
+        filter_columns: vec!["URL"],
+        projection_columns: vec![],
+        predicates: vec![Arc::new(BinaryExpr::new(
+            col(),
+            Operator::LikeMatch,
+            Arc::new(Lit::new(ScalarValue::Utf8(Some(String::from("%google%")))))
+        ))],
         expected_row_count: 99997497,
     });
 
@@ -270,6 +277,48 @@ fn all_filter_queries() -> Vec<Option<FilterQuery>> {
     q
 }
 
+/// Partition futures run either on the work-stealing io_uring executor or, for `std-blocking` IO, on Tokio.
+enum StorageBenchRuntime {
+    Uring(WorkStealingUringRuntime),
+    Tokio(tokio::runtime::Runtime),
+}
+
+impl StorageBenchRuntime {
+    fn new(io_mode: IoMode, num_workers: usize) -> Self {
+        let num_workers = num_workers.max(1);
+        if io_mode == IoMode::StdBlocking {
+            Self::Tokio(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(num_workers)
+                    .thread_name("storage-bench-tokio")
+                    .enable_all()
+                    .build()
+                    .expect("build tokio multi-thread runtime"),
+            )
+        } else {
+            Self::Uring(WorkStealingUringRuntime::new(num_workers))
+        }
+    }
+
+    fn run_to_completion<F, T>(&self, future: F) -> T
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        match self {
+            Self::Uring(e) => e.run_to_completion(future),
+            Self::Tokio(rt) => rt.block_on(future),
+        }
+    }
+
+    fn total_runnable_wall_nanos(&self) -> Option<u64> {
+        match self {
+            Self::Uring(e) => Some(e.total_runnable_wall_nanos()),
+            Self::Tokio(_) => None,
+        }
+    }
+}
+
 fn run_single_iter(
     num_batches: usize,
     num_partitions: usize,
@@ -277,7 +326,7 @@ fn run_single_iter(
     storage: Arc<LiquidCache>,
     entry_ids: &Vec<EntryID>,
     batch_lengths: &Vec<usize>,
-    executor: &WorkStealingUringRuntime,
+    runtime: &StorageBenchRuntime,
 ) -> (std::time::Duration, usize) {
     // 2) Partition batch indices evenly across workers.
     let batches_per_partition = num_batches / num_partitions;
@@ -314,14 +363,22 @@ fn run_single_iter(
     let num_tasks = futures.len();
 
     let start = Instant::now();
-    let receiver = executor.spawn_many(&mut futures);
-
-    let mut tasks_completed = 0;
-    let mut total_rows = 0;
-    while tasks_completed < num_tasks {
-        total_rows += receiver.recv().expect("Failed to receive result");
-        tasks_completed += 1;
-    }
+    let total_rows = match runtime {
+        StorageBenchRuntime::Uring(executor) => {
+            let receiver = executor.spawn_many(&mut futures);
+            let mut tasks_completed = 0;
+            let mut total_rows = 0;
+            while tasks_completed < num_tasks {
+                total_rows += receiver.recv().expect("Failed to receive result");
+                tasks_completed += 1;
+            }
+            total_rows
+        }
+        StorageBenchRuntime::Tokio(rt) => rt
+            .block_on(join_all(futures))
+            .into_iter()
+            .sum::<usize>(),
+    };
     let elapsed = start.elapsed();
     if total_rows != query.expected_row_count {
         log::warn!(
@@ -395,10 +452,10 @@ fn run_bench(
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build();
 
-    let executor = WorkStealingUringRuntime::new(num_workers);
+    let runtime = StorageBenchRuntime::new(io_mode, num_workers);
     let storage_clone = storage.clone();
     let query_owned = query.clone();
-    let (num_batches, entry_ids, batch_lengths) = executor.run_to_completion(async move {
+    let (num_batches, entry_ids, batch_lengths) = runtime.run_to_completion(async move {
         // 1) Load parquet into record batches (filter columns only) and insert into cache.
         let (entry_ids, batch_lengths) =
             load_and_insert(storage_clone.clone(), parquet_path, &query_owned).await;
@@ -416,8 +473,7 @@ fn run_bench(
     });
 
     // Baseline after cache load so iteration deltas exclude setup work on the same workers.
-    let mut prev_runnable_wall_total_ns = executor.total_runnable_wall_nanos();
-    let mut prev_per_worker_wall_ns = executor.worker_runnable_wall_nanos();
+    let mut prev_runnable_wall_total_ns = runtime.total_runnable_wall_nanos().unwrap_or(0);
 
     for i in 0..num_iter {
         liquid_cache_benchmarks::tracepoints::iteration_start(query_index as u32, i as u32);
@@ -441,44 +497,35 @@ fn run_bench(
             storage.clone(),
             &entry_ids,
             &batch_lengths,
-            &executor,
+            &runtime,
         );
 
-        let runnable_wall_total_ns = executor.total_runnable_wall_nanos();
-        let runnable_this_iter_ns =
-            runnable_wall_total_ns.saturating_sub(prev_runnable_wall_total_ns);
-        prev_runnable_wall_total_ns = runnable_wall_total_ns;
-
-        let per_worker_now = executor.worker_runnable_wall_nanos();
-        let per_worker_delta_ms: Vec<f64> = per_worker_now
-            .iter()
-            .zip(prev_per_worker_wall_ns.iter())
-            .map(|(now, prev)| now.saturating_sub(*prev) as f64 / 1e6)
-            .collect();
-        prev_per_worker_wall_ns = per_worker_now;
-
-        let wall_ns = iter_wall.as_nanos() as u64;
-        // Summed across workers; can exceed wall clock when workers run in parallel.
-        let wall_minus_runnable_sum_ns = wall_ns.saturating_sub(runnable_this_iter_ns);
-
-        log::info!(
-            "Iteration {}: Runnable::run wall +{:.3} ms this iter (cumulative {:.3} ms); \
-             iteration wall {:.3} s; wall minus summed run delta (saturating) {:.3} ms; \
-             per-worker +delta ms {:?}",
-            i,
-            runnable_this_iter_ns as f64 / 1e6,
-            runnable_wall_total_ns as f64 / 1e6,
-            iter_wall.as_secs_f64(),
-            wall_minus_runnable_sum_ns as f64 / 1e6,
-            per_worker_delta_ms,
-        );
+        let uring_runnable = match runtime.total_runnable_wall_nanos() {
+            Some(total_now) => {
+                let runnable_this_iter_ns =
+                    total_now.saturating_sub(prev_runnable_wall_total_ns);
+                prev_runnable_wall_total_ns = total_now;
+                let wall_ns = iter_wall.as_nanos() as u64;
+                // Summed across workers; can exceed wall clock when workers run in parallel.
+                let wall_minus_runnable_sum_ns = wall_ns.saturating_sub(runnable_this_iter_ns);
+                Some((
+                    runnable_this_iter_ns as f64 / 1e6,
+                    wall_minus_runnable_sum_ns as f64 / 1e6,
+                ))
+            }
+            None => None,
+        };
 
         let (disk_read, disk_written) = io_guard.stop();
         log::info!(
-            "Iteration {}: disk read {} bytes, disk written {} bytes",
-            i,
-            disk_read,
-            disk_written
+            "{}",
+            liquid_cache_benchmarks::format_storage_iteration_metrics(
+                i,
+                iter_wall,
+                disk_read,
+                disk_written,
+                uring_runnable,
+            )
         );
 
         if let (Some(profiler), Some(dir)) = (profiler_guard, flamegraph_dir.as_ref()) {

@@ -487,6 +487,81 @@ impl Display for IterationResult {
     }
 }
 
+/// Table layout matching [`IterationResult`]'s [`Display`] (borders, row style, disk formatting).
+/// When `uring_runnable` is `Some`, includes work-stealing executor `Runnable::run` timing (see storage runner).
+pub fn format_storage_iteration_metrics(
+    iteration: usize,
+    iteration_wall: Duration,
+    disk_read: u64,
+    disk_written: u64,
+    uring_runnable: Option<(f64, f64)>,
+) -> String {
+    struct StorageIterationTable {
+        iteration: usize,
+        iteration_wall_ms: u64,
+        uring_runnable: Option<(f64, f64)>,
+        disk_read: u64,
+        disk_written: u64,
+    }
+
+    impl std::fmt::Display for StorageIterationTable {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            const INNER: usize = 50;
+            write_border_top(f, INNER)?;
+            write_kv_row(
+                f,
+                INNER,
+                "Iteration:",
+                &format!("{}", self.iteration),
+            )?;
+            write_kv_row(
+                f,
+                INNER,
+                "Iteration wall:",
+                &format!("{} ms", format_number(self.iteration_wall_ms)),
+            )?;
+            if let Some((runnable_wall_ms, wall_minus_runnable_ms)) = self.uring_runnable {
+                write_kv_row(
+                    f,
+                    INNER,
+                    "Runnable wall (sum):",
+                    &format!("{:.3} ms", runnable_wall_ms),
+                )?;
+                write_kv_row(
+                    f,
+                    INNER,
+                    "Wall minus runnable:",
+                    &format!("{:.3} ms", wall_minus_runnable_ms),
+                )?;
+            }
+            write_border_sep(f, INNER)?;
+            write_kv_row(
+                f,
+                INNER,
+                "Disk (Read/Write):",
+                &format!(
+                    "{} / {}",
+                    format_bytes(self.disk_read),
+                    format_bytes(self.disk_written)
+                ),
+            )?;
+            write_border_bottom(f, INNER)
+        }
+    }
+
+    let iteration_wall_ms = (iteration_wall.as_secs_f64() * 1000.0).round() as u64;
+    format!(
+        "{}",
+        StorageIterationTable {
+            iteration,
+            iteration_wall_ms,
+            uring_runnable,
+            disk_read,
+            disk_written,
+        }
+    )
+}
+
 fn format_number(n: u64) -> String {
     let s = n.to_string();
     let chars: Vec<char> = s.chars().collect();
