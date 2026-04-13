@@ -374,10 +374,13 @@ fn run_single_iter(
             }
             total_rows
         }
-        StorageBenchRuntime::Tokio(rt) => rt
-            .block_on(join_all(futures))
-            .into_iter()
-            .sum::<usize>(),
+        StorageBenchRuntime::Tokio(rt) => {
+            let handles: Vec<_> = futures.into_iter().map(|f| rt.spawn(f)).collect();
+            rt.block_on(join_all(handles))
+                .into_iter()
+                .map(|r| r.expect("partition task failed"))
+                .sum::<usize>()
+        }
     };
     let elapsed = start.elapsed();
     if total_rows != query.expected_row_count {
