@@ -1,0 +1,110 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│   s_name ASC NULLS LAST   │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│  s_name@0 ASC NULLS LAST  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│    join_type: LeftSemi    │
+│                           ├───────────────────────────────────────────┐
+│            on:            │                                           │
+│  (s_suppkey = ps_suppkey) │                                           │
+└─────────────┬─────────────┘                                           │
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│        HashJoinExec       │                             │        HashJoinExec       │
+│    --------------------   │                             │    --------------------   │
+│            on:            │                             │          filter:          │
+│(n_nationkey = s_nationkey)│                             │    CAST(ps_availqty AS    │
+│                           │                             │         Float64) >        │
+│                           │                             │       Float64(0.5) *      │
+│                           ├──────────────┐              │        sum(lineitem       ├───────────────────────────────────────────┐
+│                           │              │              │        .l_quantity)       │                                           │
+│                           │              │              │                           │                                           │
+│                           │              │              │            on:            │                                           │
+│                           │              │              │ (ps_partkey = l_partkey), │                                           │
+│                           │              │              │  (ps_suppkey = l_suppkey) │                                           │
+└─────────────┬─────────────┘              │              └─────────────┬─────────────┘                                           │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││        HashJoinExec       │                             │       ProjectionExec      │
+│    --------------------   ││    --------------------   ││    --------------------   │                             │    --------------------   │
+│          server:          ││          server:          ││    join_type: RightSemi   │                             │     Float64(0.5) * sum    │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││                           │                             │         (lineitem         │
+│      object_stores=[]     ││      object_stores=[]     ││            on:            │                             │       .l_quantity):       │
+│                           ││                           ││  (p_partkey = ps_partkey) ├──────────────┐              │  0.5 * CAST(sum(lineitem  │
+│                           ││                           ││                           │              │              │      .l_quantity) AS      │
+│                           ││                           ││                           │              │              │          Float64)         │
+│                           ││                           ││                           │              │              │                           │
+│                           ││                           ││                           │              │              │    l_partkey: l_partkey   │
+│                           ││                           ││                           │              │              │    l_suppkey: l_suppkey   │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │              └─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││       DataSourceExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││       AggregateExec       │
+│    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   │
+│          files: 1         ││          files: 1         ││          server:          ││          server:          ││           aggr:           │
+│      format: parquet      ││      format: parquet      ││  http://localhost:50051,  ││  http://localhost:50051,  ││  sum(lineitem.l_quantity) │
+│                           ││                           ││      object_stores=[]     ││      object_stores=[]     ││                           │
+│         predicate:        ││         predicate:        ││                           ││                           ││         group_by:         │
+│      n_name = CANADA      ││  DynamicFilter [ empty ]  ││                           ││                           ││    l_partkey, l_suppkey   │
+│                           ││                           ││                           ││                           ││                           │
+│                           ││                           ││                           ││                           ││           mode:           │
+│                           ││                           ││                           ││                           ││      FinalPartitioned     │
+└───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
+                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                                                          │       DataSourceExec      ││       DataSourceExec      ││      RepartitionExec      │
+                                                          │    --------------------   ││    --------------------   ││    --------------------   │
+                                                          │          files: 1         ││          files: 1         ││ partition_count(in->out): │
+                                                          │      format: parquet      ││      format: parquet      ││           8 -> 8          │
+                                                          │                           ││                           ││                           │
+                                                          │         predicate:        ││                           ││    partitioning_scheme:   │
+                                                          │    p_name LIKE forest%    ││                           ││     Hash([l_partkey@0,    │
+                                                          │                           ││                           ││      l_suppkey@1], 8)     │
+                                                          └───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘
+                                                                                                                    ┌─────────────┴─────────────┐
+                                                                                                                    │       AggregateExec       │
+                                                                                                                    │    --------------------   │
+                                                                                                                    │           aggr:           │
+                                                                                                                    │  sum(lineitem.l_quantity) │
+                                                                                                                    │                           │
+                                                                                                                    │         group_by:         │
+                                                                                                                    │    l_partkey, l_suppkey   │
+                                                                                                                    │                           │
+                                                                                                                    │       mode: Partial       │
+                                                                                                                    └─────────────┬─────────────┘
+                                                                                                                    ┌─────────────┴─────────────┐
+                                                                                                                    │   LiquidCacheClientExec   │
+                                                                                                                    │    --------------------   │
+                                                                                                                    │          server:          │
+                                                                                                                    │  http://localhost:50051,  │
+                                                                                                                    │      object_stores=[]     │
+                                                                                                                    └─────────────┬─────────────┘
+                                                                                                                    ┌─────────────┴─────────────┐
+                                                                                                                    │      RepartitionExec      │
+                                                                                                                    │    --------------------   │
+                                                                                                                    │ partition_count(in->out): │
+                                                                                                                    │           1 -> 8          │
+                                                                                                                    │                           │
+                                                                                                                    │    partitioning_scheme:   │
+                                                                                                                    │     RoundRobinBatch(8)    │
+                                                                                                                    └─────────────┬─────────────┘
+                                                                                                                    ┌─────────────┴─────────────┐
+                                                                                                                    │       DataSourceExec      │
+                                                                                                                    │    --------------------   │
+                                                                                                                    │          files: 1         │
+                                                                                                                    │      format: parquet      │
+                                                                                                                    │                           │
+                                                                                                                    │         predicate:        │
+                                                                                                                    │  l_shipdate >= 1994-01-01 │
+                                                                                                                    │    AND l_shipdate < 1995  │
+                                                                                                                    │  -01-01 AND DynamicFilter │
+                                                                                                                    │          [ empty ]        │
+                                                                                                                    └───────────────────────────┘

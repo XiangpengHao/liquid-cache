@@ -1,0 +1,74 @@
+---
+source: src/datafusion-local/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values, stats)"
+---
+plan: 
+┌───────────────────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│         count(*):         │
+│      count(Int64(1))      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│        mode: Final        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           1 -> 4          │
+│                           │
+│    partitioning_scheme:   │
+│     RoundRobinBatch(4)    │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+values: 
++----------+
+| count(*) |
++----------+
+| 23113    |
++----------+
+stats:
+entries.total: 4
+entries.after_first_run: 4
+entries.memory.arrow: 2
+entries.memory.liquid: 1
+entries.memory.squeezed_liquid: 1
+entries.disk.liquid: 0
+entries.disk.arrow: 0
+usage.memory_bytes: 912529
+usage.disk_bytes: 139416
+RuntimeStatsSnapshot:
+  get: 4
+  get_with_selection: 4
+  eval_predicate: 0
+  get_squeezed_success: 0
+  get_squeezed_needs_io: 1
+  try_read_liquid_calls: 0
+  hit_date32_expression_calls: 0
+  read_io_count: 1
+  write_io_count: 0
+  eval_predicate_on_liquid_failed: 0
+  squeezed_decompressed_count: 0
+  squeezed_total_count: 0
+  squeeze_io_saved: 0

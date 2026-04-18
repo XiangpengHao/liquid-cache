@@ -1,0 +1,44 @@
+---
+source: src/datafusion-local/src/tests/mod.rs
+expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values, stats)"
+---
+plan: 
+┌───────────────────────────┐
+│       DataSourceExec      │
+│    --------------------   │
+│          files: 1         │
+│                           │
+│          format:          │
+│       liquid_parquet      │
+└───────────────────────────┘
+
+values: 
++---------------------+
+| WatchID             |
++---------------------+
+| 6978470580070504163 |
++---------------------+
+stats:
+entries.total: 4
+entries.after_first_run: 4
+entries.memory.arrow: 4
+entries.memory.liquid: 0
+entries.memory.squeezed_liquid: 0
+entries.disk.liquid: 0
+entries.disk.arrow: 0
+usage.memory_bytes: 197072
+usage.disk_bytes: 0
+RuntimeStatsSnapshot:
+  get: 1
+  get_with_selection: 1
+  eval_predicate: 4
+  get_squeezed_success: 0
+  get_squeezed_needs_io: 0
+  try_read_liquid_calls: 0
+  hit_date32_expression_calls: 0
+  read_io_count: 0
+  write_io_count: 0
+  eval_predicate_on_liquid_failed: 0
+  squeezed_decompressed_count: 0
+  squeezed_total_count: 0
+  squeeze_io_saved: 0

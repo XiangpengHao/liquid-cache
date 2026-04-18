@@ -1,9 +1,9 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::Parser;
 use fastrace_tonic::FastraceServerLayer;
-use liquid_cache_benchmarks::setup_observability;
-use liquid_cache_common::{CacheEvictionStrategy, CacheMode};
-use liquid_cache_server::{LiquidCacheService, run_admin_server};
+use liquid_cache::{cache::NoHydration, cache_policies::LiquidPolicy};
+use liquid_cache_benchmarks::{BenchmarkMode, setup_observability};
+use liquid_cache_datafusion_server::{LiquidCacheService, run_admin_server};
 use log::info;
 use mimalloc::MiMalloc;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -36,21 +36,24 @@ struct CliArgs {
     disk_cache_dir: Option<PathBuf>,
 
     /// Cache mode
-    #[arg(long = "cache-mode", default_value = "liquid_eager_transcode")]
-    cache_mode: CacheMode,
+    #[arg(long = "cache-mode", default_value = "liquid")]
+    cache_mode: BenchmarkMode,
 
-    /// Openobserve auth token
-    #[arg(long)]
-    openobserve_auth: Option<String>,
+    /// Static files directory (only used in static_file_server mode)
+    #[arg(long = "static-dir", default_value = "static")]
+    static_dir: PathBuf,
+
+    /// Jaeger OTLP gRPC endpoint (for example: http://localhost:4317)
+    #[arg(long = "jaeger-endpoint")]
+    jaeger_endpoint: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = CliArgs::parse();
     setup_observability(
-        "liquid-cache-server",
-        opentelemetry::trace::SpanKind::Server,
-        args.openobserve_auth.as_deref(),
+        "liquid-cache-datafusion-server",
+        args.jaeger_endpoint.as_deref(),
     );
 
     let max_cache_bytes = args.max_cache_mb.map(|size| size * 1024 * 1024);
@@ -64,18 +67,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }));
     }
+    let squeeze_policy = args.cache_mode.to_squeeze_policy();
 
+    // LiquidCache server mode
     let ctx = LiquidCacheService::context()?;
-    let liquid_cache_server = LiquidCacheService::new(
+    let liquid_cache_datafusion_server = LiquidCacheService::new(
         ctx,
         max_cache_bytes,
         args.disk_cache_dir.clone(),
-        args.cache_mode,
-        CacheEvictionStrategy::Discard,
-    )?;
+        Box::new(LiquidPolicy::new()),
+        squeeze_policy,
+        Box::new(NoHydration::new()),
+    )
+    .await?;
 
-    let liquid_cache_server = Arc::new(liquid_cache_server);
-    let flight = FlightServiceServer::from_arc(liquid_cache_server.clone());
+    let liquid_cache_datafusion_server = Arc::new(liquid_cache_datafusion_server);
+    let flight = FlightServiceServer::from_arc(liquid_cache_datafusion_server.clone());
 
     info!("LiquidCache server listening on {}", args.address);
     info!("Admin server listening on {}", args.admin_address);
@@ -86,12 +93,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run both servers concurrently
     tokio::select! {
-        result = Server::builder().layer(FastraceServerLayer).add_service(flight).serve(args.address) => {
+        result = Server::builder().layer(FastraceServerLayer::default()).add_service(flight).serve(args.address) => {
             result?;
         },
-        result = run_admin_server(args.admin_address, liquid_cache_server) => {
+        result = run_admin_server(args.admin_address, liquid_cache_datafusion_server) => {
             result?;
-        },
+        }
     }
 
     fastrace::flush();

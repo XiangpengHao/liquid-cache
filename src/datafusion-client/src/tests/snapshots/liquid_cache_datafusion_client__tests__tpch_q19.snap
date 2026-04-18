@@ -1,0 +1,123 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│          revenue:         │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+│                           │
+│        mode: Final        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│        .l_discount)       │
+│                           │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│          filter:          │
+│   p_brand = Brand#12 AND  │
+│     p_container IN (SM    │
+│   CASE, SM BOX, SM PACK,  │
+│  SM PKG) AND l_quantity > │
+│    = Some(100),15,2 AND   │
+│     l_quantity <= Some    │
+│  (1100),15,2 AND p_size < │
+│ = 5 OR p_brand = Brand#23 │
+│   AND p_container IN (MED │
+│   BAG, MED BOX, MED PKG,  │
+│        MED PACK) AND      │
+│        l_quantity >=      │
+│     Some(1000),15,2 AND   ├──────────────┐
+│     l_quantity <= Some    │              │
+│  (2000),15,2 AND p_size   │              │
+│  <= 10 OR p_brand = Brand │              │
+│  #34 AND p_container IN   │              │
+│    (LG CASE, LG BOX, LG   │              │
+│      PACK, LG PKG) AND    │              │
+│     l_quantity >= Some    │              │
+│      (2000),15,2 AND      │              │
+│        l_quantity <=      │              │
+│     Some(3000),15,2 AND   │              │
+│        p_size <= 15       │              │
+│                           │              │
+│            on:            │              │
+│  (p_partkey = l_partkey)  │              │
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│    --------------------   ││    --------------------   │
+│          server:          ││          server:          │
+│  http://localhost:50051,  ││  http://localhost:50051,  │
+│      object_stores=[]     ││      object_stores=[]     │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││      RepartitionExec      │
+│    --------------------   ││    --------------------   │
+│          files: 1         ││ partition_count(in->out): │
+│      format: parquet      ││           1 -> 8          │
+│                           ││                           │
+│         predicate:        ││    partitioning_scheme:   │
+│  (p_brand = Brand#12 AND  ││     RoundRobinBatch(8)    │
+│     p_container IN (SM    ││                           │
+│    CASE, SM BOX, SM PACK  ││                           │
+│ , SM PKG) AND p_size <= 5 ││                           │
+│    OR p_brand = Brand#23  ││                           │
+│     AND p_container IN    ││                           │
+│   (MED BAG, MED BOX, MED  ││                           │
+│     PKG, MED PACK) AND    ││                           │
+│       p_size <= 10 OR     ││                           │
+│     p_brand = Brand#34    ││                           │
+│   AND p_container IN (LG  ││                           │
+│   CASE, LG BOX, LG PACK,  ││                           │
+│    LG PKG) AND p_size <=  ││                           │
+│     15) AND p_size >= 1   ││                           │
+└───────────────────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐
+                             │       DataSourceExec      │
+                             │    --------------------   │
+                             │          files: 1         │
+                             │      format: parquet      │
+                             │                           │
+                             │         predicate:        │
+                             │  (l_quantity >= Some(100) │
+                             │  ,15,2 AND l_quantity <=  │
+                             │     Some(1100),15,2 OR    │
+                             │     l_quantity >= Some    │
+                             │      (1000),15,2 AND      │
+                             │        l_quantity <=      │
+                             │     Some(2000),15,2 OR    │
+                             │     l_quantity >= Some    │
+                             │      (2000),15,2 AND      │
+                             │        l_quantity <=      │
+                             │    Some(3000),15,2) AND   │
+                             │    (l_shipmode = AIR OR   │
+                             │    l_shipmode = AIR REG   │
+                             │   ) AND l_shipinstruct =  │
+                             │    DELIVER IN PERSON AND  │
+                             │   DynamicFilter [ empty ] │
+                             └───────────────────────────┘

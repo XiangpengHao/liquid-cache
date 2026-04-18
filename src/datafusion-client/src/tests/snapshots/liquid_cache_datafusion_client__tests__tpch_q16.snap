@@ -1,0 +1,142 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│ supplier_cnt DESC, p_brand│
+│   ASC NULLS LAST, p_type  │
+│   ASC NULLS LAST, p_size  │
+│       ASC NULLS LAST      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│    supplier_cnt@3 DESC,   │
+│        p_brand@0 ASC      │
+│     NULLS LAST, p_type    │
+│     @1 ASC NULLS LAST,    │
+│     p_size@2 ASC NULLS    │
+│            LAST           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│      p_brand: p_brand     │
+│       p_size: p_size      │
+│       p_type: p_type      │
+│                           │
+│       supplier_cnt:       │
+│       count(alias1)       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│    aggr: count(alias1)    │
+│                           │
+│         group_by:         │
+│  p_brand, p_type, p_size  │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│ Hash([p_brand@0, p_type@1,│
+│        p_size@2], 8)      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│    aggr: count(alias1)    │
+│                           │
+│         group_by:         │
+│  p_brand, p_type, p_size  │
+│                           │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│         group_by:         │
+│  p_brand, p_type, p_size, │
+│           alias1          │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│ Hash([p_brand@0, p_type@1,│
+│   p_size@2, alias1@3], 8) │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│         group_by:         │
+│  p_brand, p_type, p_size, │
+│    ps_suppkey as alias1   │
+│                           │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│    join_type: LeftAnti    │
+│                           ├───────────────────────────────────────────┐
+│            on:            │                                           │
+│  (ps_suppkey = s_suppkey) │                                           │
+└─────────────┬─────────────┘                                           │
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│       ProjectionExec      │                             │   LiquidCacheClientExec   │
+│    --------------------   │                             │    --------------------   │
+│      p_brand: p_brand     │                             │          server:          │
+│       p_size: p_size      │                             │  http://localhost:50051,  │
+│       p_type: p_type      │                             │      object_stores=[]     │
+│                           │                             │                           │
+│        ps_suppkey:        │                             │                           │
+│         ps_suppkey        │                             │                           │
+└─────────────┬─────────────┘                             └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│        HashJoinExec       │                             │      RepartitionExec      │
+│    --------------------   │                             │    --------------------   │
+│            on:            │                             │ partition_count(in->out): │
+│  (p_partkey = ps_partkey) ├──────────────┐              │           1 -> 8          │
+│                           │              │              │                           │
+│                           │              │              │    partitioning_scheme:   │
+│                           │              │              │     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘              │              └─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││       DataSourceExec      │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          server:          ││          server:          ││          files: 1         │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││      format: parquet      │
+│      object_stores=[]     ││      object_stores=[]     ││                           │
+│                           ││                           ││         predicate:        │
+│                           ││                           ││  s_comment LIKE %Customer │
+│                           ││                           ││        %Complaints%       │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└───────────────────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││       DataSourceExec      │
+│    --------------------   ││    --------------------   │
+│          files: 1         ││          files: 1         │
+│      format: parquet      ││      format: parquet      │
+│                           ││                           │
+│         predicate:        ││         predicate:        │
+│  p_brand != Brand#45 AND  ││  DynamicFilter [ empty ]  │
+│       p_type NOT LIKE     ││                           │
+│      MEDIUM POLISHED%     ││                           │
+│   AND p_size IN (49, 14,  ││                           │
+│    23, 45, 19, 3, 36, 9)  ││                           │
+└───────────────────────────┘└───────────────────────────┘

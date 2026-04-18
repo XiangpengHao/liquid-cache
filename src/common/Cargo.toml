@@ -3,18 +3,22 @@ name = "liquid-cache-common"
 version = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-readme = { workspace = true }
+readme = "README.md"
 description = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
 arrow-flight = { workspace = true }
-arrow-schema = { workspace = true }
-arrow = { workspace = true }
-prost = { workspace = true }
+async-trait = { workspace = true }
 bytes = { workspace = true }
-url = { workspace = true }
+chrono = "0.4.44"
+futures = { workspace = true }
+object_store = { workspace = true }
+prost = { workspace = true }
 serde = { workspace = true }
+thiserror = "2.0.18"
+tokio = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

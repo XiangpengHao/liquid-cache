@@ -2,10 +2,8 @@
 
 <div align="center">
 
-[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache-client?label=liquid-cache-client)](https://crates.io/crates/liquid-cache-client)
-[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache-server?label=liquid-cache-server)](https://crates.io/crates/liquid-cache-server)
-[![docs.rs](https://img.shields.io/docsrs/liquid-cache-client?style=flat&label=client-doc)](https://docs.rs/liquid-cache-client/latest/liquid_cache_client/)
-[![docs.rs](https://img.shields.io/docsrs/liquid-cache-server?style=flat&label=server-doc)](https://docs.rs/liquid-cache-server/latest/liquid_cache_server/)
+[![Crates.io Version](https://img.shields.io/crates/v/liquid-cache?label=liquid-cache)](https://crates.io/crates/liquid-cache)
+[![docs.rs](https://img.shields.io/docsrs/liquid-cache?style=flat&label=docs)](https://docs.rs/liquid-cache/latest/liquid_cache/)
 
 </div>
 <div align="center">
@@ -13,138 +11,82 @@
 [![Rust CI](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml/badge.svg)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/XiangpengHao/liquid-cache/graph/badge.svg?token=yTeQR2lVnd)](https://codecov.io/gh/XiangpengHao/liquid-cache)
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/1a23a108cd2b4d2b9ffd2c2258599dfa)](https://app.codacy.com/gh/XiangpengHao/liquid-cache/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
-
+[![ClickBench](https://img.shields.io/badge/ClickBench-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
+[![TPC-H](https://img.shields.io/badge/TPC--H-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
+[![TPC-DS](https://img.shields.io/badge/TPC--DS-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 </div>
 
-LiquidCache is a pushdown cache for S3 --
-projections, filters, and aggregations are evaluated at the cache server before returning data to query engines (e.g., [DataFusion](https://github.com/apache/datafusion)).
-LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/).
+LiquidCache understands both your **data** and your **query**.
+- It transcodes storage **data** into an optimized, cache-only format, so you can keep using your favorite formats without worrying about performance.
+- It keeps the data that matters in memory and uses modern SSDs efficiently. For example, if your **query** groups by `year`, LiquidCache stores only the year in memory and keeps the full timestamp on disk.
 
-## Features
-LiquidCache is a radical redesign of caching: it **caches logical data** rather than its physical representations.
+LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/), [SpiralDB](https://spiraldb.com/), and [Bauplan](https://www.bauplanlabs.com).
 
-This means that:
-- LiquidCache transcodes S3 data (e.g., JSON, CSV, Parquet) into an in-house format -- more compressed, more NVMe friendly, more efficient for DataFusion operations. 
-- LiquidCache returns filtered/aggregated data to DataFusion, significantly reducing network IO.
+You may want to consider [Foyer](https://github.com/foyer-rs/foyer) if you're looking for a black-box cache: easier to setup, but not as "smart" as LiquidCache.
 
-Cons:
-- LiquidCache is not a transparent cache (consider [Foyer](https://github.com/foyer-rs/foyer) instead), it leverages query semantics to optimize caching. 
-## Architecture
+## Quick start
 
-Both LiquidCache and DataFusion run on cloud servers within the same region, but are configured differently:
+This quick start uses the core cache API from `src/core`.
+Add these dependencies to your project: `liquid-cache`, `arrow`, and `datafusion`.
+The example below shows insert, get, get with selection, and get with predicate pushdown.
 
-- LiquidCache often has a memory/CPU ratio of 16:1 (e.g., 64GB memory and 4 cores)
-- DataFusion often has a memory/CPU ratio of 2:1 (e.g., 32GB memory and 16 cores)
-
-Multiple DataFusion nodes share the same LiquidCache instance through network connections. 
-Each component can be scaled independently as the workload grows. 
-
-<img src="https://raw.githubusercontent.com/XiangpengHao/liquid-cache/main/dev/doc/arch.png" alt="architecture" width="400"/>
-
-
-## Integrate LiquidCache in 5 Minutes
-Check out the [examples](https://github.com/XiangpengHao/liquid-cache/tree/main/examples) folder for more details. 
-
-
-
-#### 1. Start a Cache Server:
 ```rust
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let liquid_cache = LiquidCacheService::new(
-        SessionContext::new(),
-        Some(1024 * 1024 * 1024),               // max memory cache size 1GB
-        Some(tempfile::tempdir()?.into_path()), // disk cache dir
-    )?;
+use arrow::array::{BooleanArray, UInt64Array};
+use arrow::buffer::BooleanBuffer;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
+use datafusion::scalar::ScalarValue;
+use liquid_cache::cache::{EntryID, LiquidCacheBuilder};
+use std::sync::Arc;
 
-    let flight = FlightServiceServer::new(liquid_cache);
+tokio_test::block_on(async {
+    let cache = LiquidCacheBuilder::new().build().await;
+    let entry_id = EntryID::from(1);
+    let values = Arc::new(UInt64Array::from(vec![10, 11, 12, 13, 14, 15]));
 
-    Server::builder()
-        .add_service(flight)
-        .serve("0.0.0.0:15214".parse()?)
-        .await?;
+    // 1) insert
+    cache.insert(entry_id, values.clone()).await;
 
-    Ok(())
-}
+    // 2) get
+    let all_rows = cache.get(&entry_id).await.expect("entry should exist");
+
+    // 3) get filtered (selection pushdown): keep rows 0, 2, 4
+    let selection = BooleanBuffer::from(vec![true, false, true, false, true, false]);
+    let selected_rows = cache
+        .get(&entry_id)
+        .with_selection(&selection)
+        .await
+        .expect("entry should exist");
+
+    // 4) get with predicate pushdown: col > 12
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+        Arc::new(Column::new("col", 0)),
+        Operator::Gt,
+        Arc::new(Literal::new(ScalarValue::UInt64(Some(12)))),
+    ));
+    let predicate_mask = cache
+        .eval_predicate(&entry_id, &predicate)
+        .await
+        .expect("entry should exist")
+        .expect("predicate should be evaluated in cache");
+
+    // Conceptual expectations:
+    assert_eq!(all_rows.as_ref(), values.as_ref()); // [10, 11, 12, 13, 14, 15]
+    assert_eq!(selected_rows.as_ref(), &UInt64Array::from(vec![10, 12, 14]));
+    assert_eq!(
+        predicate_mask,
+        BooleanArray::from(vec![
+        Some(false),
+        Some(false),
+        Some(false),
+        Some(true),
+        Some(true),
+        Some(true),
+        ]),
+    );
+});
 ```
-
-Or use our pre-built docker image:
-```bash
-docker run -p 15214:15214 -v ~/liquid_cache:/cache \
-  ghcr.io/xiangpenghao/liquid-cache/liquid-cache-server:latest \
-  /app/bench_server \
-  --address 0.0.0.0:15214 \
-  --disk-cache-dir /cache
-```
-
-#### 2. Connect to the cache server:
-Add the following dependency to your existing DataFusion project:
-```toml
-[dependencies]
-liquid-cache-client = "0.1.0"
-```
-
-Then, create a new DataFusion context with LiquidCache:
-```rust
-#[tokio::main]
-pub async fn main() -> Result<()> {
-/*==========================LiquidCache============================*/
-    let ctx = LiquidCacheBuilder::new(cache_server)
-        .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
-        .with_cache_mode(CacheMode::Liquid)
-        .build(SessionConfig::from_env()?)?;
-/*=================================================================*/
-
-    let ctx: Arc<SessionContext> = Arc::new(ctx);
-    ctx.register_table(table_name, ...)
-        .await?;
-    ctx.sql(&sql).await?.show().await?;
-    Ok(())
-}
-```
-
-## Community server
-
-We run a community server for LiquidCache at <https://hex.tail0766e4.ts.net:15214> (hosted on Xiangpeng's NAS, use at your own risk).
-
-You can try it out by running:
-```bash
-cargo run --bin example_client --release -- \
-    --cache-server https://hex.tail0766e4.ts.net:15214 \
-    --file "https://huggingface.co/datasets/HuggingFaceFW/fineweb/resolve/main/data/CC-MAIN-2024-51/000_00042.parquet" \
-    --query "SELECT COUNT(*) FROM \"000_00042\" WHERE \"token_count\" < 100"
-```
-
-Expected output (within a second):
-```
-+----------+
-| count(*) |
-+----------+
-| 44805    |
-+----------+
-```
-
-
-## Run ClickBench 
-
-#### 1. Setup the Repository
-```bash
-git clone https://github.com/XiangpengHao/liquid-cache.git
-cd liquid-cache
-```
-
-#### 2. Run a LiquidCache Server
-```bash
-cargo run --bin bench_server --release
-```
-
-#### 3. Run a ClickBench Client
-In a different terminal, run the ClickBench client:
-```bash
-cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file examples/nano_hits.parquet --output benchmark/data/results/nano_hits.json
-```
-(Note: replace `nano_hits.parquet` with the [real ClickBench dataset](https://github.com/ClickHouse/ClickBench) for full benchmarking)
-
 
 ## Development
 
@@ -154,39 +96,72 @@ See [dev/README.md](./dev/README.md)
 
 See [benchmark/README.md](./benchmark/README.md)
 
+## Performance troubleshooting
+
+### Use LiquidCache with DataFusion
+
+LiquidCache requires a few non-default DataFusion configurations:
+
+**ListingTable:**
+```rust
+let (ctx, _) = LiquidCacheLocalBuilder::new().build(config).await?;
+
+let listing_options = ParquetReadOptions::default()
+    .to_listing_options(&ctx.copied_config(), ctx.copied_table_options());
+ctx.register_listing_table("default", &table_path, listing_options, None, None)
+    .await?;
+```
+
+**Or register Parquet directly:**
+```rust
+let (ctx, _) = LiquidCacheLocalBuilder::new().build(config).await?;
+ctx.register_parquet("default", "examples/nano_hits.parquet", Default::default())
+    .await?;
+```
+
+### Disable background transcoding
+
+For performance testing, disable background transcoding:
+
+```rust
+let (ctx, _) = LiquidCacheLocalBuilder::new()
+    .with_squeeze_policy(Box::new(
+        squeeze_policies::Evict,
+    ))
+    .build(config)
+    .await?;
+```
+
+### x86-64 optimization
+
+LiquidCache is optimized for x86-64 with specific [instructions](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). On ARM (e.g., Apple Silicon), fallback implementations are used. Contributions are welcome.
+
+
 ## FAQ
 
 #### Can I use LiquidCache in production today?
 
-Not yet. While production readiness is our goal, we are still implementing features and polishing the system.
-LiquidCache began as a research project exploring new approaches to build cost-effective caching systems. Like most research projects, it takes time to mature, and we welcome your help!
-
-#### Does LiquidCache cache data or results?
-
-LiquidCache is a data cache. It caches logically equivalent but physically different data from object storage.
-
-LiquidCache does not cache query results - it only caches data, allowing the same cache to be used for different queries.
-
-#### Nightly Rust, seriously?
-
-We will transition to stable Rust once we believe the project is ready for production.
+Not yet. Production readiness is our goal, but we are still implementing features and polishing the system.
+LiquidCache began as a research project exploring new approaches to cost-effective caching. Like most research projects, it takes time to mature—we welcome your help.
 
 #### How does LiquidCache work?
 
-Check out our [paper](/dev/doc/liquid-cache-vldb.pdf) (under submission to VLDB) for more details. Meanwhile, we are working on a technical blog to introduce LiquidCache in a more accessible way.
+See our [paper](/dev/doc/liquid-cache-vldb.pdf) for details. We are also working on a technical blog to introduce LiquidCache in a more accessible way.
 
 #### How can I get involved?
 
-We are always looking for contributors! Any feedback or improvements are welcome. Feel free to explore the issue list and contribute to the project.
-If you want to get involved in the research process, feel free to [reach out](https://xiangpeng.systems/work-with-me/).
+We are always looking for contributors. Feedback and improvements are welcome—explore the issue list and contribute where you can.
+If you want to get involved in the research side, [reach out](https://xiangpeng.systems/work-with-me/).
 
 #### Who is behind LiquidCache?
 
 LiquidCache is a research project funded by:
+- [SpiralDB](https://spiraldb.com/)
 - [InfluxData](https://www.influxdata.com/)
+- [Bauplan](https://www.bauplanlabs.com)
 - Taxpayers of the state of Wisconsin and the federal government. 
 
-As such, LiquidCache is and will always be open source and free to use.
+LiquidCache is and will remain open source and free to use.
 
 Your support for science is greatly appreciated!
 

@@ -1,0 +1,127 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│         value DESC        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│        value@1 DESC       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│        ps_partkey:        │
+│         ps_partkey        │
+│                           │
+│           value:          │
+│ sum(partsupp.ps_supplycost│
+│   * partsupp.ps_availqty) │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│     NestedLoopJoinExec    ├────────────────────────────────────────────────────────────────────────┐
+└─────────────┬─────────────┘                                                                        │
+┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+│       ProjectionExec      │                                                          │       ProjectionExec      │
+│    --------------------   │                                                          │    --------------------   │
+│ sum(partsupp.ps_supplycost│                                                          │   join_proj_push_down_1:  │
+│  * partsupp.ps_availqty)  │                                                          │     CAST(sum(partsupp     │
+│     * Float64(0.0001):    │                                                          │      .ps_supplycost *     │
+│   CAST(CAST(sum(partsupp  │                                                          │  partsupp.ps_availqty) AS │
+│      .ps_supplycost *     │                                                          │     Decimal128(38, 15))   │
+│          partsupp         │                                                          │                           │
+│       .ps_availqty)       │                                                          │        ps_partkey:        │
+│   AS Float64) * 0.0001 AS │                                                          │         ps_partkey        │
+│     Decimal128(38, 15))   │                                                          │                           │
+│                           │                                                          │ sum(partsupp.ps_supplycost│
+│                           │                                                          │  * partsupp.ps_availqty): │
+│                           │                                                          │ sum(partsupp.ps_supplycost│
+│                           │                                                          │   * partsupp.ps_availqty) │
+└─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+│       AggregateExec       │                                                          │       AggregateExec       │
+│    --------------------   │                                                          │    --------------------   │
+│           aggr:           │                                                          │           aggr:           │
+│ sum(partsupp.ps_supplycost│                                                          │ sum(partsupp.ps_supplycost│
+│   * partsupp.ps_availqty) │                                                          │   * partsupp.ps_availqty) │
+│                           │                                                          │                           │
+│        mode: Final        │                                                          │    group_by: ps_partkey   │
+│                           │                                                          │                           │
+│                           │                                                          │           mode:           │
+│                           │                                                          │      FinalPartitioned     │
+└─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+│   CoalescePartitionsExec  │                                                          │      RepartitionExec      │
+│                           │                                                          │    --------------------   │
+│                           │                                                          │ partition_count(in->out): │
+│                           │                                                          │           8 -> 8          │
+│                           │                                                          │                           │
+│                           │                                                          │    partitioning_scheme:   │
+│                           │                                                          │  Hash([ps_partkey@0], 8)  │
+└─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+│       AggregateExec       │                                                          │       AggregateExec       │
+│    --------------------   │                                                          │    --------------------   │
+│           aggr:           │                                                          │           aggr:           │
+│ sum(partsupp.ps_supplycost│                                                          │ sum(partsupp.ps_supplycost│
+│   * partsupp.ps_availqty) │                                                          │   * partsupp.ps_availqty) │
+│                           │                                                          │                           │
+│       mode: Partial       │                                                          │    group_by: ps_partkey   │
+│                           │                                                          │       mode: Partial       │
+└─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+│        HashJoinExec       │                                                          │        HashJoinExec       │
+│    --------------------   │                                                          │    --------------------   │
+│            on:            ├──────────────┐                                           │            on:            ├──────────────┐
+│(n_nationkey = s_nationkey)│              │                                           │(n_nationkey = s_nationkey)│              │
+└─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││      RepartitionExec      │                             │   LiquidCacheClientExec   ││      RepartitionExec      │
+│    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
+│          server:          ││ partition_count(in->out): │                             │          server:          ││ partition_count(in->out): │
+│  http://localhost:50051,  ││           1 -> 8          │                             │  http://localhost:50051,  ││           1 -> 8          │
+│      object_stores=[]     ││                           │                             │      object_stores=[]     ││                           │
+│                           ││    partitioning_scheme:   │                             │                           ││    partitioning_scheme:   │
+│                           ││     RoundRobinBatch(8)    │                             │                           ││     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││       ProjectionExec      │                             │       DataSourceExec      ││       ProjectionExec      │
+│    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
+│          files: 1         ││        ps_availqty:       │                             │          files: 1         ││        ps_availqty:       │
+│      format: parquet      ││        ps_availqty        │                             │      format: parquet      ││        ps_availqty        │
+│                           ││                           │                             │                           ││                           │
+│         predicate:        ││       ps_supplycost:      │                             │         predicate:        ││        ps_partkey:        │
+│      n_name = GERMANY     ││       ps_supplycost       │                             │      n_name = GERMANY     ││         ps_partkey        │
+│                           ││                           │                             │                           ││                           │
+│                           ││        s_nationkey:       │                             │                           ││       ps_supplycost:      │
+│                           ││        s_nationkey        │                             │                           ││       ps_supplycost       │
+│                           ││                           │                             │                           ││                           │
+│                           ││                           │                             │                           ││        s_nationkey:       │
+│                           ││                           │                             │                           ││        s_nationkey        │
+└───────────────────────────┘└─────────────┬─────────────┘                             └───────────────────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+                             │        HashJoinExec       │                                                          │        HashJoinExec       │
+                             │    --------------------   │                                                          │    --------------------   │
+                             │            on:            ├──────────────┐                                           │            on:            ├──────────────┐
+                             │  (s_suppkey = ps_suppkey) │              │                                           │  (s_suppkey = ps_suppkey) │              │
+                             └─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘              │
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                             │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │                             │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+                             │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
+                             │          server:          ││          server:          │                             │          server:          ││          server:          │
+                             │  http://localhost:50051,  ││  http://localhost:50051,  │                             │  http://localhost:50051,  ││  http://localhost:50051,  │
+                             │      object_stores=[]     ││      object_stores=[]     │                             │      object_stores=[]     ││      object_stores=[]     │
+                             └─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                             │       DataSourceExec      ││       DataSourceExec      │                             │       DataSourceExec      ││       DataSourceExec      │
+                             │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
+                             │          files: 1         ││          files: 1         │                             │          files: 1         ││          files: 1         │
+                             │      format: parquet      ││      format: parquet      │                             │      format: parquet      ││      format: parquet      │
+                             │                           ││                           │                             │                           ││                           │
+                             │         predicate:        ││         predicate:        │                             │         predicate:        ││         predicate:        │
+                             │  DynamicFilter [ empty ]  ││  DynamicFilter [ empty ]  │                             │  DynamicFilter [ empty ]  ││  DynamicFilter [ empty ]  │
+                             └───────────────────────────┘└───────────────────────────┘                             └───────────────────────────┘└───────────────────────────┘

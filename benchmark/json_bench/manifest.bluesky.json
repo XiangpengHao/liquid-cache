@@ -1,0 +1,14 @@
+{
+	"name": "Bluesky",
+	"description": "Bluesky benchmark",
+	"tables": {
+		"bluesky": "benchmark/json_bench/data/bluesky.parquet"
+	},
+	"queries": [
+		"benchmark/json_bench/queries/q1.sql",
+		"benchmark/json_bench/queries/q2.sql",
+		"benchmark/json_bench/queries/q3.sql",
+		"benchmark/json_bench/queries/q4.sql",
+		"benchmark/json_bench/queries/q5.sql"
+	]
+}

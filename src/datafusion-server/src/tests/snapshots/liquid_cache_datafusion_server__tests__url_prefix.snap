@@ -1,0 +1,9 @@
+---
+source: src/datafusion-server/src/tests/mod.rs
+expression: reference
+---
++----------+
+| count(*) |
++----------+
+| 23113    |
++----------+

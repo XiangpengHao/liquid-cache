@@ -1,0 +1,117 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│custdist DESC, c_count DESC│
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│ custdist@1 DESC, c_count@0│
+│            DESC           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│      c_count: c_count     │
+│                           │
+│         custdist:         │
+│      count(Int64(1))      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│     group_by: c_count     │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│    Hash([c_count@0], 8)   │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│       aggr: count(1)      │
+│     group_by: c_count     │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│          c_count:         │
+│  count(orders.o_orderkey) │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│  count(orders.o_orderkey) │
+│                           │
+│    group_by: c_custkey    │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│   Hash([c_custkey@0], 8)  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│  count(orders.o_orderkey) │
+│                           │
+│    group_by: c_custkey    │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│      join_type: Left      │
+│                           ├──────────────┐
+│            on:            │              │
+│  (c_custkey = o_custkey)  │              │
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│    --------------------   ││    --------------------   │
+│          server:          ││          server:          │
+│  http://localhost:50051,  ││  http://localhost:50051,  │
+│      object_stores=[]     ││      object_stores=[]     │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││      RepartitionExec      │
+│    --------------------   ││    --------------------   │
+│          files: 1         ││ partition_count(in->out): │
+│      format: parquet      ││           1 -> 8          │
+│                           ││                           │
+│                           ││    partitioning_scheme:   │
+│                           ││     RoundRobinBatch(8)    │
+└───────────────────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐
+                             │       DataSourceExec      │
+                             │    --------------------   │
+                             │          files: 1         │
+                             │      format: parquet      │
+                             │                           │
+                             │         predicate:        │
+                             │    o_comment NOT LIKE     │
+                             │     %special%requests%    │
+                             └───────────────────────────┘

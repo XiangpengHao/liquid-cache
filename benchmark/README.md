@@ -33,14 +33,14 @@ done
 
 ```bash
 cargo run --release --bin bench_server
-cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet
+cargo run --release --bin clickbench_client -- --manifest benchmark/clickbench/manifest.json
 ```
 
 #### Advanced
 
 ```bash
 env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
-env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 42
+env RUST_LOG=info RUST_BACKTRACE=1 RUSTFLAGS='-C target-cpu=native' cargo run --release --bin clickbench_client -- --manifest benchmark/clickbench/manifest.json --query 42
 ```
 
 ## TPCH
@@ -56,6 +56,9 @@ uvx --from duckdb python tpch_gen.py --scale 0.01
 
 In NixOS, you want to set `env LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
 
+
+
+
 ### Run server (same as ClickBench)
 
 ```bash
@@ -68,6 +71,88 @@ cargo run --release --bin bench_server -- --cache-mode liquid_eager_transcode
 env RUST_LOG=info,clickbench_client=debug RUSTFLAGS='-C target-cpu=native' cargo run --release --bin tpch_client -- --query-dir benchmark/tpch/queries/ --data-dir benchmark/tpch/data/sf0.1  --iteration 3 --answer-dir benchmark/tpch/answers/sf0.1
 ```
 
+## StackOverflow
+
+### Prepare data
+
+The StackOverflow benchmark uses the CSV bundles published by TUM
+([math](https://db.in.tum.de/~schmidt/data/stackoverflow_math.tar.gz) /
+[DBA](https://db.in.tum.de/~schmidt/data/stackoverflow_dba.tar.gz)). By default
+it downloads the math archive, while `--mode ci` switches to the smaller DBA
+slice. Each tarball contains headerless CSV files that we load with DuckDB and
+export to Parquet.
+
+Requirements:
+- [`uv`](https://docs.astral.sh/uv/) (install once with `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+
+```bash
+# Full dataset (may take a while and needs ~15GB of free disk space)
+~/.cargo/bin/uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode full
+
+# CI-sized slice that keeps roughly the last five years of data (DBA site)
+~/.cargo/bin/uv run --with duckdb python benchmark/stackoverflow/setup_stackoverflow.py --mode ci
+```
+
+The helper automatically downloads `stackoverflow_schema.sql` from the same
+mirror and derives column definitions from it, so no local schema maintenance
+is required.
+
+The Parquet files are written to `benchmark/stackoverflow/data/<site>`, matching
+`benchmark/stackoverflow/manifest.json` (math) or
+`benchmark/stackoverflow/manifest.ci.json` (DBA). Use `--output-dir` if you want
+the files somewhere else.
+
+### Run benchmarks
+
+```bash
+cargo run --release --bin bench_server
+cargo run --release --bin clickbench_client -- --manifest benchmark/stackoverflow/manifest.json
+
+# Optional in-process run
+cargo run --release --bin in_process -- \
+  --manifest benchmark/stackoverflow/manifest.json \
+  --bench-mode liquid \
+  --max-cache-mb 256
+```
+
+## In process mode
+The benchmark uses a JSON manifest file to describe the data tables and queries to run.
+
+### JSON Format
+
+```json
+{
+  "name": "My Benchmark Suite",
+  "description": "Description of what this benchmark tests",
+  "tables": {
+    "table1": "data/table1.parquet",
+    "table2": "data/table2.parquet"
+  },
+  "queries": [
+    "queries/aggregation.sql",
+    "SELECT COUNT(*) FROM table1 WHERE col > 100",
+    "queries/complex_join.sql",
+    "SELECT t1.id, t2.name FROM table1 t1 JOIN table2 t2 ON t1.id = t2.id LIMIT 10"
+  ],
+  "object_stores": [
+    {
+      "url": "s3://my-bucket",
+      "options": {
+        "aws_access_key_id": "my-access-key",
+        "aws_secret_access_key": "my-secret-key",
+        "aws_region": "us-west-2"
+      }
+    },
+    {
+      "url": "s3://my-bucket-2",
+      "options": {
+        "aws_region": "eu-central-1",
+        "skip_signature": "true"
+      }
+    }
+  ]
+}
+```
 
 
 ## Profile
@@ -93,14 +178,6 @@ You can use [`parquet-viewer`](https://parquet-viewer.xiangpeng.systems) to view
 
 To collect cache trace, simply add `--cache-trace-dir benchmark/data/cache_trace` to the client command, for example:
 ```bash
-env RUST_LOG=info cargo run --bin clickbench_client --release -- --query-path benchmark/clickbench/queries/queries.sql --file benchmark/clickbench/data/hits.parquet --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
+env RUST_LOG=info cargo run --bin clickbench_client --release -- --manifest benchmark/clickbench/manifest.json --query 20 --iteration 2 --partitions 8 --cache-trace-dir benchmark/data/
 ```
 It will generate a parquet file that contains the cache trace for each query that the server executed.
-
-
-### Run encoding benchmarks
-
-```bash
-RUST_LOG=info RUSTFLAGS='-C target-cpu=native' cargo run --release --bin encoding -- --file benchmark/clickbench/data/hits.parquet --column 2
-```
-This will benchmark the encoding time of the `URL` column.

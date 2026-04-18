@@ -1,0 +1,21 @@
+[package]
+name = "liquid-cache-fuzz"
+version = "0.1.12"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1.4", features = ["derive"] }
+arrow = { workspace = true }
+liquid-cache = { workspace = true }
+
+[[bin]]
+name = "fsst_view_fuzz"
+path = "fuzz_targets/fsst_view.rs"
+test = false
+doc = false
+bench = false

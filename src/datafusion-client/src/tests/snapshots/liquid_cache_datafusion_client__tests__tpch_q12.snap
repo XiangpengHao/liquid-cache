@@ -1,0 +1,126 @@
+---
+source: src/datafusion-client/src/tests/mod.rs
+expression: displayable.tree_render().to_string()
+---
+┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│ l_shipmode ASC NULLS LAST │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│l_shipmode@0 ASC NULLS LAST│
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│      high_line_count:     │
+│    sum(CASE WHEN orders   │
+│     .o_orderpriority =    │
+│     Utf8("1-URGENT") OR   │
+│    orders.o_orderpriorit  │
+│  y = Utf8("2-HIGH") THEN  │
+│    Int64(1) ELSE Int64(0  │
+│           ) END)          │
+│                           │
+│        l_shipmode:        │
+│         l_shipmode        │
+│                           │
+│      low_line_count:      │
+│    sum(CASE WHEN orders   │
+│    .o_orderpriority !=    │
+│    Utf8("1-URGENT") AND   │
+│    orders.o_orderpriorit  │
+│  y != Utf8("2-HIGH") THEN │
+│   Int64(1) ELSE Int64(0)  │
+│            END)           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│    sum(CASE WHEN orders   │
+│     .o_orderpriority =    │
+│     1-URGENT OR orders    │
+│    .o_orderpriority = 2   │
+│ -HIGH THEN 1 ELSE 0 END), │
+│    sum(CASE WHEN orders   │
+│   .o_orderpriority != 1   │
+│     -URGENT AND orders    │
+│     .o_orderpriority !    │
+│   = 2-HIGH THEN 1 ELSE 0  │
+│            END)           │
+│                           │
+│    group_by: l_shipmode   │
+│                           │
+│           mode:           │
+│      FinalPartitioned     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           8 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│  Hash([l_shipmode@0], 8)  │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       AggregateExec       │
+│    --------------------   │
+│           aggr:           │
+│    sum(CASE WHEN orders   │
+│     .o_orderpriority =    │
+│     1-URGENT OR orders    │
+│    .o_orderpriority = 2   │
+│ -HIGH THEN 1 ELSE 0 END), │
+│    sum(CASE WHEN orders   │
+│   .o_orderpriority != 1   │
+│     -URGENT AND orders    │
+│     .o_orderpriority !    │
+│   = 2-HIGH THEN 1 ELSE 0  │
+│            END)           │
+│                           │
+│    group_by: l_shipmode   │
+│       mode: Partial       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│      RepartitionExec      │
+│    --------------------   │
+│ partition_count(in->out): │
+│           1 -> 8          │
+│                           │
+│    partitioning_scheme:   │
+│     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│        HashJoinExec       │
+│    --------------------   │
+│            on:            ├──────────────┐
+│ (l_orderkey = o_orderkey) │              │
+└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
+│    --------------------   ││    --------------------   │
+│          server:          ││          server:          │
+│  http://localhost:50051,  ││  http://localhost:50051,  │
+│      object_stores=[]     ││      object_stores=[]     │
+└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││       DataSourceExec      │
+│    --------------------   ││    --------------------   │
+│          files: 1         ││          files: 1         │
+│      format: parquet      ││      format: parquet      │
+│                           ││                           │
+│         predicate:        ││         predicate:        │
+│   (l_shipmode = MAIL OR   ││  DynamicFilter [ empty ]  │
+│     l_shipmode = SHIP)    ││                           │
+│     AND l_receiptdate >   ││                           │
+│      l_commitdate AND     ││                           │
+│        l_shipdate <       ││                           │
+│      l_commitdate AND     ││                           │
+│  l_receiptdate >= 1994-01 ││                           │
+│  -01 AND l_receiptdate <  ││                           │
+│         1995-01-01        ││                           │
+└───────────────────────────┘└───────────────────────────┘

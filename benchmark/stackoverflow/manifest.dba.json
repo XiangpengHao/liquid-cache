@@ -1,0 +1,30 @@
+{
+	"name": "StackOverflow DBA",
+	"description": "StackOverflow benchmark (DBA slice for CI)",
+	"tables": {
+		"Badges": "benchmark/stackoverflow/data/dba/Badges.parquet",
+		"CloseReasonTypes": "benchmark/stackoverflow/data/dba/CloseReasonTypes.parquet",
+		"Comments": "benchmark/stackoverflow/data/dba/Comments.parquet",
+		"LinkTypes": "benchmark/stackoverflow/data/dba/LinkTypes.parquet",
+		"PostHistoryTypes": "benchmark/stackoverflow/data/dba/PostHistoryTypes.parquet",
+		"PostLinks": "benchmark/stackoverflow/data/dba/PostLinks.parquet",
+		"Posts": "benchmark/stackoverflow/data/dba/Posts.parquet",
+		"PostTypes": "benchmark/stackoverflow/data/dba/PostTypes.parquet",
+		"Tags": "benchmark/stackoverflow/data/dba/Tags.parquet",
+		"Users": "benchmark/stackoverflow/data/dba/Users.parquet",
+		"Votes": "benchmark/stackoverflow/data/dba/Votes.parquet",
+		"VoteTypes": "benchmark/stackoverflow/data/dba/VoteTypes.parquet"
+	},
+	"queries": [
+		"benchmark/stackoverflow/queries/q0.sql",
+		"benchmark/stackoverflow/queries/q1.sql",
+		"benchmark/stackoverflow/queries/q2.sql",
+		"benchmark/stackoverflow/queries/q3.sql",
+		"benchmark/stackoverflow/queries/q4.sql",
+		"benchmark/stackoverflow/queries/q5.sql",
+		"benchmark/stackoverflow/queries/q6.sql",
+		"benchmark/stackoverflow/queries/q7.sql",
+		"benchmark/stackoverflow/queries/q8.sql",
+		"benchmark/stackoverflow/queries/q9.sql"
+	]
+}

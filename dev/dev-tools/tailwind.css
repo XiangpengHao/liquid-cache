@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@source not "./tailwindcss";
+@source not "./vendor/daisyui{,*}.mjs";
+
+@plugin "./vendor/daisyui.mjs";
+
+/* Optional for custom themes – Docs: https://daisyui.com/docs/themes/#how-to-add-a-new-custom-theme */
+@plugin "./vendor/daisyui-theme.mjs"{
+  /* custom theme here */
+}

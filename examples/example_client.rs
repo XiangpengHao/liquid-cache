@@ -1,24 +1,6 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
-use clap::{Parser, command};
+use clap::Parser;
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
-use liquid_cache_client::LiquidCacheBuilder;
-use liquid_cache_common::CacheMode;
+use liquid_cache_datafusion_client::LiquidCacheClientBuilder;
 use std::path::Path;
 use std::sync::Arc;
 use url::Url;
@@ -51,9 +33,8 @@ pub async fn main() -> Result<()> {
     let url = Url::parse(&args.file).unwrap();
     let object_store_url = format!("{}://{}", url.scheme(), url.host_str().unwrap_or_default());
 
-    let ctx = LiquidCacheBuilder::new(args.cache_server.clone())
+    let ctx = LiquidCacheClientBuilder::new(args.cache_server.clone())
         .with_object_store(ObjectStoreUrl::parse(object_store_url.as_str())?, None)
-        .with_cache_mode(CacheMode::Liquid)
         .build(SessionConfig::from_env()?)?;
     let ctx = Arc::new(ctx);
 

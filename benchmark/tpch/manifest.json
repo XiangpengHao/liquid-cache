@@ -1,0 +1,37 @@
+{
+	"name": "TPC-H",
+	"tables": {
+		"customer": "benchmark/tpch/data/sf0.1/customer.parquet",
+		"lineitem": "benchmark/tpch/data/sf0.1/lineitem.parquet",
+		"nation": "benchmark/tpch/data/sf0.1/nation.parquet",
+		"orders": "benchmark/tpch/data/sf0.1/orders.parquet",
+		"part": "benchmark/tpch/data/sf0.1/part.parquet",
+		"partsupp": "benchmark/tpch/data/sf0.1/partsupp.parquet",
+		"region": "benchmark/tpch/data/sf0.1/region.parquet",
+		"supplier": "benchmark/tpch/data/sf0.1/supplier.parquet"
+	},
+	"queries": [
+		"benchmark/tpch/queries/q1.sql",
+		"benchmark/tpch/queries/q2.sql",
+		"benchmark/tpch/queries/q3.sql",
+		"benchmark/tpch/queries/q4.sql",
+		"benchmark/tpch/queries/q5.sql",
+		"benchmark/tpch/queries/q6.sql",
+		"benchmark/tpch/queries/q7.sql",
+		"benchmark/tpch/queries/q8.sql",
+		"benchmark/tpch/queries/q9.sql",
+		"benchmark/tpch/queries/q10.sql",
+		"benchmark/tpch/queries/q11.sql",
+		"benchmark/tpch/queries/q12.sql",
+		"benchmark/tpch/queries/q13.sql",
+		"benchmark/tpch/queries/q14.sql",
+		"benchmark/tpch/queries/q15.sql",
+		"benchmark/tpch/queries/q16.sql",
+		"benchmark/tpch/queries/q17.sql",
+		"benchmark/tpch/queries/q18.sql",
+		"benchmark/tpch/queries/q19.sql",
+		"benchmark/tpch/queries/q20.sql",
+		"benchmark/tpch/queries/q21.sql",
+		"benchmark/tpch/queries/q22.sql"
+	]
+}
