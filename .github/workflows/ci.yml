@@ -11,7 +11,7 @@ on:
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: 1
-    RUSTFLAGS: "-C debuginfo=line-tables-only -C incremental=false"
+    RUSTFLAGS: "-C debuginfo=line-tables-only -C incremental=false --cfg tokio_unstable"
 
 jobs:
     check:
