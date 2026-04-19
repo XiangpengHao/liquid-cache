@@ -4176,7 +4176,6 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tokio",
- "tokio-metrics",
  "tonic",
  "url",
  "usdt",

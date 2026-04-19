@@ -13,7 +13,6 @@ liquid-cache-common = { workspace = true }
 liquid-cache-datafusion-local = { workspace = true }
 datafusion = { workspace = true }
 tokio = { workspace = true }
-tokio-metrics = "0.4.2"
 log = { workspace = true }
 arrow-flight = { workspace = true }
 tonic = { workspace = true }
