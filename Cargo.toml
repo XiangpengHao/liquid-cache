@@ -51,6 +51,7 @@ datafusion-physical-expr-common = { version = "53.0.0" }
 datafusion-proto = { version = "53.0.0" }
 async-trait = "0.1.89"
 futures = { version = "0.3.32", default-features = false, features = ["std"] }
+tokio-metrics = { version = "0.4", features = ["rt"] }
 tokio = { version = "1.50.0", features = ["rt-multi-thread"] }
 log = "0.4.29"
 tonic = { version = "0.14.5" }

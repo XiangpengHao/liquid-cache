@@ -7,7 +7,6 @@ readme = "README.md"
 description = { workspace = true }
 repository = { workspace = true }
 
-
 [dependencies]
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
@@ -18,6 +17,7 @@ log = { workspace = true }
 prost = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
+tokio-metrics = { workspace = true }
 url = { workspace = true }
 liquid-cache-datafusion = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }

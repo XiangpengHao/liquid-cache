@@ -2,6 +2,7 @@
 //!
 //! This server is used to manage the liquid cache server
 
+use crate::admin_server::task_monitor::LiquidTaskMonitor;
 use axum::http::{HeaderValue, Method};
 use axum::{
     Router,
@@ -16,6 +17,7 @@ mod disk_monitor;
 mod flamegraph;
 mod handlers;
 pub(crate) mod models;
+mod task_monitor;
 
 use crate::LiquidCacheService;
 use crate::admin_server::disk_monitor::DiskMonitor;
@@ -25,6 +27,7 @@ pub(crate) struct AppState {
     trace_id: AtomicU32,
     stats_id: AtomicU32,
     flamegraph: Arc<FlameGraph>,
+    task_monitor: Arc<LiquidTaskMonitor>,
     disk_monitor: Arc<DiskMonitor>,
 }
 
@@ -38,6 +41,7 @@ pub async fn run_admin_server(
         trace_id: AtomicU32::new(0),
         stats_id: AtomicU32::new(0),
         flamegraph: Arc::new(FlameGraph::new()),
+        task_monitor: Arc::new(LiquidTaskMonitor::new()),
         disk_monitor: Arc::new(DiskMonitor::new()),
     });
 
@@ -73,6 +77,8 @@ pub async fn run_admin_server(
         .route("/cache_stats", get(handlers::get_cache_stats_handler))
         .route("/start_flamegraph", get(handlers::start_flamegraph_handler))
         .route("/stop_flamegraph", get(handlers::stop_flamegraph_handler))
+        .route("/start_task_stats", get(handlers::start_task_stats_handler))
+        .route("/stop_task_stats", get(handlers::stop_task_stats_handler))
         .route(
             "/set_execution_stats",
             post(handlers::add_execution_stats_handler),
