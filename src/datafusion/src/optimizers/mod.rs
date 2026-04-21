@@ -144,9 +144,7 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
         let cache = &self.cache;
         let eager = self.eager_shredding;
         let rewritten = plan
-            .transform_up(|node| {
-                try_optimize_parquet_source(node, cache, eager, max_scan_bytes)
-            })
+            .transform_up(|node| try_optimize_parquet_source(node, cache, eager, max_scan_bytes))
             .unwrap();
         Ok(rewritten.data)
     }
