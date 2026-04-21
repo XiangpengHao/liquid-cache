@@ -100,6 +100,10 @@ pub(crate) fn variant_mappings_from_field(field: &Field) -> Option<Vec<VariantFi
 pub struct LocalModeOptimizer {
     cache: LiquidCacheParquetRef,
     eager_shredding: bool,
+    /// When set, parquet scans whose total file size exceeds this threshold
+    /// are left as vanilla DataFusion reads instead of being wrapped by
+    /// LiquidCache. `None` means cache every scan (current default).
+    max_scan_bytes: Option<u64>,
 }
 
 impl LocalModeOptimizer {
@@ -108,6 +112,7 @@ impl LocalModeOptimizer {
         Self {
             cache,
             eager_shredding,
+            max_scan_bytes: None,
         }
     }
 
@@ -116,7 +121,16 @@ impl LocalModeOptimizer {
         Self {
             cache,
             eager_shredding: true,
+            max_scan_bytes: None,
         }
+    }
+
+    /// Set maximum total file size (in bytes) for a parquet scan to be
+    /// routed through LiquidCache. Scans exceeding this are read directly
+    /// from the underlying parquet source.
+    pub fn with_max_scan_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_scan_bytes = Some(max_bytes);
+        self
     }
 }
 
@@ -126,11 +140,15 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, datafusion::error::DataFusionError> {
-        Ok(rewrite_data_source_plan(
-            plan,
-            &self.cache,
-            self.eager_shredding,
-        ))
+        let max_scan_bytes = self.max_scan_bytes;
+        let cache = &self.cache;
+        let eager = self.eager_shredding;
+        let rewritten = plan
+            .transform_up(|node| {
+                try_optimize_parquet_source(node, cache, eager, max_scan_bytes)
+            })
+            .unwrap();
+        Ok(rewritten.data)
     }
 
     fn name(&self) -> &str {
@@ -151,7 +169,7 @@ pub fn rewrite_data_source_plan(
     eager_shredding: bool,
 ) -> Arc<dyn ExecutionPlan> {
     let rewritten = plan
-        .transform_up(|node| try_optimize_parquet_source(node, cache, eager_shredding))
+        .transform_up(|node| try_optimize_parquet_source(node, cache, eager_shredding, None))
         .unwrap();
     rewritten.data
 }
@@ -160,12 +178,26 @@ fn try_optimize_parquet_source(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
     eager_shredding: bool,
+    max_scan_bytes: Option<u64>,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>, datafusion::error::DataFusionError> {
     let any_plan = plan.as_any();
     if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
         && let Some((file_scan_config, parquet_source)) =
             data_source_exec.downcast_to_file_source::<ParquetSource>()
     {
+        // Skip caching if the scan's total file size exceeds the threshold.
+        if let Some(max_bytes) = max_scan_bytes {
+            let total: u64 = file_scan_config
+                .file_groups
+                .iter()
+                .flat_map(|g| g.files())
+                .map(|f| f.object_meta.size)
+                .sum();
+            if total > max_bytes {
+                return Ok(Transformed::no(plan));
+            }
+        }
+
         let mut new_config = file_scan_config.clone();
 
         let mut new_source =

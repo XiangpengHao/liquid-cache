@@ -71,6 +71,9 @@ pub struct LiquidCacheLocalBuilder {
     span: fastrace::Span,
 
     eager_shredding: bool,
+
+    /// Maximum total file size for a scan to be routed through LiquidCache.
+    max_scan_bytes: Option<u64>,
 }
 
 impl Default for LiquidCacheLocalBuilder {
@@ -84,6 +87,7 @@ impl Default for LiquidCacheLocalBuilder {
             hydration_policy: Box::new(AlwaysHydrate::new()),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_datafusion_local_builder"),
             eager_shredding: true,
+            max_scan_bytes: None,
         }
     }
 }
@@ -142,6 +146,14 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
+    /// Set maximum total file size (in bytes) for a scan to be routed
+    /// through LiquidCache. Scans exceeding this threshold are read
+    /// directly from the parquet source, bypassing the cache entirely.
+    pub fn with_max_scan_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_scan_bytes = Some(max_bytes);
+        self
+    }
+
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub async fn build(
@@ -174,7 +186,10 @@ impl LiquidCacheLocalBuilder {
 
         let date_extract_optimizer = Arc::new(LineageOptimizer::new());
 
-        let optimizer = LocalModeOptimizer::new(cache_ref.clone(), self.eager_shredding);
+        let mut optimizer = LocalModeOptimizer::new(cache_ref.clone(), self.eager_shredding);
+        if let Some(max_bytes) = self.max_scan_bytes {
+            optimizer = optimizer.with_max_scan_bytes(max_bytes);
+        }
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)
