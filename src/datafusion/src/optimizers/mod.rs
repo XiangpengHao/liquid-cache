@@ -192,6 +192,11 @@ fn try_optimize_parquet_source(
                 .map(|f| f.object_meta.size)
                 .sum();
             if total > max_bytes {
+                log::info!(
+                    "Skipping LiquidCache for scan with total size {} bytes (threshold: {} bytes)",
+                    total,
+                    max_bytes
+                );
                 return Ok(Transformed::no(plan));
             }
         }
