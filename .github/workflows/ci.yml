@@ -28,3 +28,6 @@ jobs:
 
             - name: Run clippy
               run: cargo clippy --workspace --exclude dev-tools --all-targets --all-features -- -D warnings
+
+            - name: Run tests
+              run: cargo test --workspace --exclude dev-tools
