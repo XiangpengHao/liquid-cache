@@ -70,7 +70,6 @@ pub struct LiquidCacheLocalBuilder {
     hydration_policy: Box<dyn HydrationPolicy>,
     span: fastrace::Span,
 
-    eager_shredding: bool,
 }
 
 impl Default for LiquidCacheLocalBuilder {
@@ -83,7 +82,6 @@ impl Default for LiquidCacheLocalBuilder {
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             hydration_policy: Box::new(AlwaysHydrate::new()),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_datafusion_local_builder"),
-            eager_shredding: true,
         }
     }
 }
@@ -136,12 +134,6 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set enable shredding
-    pub fn with_eager_shredding(mut self, eager_shredding: bool) -> Self {
-        self.eager_shredding = eager_shredding;
-        self
-    }
-
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub async fn build(
@@ -174,7 +166,7 @@ impl LiquidCacheLocalBuilder {
 
         let date_extract_optimizer = Arc::new(LineageOptimizer::new());
 
-        let optimizer = LocalModeOptimizer::new(cache_ref.clone(), self.eager_shredding);
+        let optimizer = LocalModeOptimizer::new(cache_ref.clone());
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)

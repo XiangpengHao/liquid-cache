@@ -1068,9 +1068,7 @@ fn part_to_unit(expr: &Expr) -> Option<SupportedIntervalUnit> {
 
 #[cfg(test)]
 mod tests {
-    use crate::optimizers::{
-        DATE_MAPPING_METADATA_KEY, LocalModeOptimizer, VARIANT_MAPPING_METADATA_KEY,
-    };
+    use crate::optimizers::{DATE_MAPPING_METADATA_KEY, LocalModeOptimizer};
     use crate::{LiquidCacheParquet, VariantGetUdf, VariantToJsonUdf};
     use liquid_cache::cache::AlwaysHydrate;
 
@@ -1087,7 +1085,6 @@ mod tests {
     use liquid_cache::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::variant::{VariantArray, json_to_variant};
-    use serde::Deserialize;
     use tempfile::TempDir;
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1312,35 +1309,12 @@ mod tests {
         field_metadata_map
     }
 
-    #[derive(Debug, Deserialize)]
-    struct VariantMetadataEntry {
-        path: String,
-        #[serde(rename = "type")]
-        data_type: Option<String>,
-    }
-
-    fn parse_variant_metadata(value: &str) -> Vec<VariantMetadataEntry> {
-        serde_json::from_str(value).unwrap_or_else(|_| {
-            vec![VariantMetadataEntry {
-                path: value.to_string(),
-                data_type: None,
-            }]
-        })
-    }
-
-    fn variant_paths_from_metadata(value: &str) -> Vec<String> {
-        parse_variant_metadata(value)
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect()
-    }
-
-    /// Assert metadata on physical plan matches expected date and variant extractions
+    /// Assert metadata on physical plan matches expected date extractions.
     async fn assert_metadata(
         ctx: &SessionContext,
         sql: &str,
         expected_date: Vec<(&str, &str)>,
-        expected_variant: Vec<&str>,
+        _expected_variant: Vec<&str>,
     ) {
         let df = ctx.sql(sql).await.unwrap();
         let (state, plan) = df.into_parts();
@@ -1348,9 +1322,7 @@ mod tests {
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
 
         let date_metadata = extract_field_metadata(&physical_plan, DATE_MAPPING_METADATA_KEY);
-        let variant_metadata = extract_field_metadata(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
 
-        // Check date metadata
         let expected_date_map: HashMap<String, String> = expected_date
             .into_iter()
             .map(|(col, val)| (col.to_string(), val.to_string()))
@@ -1360,31 +1332,6 @@ mod tests {
             "date metadata mismatch for SQL: {}",
             sql
         );
-
-        // Check variant metadata
-        if expected_variant.is_empty() {
-            assert!(
-                !variant_metadata.contains_key("data"),
-                "variant metadata should not be present for SQL: {}",
-                sql
-            );
-        } else {
-            let mut actual = variant_metadata
-                .get("data")
-                .map(|v| variant_paths_from_metadata(v))
-                .unwrap_or_default();
-            actual.sort();
-            let mut expected: Vec<String> = expected_variant
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect();
-            expected.sort();
-            assert_eq!(
-                actual, expected,
-                "variant metadata mismatch for SQL: {}",
-                sql
-            );
-        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1739,7 +1686,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn variant_get_type_hint_propagated() {
+    async fn variant_get_type_hint_does_not_emit_metadata() {
         let (_dir, ctx, _) = setup_variant_table().await;
 
         let df = ctx
@@ -1750,17 +1697,11 @@ mod tests {
         let optimized = state.optimize(&plan).unwrap();
         let physical_plan = state.create_physical_plan(&optimized).await.unwrap();
 
-        let metadata = extract_field_metadata(&physical_plan, VARIANT_MAPPING_METADATA_KEY);
-
-        let entries = metadata
-            .get("data")
-            .map(|value| parse_variant_metadata(value))
-            .unwrap_or_default();
-        let entry = entries
-            .iter()
-            .find(|entry| entry.path == "name")
-            .expect("variant metadata entry for name");
-        assert_eq!(entry.data_type.as_deref(), Some("Utf8"));
+        let metadata = extract_field_metadata(&physical_plan, DATE_MAPPING_METADATA_KEY);
+        assert!(
+            !metadata.contains_key("data"),
+            "variant_get should not emit cache metadata"
+        );
     }
 
     #[tokio::test]
