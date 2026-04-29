@@ -103,7 +103,7 @@ async fn create_session_context_with_liquid_cache(
     let mut config = SessionConfig::new();
     config.options_mut().execution.target_partitions = 4;
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(cache_size_bytes)
+        .with_max_memory_bytes(cache_size_bytes)
         .with_cache_dir(cache_dir.to_path_buf())
         .with_squeeze_policy(squeeze_policy)
         .with_cache_policy(Box::new(LiquidPolicy::new()))
@@ -342,7 +342,7 @@ async fn test_provide_schema2() {
     config.options_mut().execution.target_partitions = 4;
     let (liquid_ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_max_cache_bytes(1024 * 1024)
+        .with_max_memory_bytes(1024 * 1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(config)
         .await

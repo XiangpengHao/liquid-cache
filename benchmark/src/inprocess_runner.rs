@@ -194,7 +194,7 @@ pub struct InProcessBenchmarkRunner {
     pub iteration: u32,
     pub reset_cache: bool,
     pub partitions: Option<usize>,
-    pub max_cache_mb: Option<usize>,
+    pub max_memory_mb: Option<usize>,
     pub flamegraph_dir: Option<PathBuf>,
     pub query_filter: Option<usize>,
     pub cache_dir: Option<PathBuf>,
@@ -215,7 +215,7 @@ impl InProcessBenchmarkRunner {
             iteration: 3,
             reset_cache: false,
             partitions: None,
-            max_cache_mb: None,
+            max_memory_mb: None,
             flamegraph_dir: None,
             query_filter: None,
             cache_dir: None,
@@ -249,8 +249,8 @@ impl InProcessBenchmarkRunner {
         self
     }
 
-    pub fn with_max_cache_mb(mut self, max_cache_mb: Option<usize>) -> Self {
-        self.max_cache_mb = max_cache_mb;
+    pub fn with_max_memory_mb(mut self, max_memory_mb: Option<usize>) -> Self {
+        self.max_memory_mb = max_memory_mb;
         self
     }
 
@@ -294,7 +294,7 @@ impl InProcessBenchmarkRunner {
         }
 
         let cache_size = self
-            .max_cache_mb
+            .max_memory_mb
             .map(|size| size * 1024 * 1024)
             .unwrap_or(usize::MAX);
 
@@ -323,7 +323,7 @@ impl InProcessBenchmarkRunner {
             }
             InProcessBenchmarkMode::Arrow => {
                 let v = LiquidCacheLocalBuilder::new()
-                    .with_max_cache_bytes(cache_size)
+                    .with_max_memory_bytes(cache_size)
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
@@ -334,19 +334,18 @@ impl InProcessBenchmarkRunner {
             }
             InProcessBenchmarkMode::Liquid => {
                 let v = LiquidCacheLocalBuilder::new()
-                    .with_max_cache_bytes(cache_size)
+                    .with_max_memory_bytes(cache_size)
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
                     .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-                    .with_eager_shredding(true)
                     .build(session_config)
                     .await?;
                 (v.0, Some(v.1))
             }
             InProcessBenchmarkMode::LiquidNoSqueeze => {
                 let v = LiquidCacheLocalBuilder::new()
-                    .with_max_cache_bytes(cache_size)
+                    .with_max_memory_bytes(cache_size)
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))

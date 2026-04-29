@@ -1,22 +1,17 @@
 use arrow::{
-    array::{Array, ArrayRef, AsArray, BooleanArray},
+    array::{Array, ArrayRef, BooleanArray},
     buffer::BooleanBuffer,
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use liquid_cache::cache::{CacheExpression, LiquidCache, LiquidExpr};
-use liquid_cache::utils::VariantSchema;
-use liquid_cache::utils::typed_struct_contains_path;
 use parquet::arrow::arrow_reader::ArrowPredicate;
-use parquet_variant_compute::{VariantArray, VariantType, shred_variant, unshred_variant};
 
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
-    optimizers::{
-        DATE_MAPPING_METADATA_KEY, STRING_FINGERPRINT_METADATA_KEY, variant_mappings_from_field,
-    },
+    optimizers::{DATE_MAPPING_METADATA_KEY, STRING_FINGERPRINT_METADATA_KEY},
 };
 use std::sync::Arc;
 
@@ -48,17 +43,6 @@ fn infer_expression(field: &Field) -> Option<CacheExpression> {
         && is_string_type(field.data_type())
     {
         return Some(CacheExpression::substring_search());
-    }
-    if field.try_extension_type::<VariantType>().is_ok()
-        && let Some(mappings) = variant_mappings_from_field(field)
-    {
-        let typed_specs: Vec<_> = mappings
-            .into_iter()
-            .filter_map(|mapping| mapping.data_type.map(|data_type| (mapping.path, data_type)))
-            .collect();
-        if !typed_specs.is_empty() {
-            return Some(CacheExpression::variant_get_many(typed_specs));
-        }
     }
     None
 }
@@ -180,17 +164,12 @@ impl CachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        let mut array = self
-            .cache_store
+        self.cache_store
             .get(&entry_id)
             .with_selection(filter)
             .with_optional_expression_hint(self.expression())
             .read()
-            .await?;
-        if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
-            array = transformed;
-        }
-        Some(array)
+            .await
     }
 
     #[cfg(test)]
@@ -209,10 +188,6 @@ impl CachedColumn {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
-        let mut array = array;
-        if let Some(transformed) = maybe_shred_variant_array(&array, self.field.as_ref()) {
-            array = transformed;
-        }
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
             .await;
@@ -220,153 +195,10 @@ impl CachedColumn {
     }
 }
 
-fn maybe_shred_variant_array(array: &ArrayRef, field: &Field) -> Option<ArrayRef> {
-    let mappings = variant_mappings_from_field(field)?;
-    let typed_specs: Vec<(String, DataType)> = mappings
-        .into_iter()
-        .filter_map(|mapping| mapping.data_type.map(|data_type| (mapping.path, data_type)))
-        .collect();
-    if typed_specs.is_empty() {
-        return None;
-    }
-    shred_variant_array(array, field, &typed_specs)
-}
-
-fn shred_variant_array(
-    array: &ArrayRef,
-    field: &Field,
-    specs: &[(String, DataType)],
-) -> Option<ArrayRef> {
-    if specs.is_empty() {
-        return None;
-    }
-
-    let variant_array = VariantArray::try_new(array.as_ref()).ok()?;
-    let missing_specs: Vec<_> = specs
-        .iter()
-        .filter(|(path, _)| !variant_contains_typed_field(&variant_array, path))
-        .collect();
-    if missing_specs.is_empty() {
-        return None;
-    }
-
-    let target_fields = match field.data_type() {
-        DataType::Struct(fields) => fields.clone(),
-        _ => return None,
-    };
-    let typed_schema = target_fields
-        .iter()
-        .find(|child| child.name() == "typed_value")
-        .cloned()?;
-    let mut schema = VariantSchema::new(Some(typed_schema.as_ref()));
-    for (path, data_type) in missing_specs {
-        schema.insert_path(path, data_type);
-    }
-    let shredding_schema = schema.shredding_type()?;
-    let unshredded = unshred_variant(&variant_array).ok()?;
-    let shredded = shred_variant(&unshredded, &shredding_schema).ok()?;
-    Some(Arc::new(shredded.into_inner()))
-}
-
-fn variant_contains_typed_field(array: &VariantArray, path: &str) -> bool {
-    let Some(typed_field) = array.typed_value_field() else {
-        return false;
-    };
-    let Some(typed_root) = typed_field.as_struct_opt() else {
-        return false;
-    };
-    typed_struct_contains_path(typed_root, path)
-}
-
 fn is_string_type(data_type: &DataType) -> bool {
     match data_type {
         DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => true,
         DataType::Dictionary(_, value_type) => is_string_type(value_type.as_ref()),
         _ => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::optimizers::{
-        VARIANT_MAPPING_METADATA_KEY, VariantField, enrich_variant_field_type,
-    };
-    use arrow::array::{ArrayRef, StringArray, StructArray};
-    use parquet::variant::{VariantType, json_to_variant};
-    use serde_json::json;
-    use std::collections::HashMap;
-
-    #[test]
-    fn shredding_adds_all_variant_paths() {
-        let values = StringArray::from(vec![
-            Some(r#"{"name":"Alice","age":30}"#),
-            Some(r#"{"name":"Bob","age":27}"#),
-        ]);
-        let variant = json_to_variant(&(Arc::new(values) as ArrayRef)).expect("variant");
-
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            VARIANT_MAPPING_METADATA_KEY.to_string(),
-            serde_json::to_string(&vec![
-                json!({"path": "name", "type": "Utf8"}),
-                json!({"path": "age", "type": "Int64"}),
-            ])
-            .unwrap(),
-        );
-
-        let variant_fields = vec![
-            VariantField {
-                path: "name".to_string(),
-                data_type: Some(DataType::Utf8),
-            },
-            VariantField {
-                path: "age".to_string(),
-                data_type: Some(DataType::Int64),
-            },
-        ];
-
-        let base_field = Field::new("variant", variant.inner().data_type().clone(), true)
-            .with_extension_type(VariantType)
-            .with_metadata(metadata);
-        let enriched = enrich_variant_field_type(base_field.as_ref(), &variant_fields)
-            .with_metadata(base_field.metadata().clone());
-        let array: ArrayRef = ArrayRef::from(variant);
-
-        let shredded = maybe_shred_variant_array(&array, enriched.as_ref())
-            .expect("variant should be shredded");
-        let shredded_struct = shredded
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("struct array");
-        let typed_value = shredded_struct
-            .column_by_name("typed_value")
-            .expect("typed_value column");
-        let typed_struct = typed_value
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("typed struct");
-
-        let name_struct = typed_struct
-            .column_by_name("name")
-            .expect("name path")
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("name struct");
-        let name_values = name_struct
-            .column_by_name("typed_value")
-            .expect("name typed value");
-        assert_eq!(name_values.data_type(), &DataType::Utf8);
-
-        let age_struct = typed_struct
-            .column_by_name("age")
-            .expect("age path")
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("age struct");
-        let age_values = age_struct
-            .column_by_name("typed_value")
-            .expect("age typed value");
-        assert_eq!(age_values.data_type(), &DataType::Int64);
     }
 }

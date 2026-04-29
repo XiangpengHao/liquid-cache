@@ -23,7 +23,7 @@ use crate::sync::Arc;
 /// tokio_test::block_on(async {
 ///     let _storage = LiquidCacheBuilder::new()
 ///         .with_batch_size(8192)
-///         .with_max_cache_bytes(1024 * 1024 * 1024)
+///         .with_max_memory_bytes(1024 * 1024 * 1024)
 ///         .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///         .build()
 ///         .await;
@@ -31,11 +31,12 @@ use crate::sync::Arc;
 /// ```
 pub struct LiquidCacheBuilder {
     batch_size: usize,
-    max_cache_bytes: usize,
+    max_memory_bytes: usize,
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
     io_context: Option<Arc<dyn IoContext>>,
+    squeeze_victims_concurrently: bool,
 }
 
 impl Default for LiquidCacheBuilder {
@@ -49,11 +50,12 @@ impl LiquidCacheBuilder {
     pub fn new() -> Self {
         Self {
             batch_size: 8192,
-            max_cache_bytes: 1024 * 1024 * 1024,
+            max_memory_bytes: 1024 * 1024 * 1024,
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_context: None,
+            squeeze_victims_concurrently: !cfg!(test),
         }
     }
 
@@ -64,10 +66,10 @@ impl LiquidCacheBuilder {
         self
     }
 
-    /// Set the max cache bytes for the cache.
+    /// Set the max memory bytes for the cache.
     /// Default is 1GB.
-    pub fn with_max_cache_bytes(mut self, max_cache_bytes: usize) -> Self {
-        self.max_cache_bytes = max_cache_bytes;
+    pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
+        self.max_memory_bytes = max_memory_bytes;
         self
     }
 
@@ -99,6 +101,12 @@ impl LiquidCacheBuilder {
         self
     }
 
+    /// Set whether cache victims are squeezed concurrently.
+    pub fn with_squeeze_victims_concurrently(mut self, enabled: bool) -> Self {
+        self.squeeze_victims_concurrently = enabled;
+        self
+    }
+
     /// Build the cache storage.
     ///
     /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
@@ -118,11 +126,12 @@ impl LiquidCacheBuilder {
         };
         Arc::new(LiquidCache::new(
             self.batch_size,
-            self.max_cache_bytes,
+            self.max_memory_bytes,
             self.squeeze_policy,
             self.cache_policy,
             self.hydration_policy,
             io_worker,
+            self.squeeze_victims_concurrently,
         ))
     }
 }

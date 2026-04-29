@@ -27,9 +27,9 @@ struct CliArgs {
     #[arg(long = "abort-on-panic")]
     abort_on_panic: bool,
 
-    /// Maximum cache size in MB
-    #[arg(long = "max-cache-mb")]
-    max_cache_mb: Option<usize>,
+    /// Maximum memory size in MB
+    #[arg(long = "max-memory-mb")]
+    max_memory_mb: Option<usize>,
 
     /// Path to disk cache directory
     #[arg(long = "disk-cache-dir")]
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.jaeger_endpoint.as_deref(),
     );
 
-    let max_cache_bytes = args.max_cache_mb.map(|size| size * 1024 * 1024);
+    let max_memory_bytes = args.max_memory_mb.map(|size| size * 1024 * 1024);
 
     if args.abort_on_panic {
         // Be loud and crash loudly if any thread panics.
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = LiquidCacheService::context()?;
     let liquid_cache_datafusion_server = LiquidCacheService::new(
         ctx,
-        max_cache_bytes,
+        max_memory_bytes,
         args.disk_cache_dir.clone(),
         Box::new(LiquidPolicy::new()),
         squeeze_policy,

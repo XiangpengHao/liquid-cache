@@ -51,7 +51,7 @@ fn main() {
     let io_context = Arc::new(DefaultIoContext::new(store));
     let storage = tokio_test::block_on(async {
         LiquidCacheBuilder::new()
-            .with_max_cache_bytes(500 * 1024 * 1024)
+            .with_max_memory_bytes(500 * 1024 * 1024)
             .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
             .with_cache_policy(Box::new(FiloPolicy::new()))
             .with_io_context(io_context)

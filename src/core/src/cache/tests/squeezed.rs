@@ -27,7 +27,7 @@ async fn read_squeezed_date_time() {
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_max_cache_bytes(array_size * 2)
+        .with_max_memory_bytes(array_size * 2)
         .with_io_context(Arc::new(DefaultIoContext::new(
             t4::mount(temp_dir.path().join("liquid_cache.t4"))
                 .await
@@ -92,7 +92,7 @@ async fn read_squeezed_variant_path() {
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_max_cache_bytes(array_size * 3 / 2)
+        .with_max_memory_bytes(array_size * 3 / 2)
         .with_io_context(Arc::new(DefaultIoContext::new(
             t4::mount(temp_dir.path().join("liquid_cache.t4"))
                 .await
@@ -154,7 +154,7 @@ async fn read_squeezed_int64_array() {
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_max_cache_bytes(array_size * 2)
+        .with_max_memory_bytes(array_size * 2)
         .with_io_context(Arc::new(DefaultIoContext::new(
             t4::mount(temp_dir.path().join("liquid_cache.t4"))
                 .await

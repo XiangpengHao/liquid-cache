@@ -124,11 +124,11 @@ impl LiquidCacheService {
     /// # Arguments
     ///
     /// * `ctx` - The [SessionContext] to use
-    /// * `max_cache_bytes` - The maximum number of bytes to cache in memory
+    /// * `max_memory_bytes` - The maximum number of bytes to cache in memory
     /// * `disk_cache_dir` - The directory to store the disk cache
     pub async fn new(
         ctx: SessionContext,
-        max_cache_bytes: Option<usize>,
+        max_memory_bytes: Option<usize>,
         disk_cache_dir: Option<PathBuf>,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
@@ -145,7 +145,7 @@ impl LiquidCacheService {
         Ok(Self {
             inner: LiquidCacheServiceInner::new(
                 Arc::new(ctx),
-                max_cache_bytes,
+                max_memory_bytes,
                 disk_cache_dir,
                 cache_policy,
                 squeeze_policy,

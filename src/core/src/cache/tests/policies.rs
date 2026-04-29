@@ -12,7 +12,7 @@ async fn default_policies() {
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_max_cache_bytes(capacity)
+        .with_max_memory_bytes(capacity)
         .build()
         .await;
 
@@ -40,7 +40,7 @@ async fn insert_wont_fit_cache() {
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-        .with_max_cache_bytes(capacity)
+        .with_max_memory_bytes(capacity)
         .build()
         .await;
     cache.insert(EntryID::from(0), test_array.clone()).await;

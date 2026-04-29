@@ -46,9 +46,9 @@ struct InProcessBenchmark {
     #[arg(long)]
     pub partitions: Option<usize>,
 
-    /// Maximum cache size in bytes
-    #[arg(long = "max-cache-mb")]
-    pub max_cache_mb: Option<usize>,
+    /// Maximum memory size in MB
+    #[arg(long = "max-memory-mb")]
+    pub max_memory_mb: Option<usize>,
 
     /// Directory to write flamegraph SVG files to
     #[arg(long = "flamegraph-dir")]
@@ -78,7 +78,7 @@ impl InProcessBenchmark {
             .with_reset_cache(self.reset_cache)
             .with_perf_events(self.perf_events)
             .with_partitions(self.partitions)
-            .with_max_cache_mb(self.max_cache_mb)
+            .with_max_memory_mb(self.max_memory_mb)
             .with_flamegraph_dir(self.flamegraph_dir.clone())
             .with_cache_dir(self.cache_dir.clone())
             .with_query_filter(self.query_index)

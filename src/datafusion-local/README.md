@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new().unwrap();
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
+        .with_max_memory_bytes(1024 * 1024 * 1024) // 1GB
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_cache_policy(Box::new(FiloPolicy::new()))
         .build(SessionConfig::new())

@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::{
     cache::LiquidCacheParquetRef,
-    optimizers::enrich_schema_for_cache,
     reader::{
         plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
         runtime::LiquidStreamBuilder,
@@ -222,7 +221,7 @@ impl FileOpener for LiquidParquetOpener {
                 Arc::clone(&logical_file_schema),
                 Arc::clone(&physical_file_schema),
             ));
-            let cache_full_schema = enrich_schema_for_cache(&physical_file_schema);
+            let cache_full_schema = Arc::clone(&physical_file_schema);
             options = options.with_schema(Arc::clone(&physical_file_schema));
             reader_metadata =
                 ArrowReaderMetadata::try_new(Arc::clone(reader_metadata.metadata()), options)?;

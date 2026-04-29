@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:?}", temp_dir);
 
     let (_ctx, storage) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 1024) // 1MB
+        .with_max_memory_bytes(1024 * 1024) // 1MB
         .with_cache_dir(temp_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_cache_policy(Box::new(LiquidPolicy::new()))

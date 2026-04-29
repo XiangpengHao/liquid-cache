@@ -21,8 +21,8 @@ impl BudgetAccounting {
         self.used_disk_bytes.store(0, Ordering::Relaxed);
     }
 
-    /// Try to reserve space in the cache.
-    /// Returns ok if the space was reserved, err if the cache is full.
+    /// Try to reserve memory in the cache.
+    /// Returns ok if the memory was reserved, err if the memory budget is full.
     pub(super) fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
         let used = self.used_memory_bytes.load(Ordering::Relaxed);
         if used + request_bytes > self.max_memory_bytes {
@@ -40,8 +40,8 @@ impl BudgetAccounting {
         }
     }
 
-    /// Adjust the cache size after transcoding.
-    /// Returns true if the size was adjusted, false if the cache is full, when new_size is larger than old_size.
+    /// Adjust memory usage after transcoding.
+    /// Returns ok if the usage was adjusted, err if the memory budget is full when new_size is larger than old_size.
     pub(super) fn try_update_memory_usage(
         &self,
         old_size: usize,

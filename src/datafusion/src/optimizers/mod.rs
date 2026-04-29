@@ -2,9 +2,9 @@
 
 mod lineage_opt;
 
-use std::{str::FromStr, sync::Arc};
+use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, Fields, Schema, SchemaRef};
+use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
@@ -19,78 +19,14 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 pub use lineage_opt::LineageOptimizer;
-pub(crate) use lineage_opt::VariantField;
 
 use crate::{
     LiquidCacheParquetRef, LiquidParquetSource,
     optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory, serialize_date_part},
 };
-use liquid_cache::utils::VariantSchema;
-use serde::{Deserialize, Serialize};
 
 pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
-pub(crate) const VARIANT_MAPPING_METADATA_KEY: &str = "liquid.cache.variant_path";
-pub(crate) const VARIANT_MAPPING_TYPE_METADATA_KEY: &str = "liquid.cache.variant_type";
 pub(crate) const STRING_FINGERPRINT_METADATA_KEY: &str = "liquid.cache.string_fingerprint";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct VariantMappingSerdeEntry {
-    path: String,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    data_type: Option<String>,
-}
-
-pub(crate) fn serialize_variant_mappings(fields: &[VariantField]) -> Option<String> {
-    if fields.is_empty() {
-        return None;
-    }
-
-    let entries: Vec<VariantMappingSerdeEntry> = fields
-        .iter()
-        .map(|field| VariantMappingSerdeEntry {
-            path: field.path.clone(),
-            data_type: field
-                .data_type
-                .as_ref()
-                .map(|data_type| data_type.to_string()),
-        })
-        .collect();
-
-    serde_json::to_string(&entries).ok()
-}
-
-fn deserialize_variant_mappings(raw: &str) -> Option<Vec<VariantField>> {
-    let entries: Vec<VariantMappingSerdeEntry> = serde_json::from_str(raw).ok()?;
-    let mut fields = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let data_type = match entry.data_type {
-            Some(spec) => Some(DataType::from_str(&spec).ok()?),
-            None => None,
-        };
-        fields.push(VariantField {
-            path: entry.path,
-            data_type,
-        });
-    }
-    Some(fields)
-}
-
-pub(crate) fn variant_mappings_from_field(field: &Field) -> Option<Vec<VariantField>> {
-    let metadata = field.metadata();
-    let raw = metadata.get(VARIANT_MAPPING_METADATA_KEY)?;
-    if let Some(parsed) = deserialize_variant_mappings(raw) {
-        return Some(parsed);
-    }
-
-    let data_type = metadata
-        .get(VARIANT_MAPPING_TYPE_METADATA_KEY)
-        .and_then(|spec| DataType::from_str(spec).ok());
-
-    Some(vec![VariantField {
-        path: raw.clone(),
-        data_type,
-    }])
-}
 
 /// Physical optimizer rule for local mode liquid cache
 ///
@@ -99,24 +35,17 @@ pub(crate) fn variant_mappings_from_field(field: &Field) -> Option<Vec<VariantFi
 #[derive(Debug)]
 pub struct LocalModeOptimizer {
     cache: LiquidCacheParquetRef,
-    eager_shredding: bool,
 }
 
 impl LocalModeOptimizer {
     /// Create an optimizer with an existing cache instance
-    pub fn new(cache: LiquidCacheParquetRef, eager_shredding: bool) -> Self {
-        Self {
-            cache,
-            eager_shredding,
-        }
+    pub fn new(cache: LiquidCacheParquetRef) -> Self {
+        Self { cache }
     }
 
     /// Create an optimizer with an existing cache instance
     pub fn with_cache(cache: LiquidCacheParquetRef) -> Self {
-        Self {
-            cache,
-            eager_shredding: true,
-        }
+        Self { cache }
     }
 }
 
@@ -126,11 +55,7 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, datafusion::error::DataFusionError> {
-        Ok(rewrite_data_source_plan(
-            plan,
-            &self.cache,
-            self.eager_shredding,
-        ))
+        Ok(rewrite_data_source_plan(plan, &self.cache))
     }
 
     fn name(&self) -> &str {
@@ -148,10 +73,9 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
 pub fn rewrite_data_source_plan(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
-    eager_shredding: bool,
 ) -> Arc<dyn ExecutionPlan> {
     let rewritten = plan
-        .transform_up(|node| try_optimize_parquet_source(node, cache, eager_shredding))
+        .transform_up(|node| try_optimize_parquet_source(node, cache))
         .unwrap();
     rewritten.data
 }
@@ -159,7 +83,6 @@ pub fn rewrite_data_source_plan(
 fn try_optimize_parquet_source(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
-    eager_shredding: bool,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>, datafusion::error::DataFusionError> {
     let any_plan = plan.as_any();
     if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
@@ -171,11 +94,8 @@ fn try_optimize_parquet_source(
         let mut new_source =
             LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone());
         if let Some(expr_adapter_factory) = file_scan_config.expr_adapter_factory.as_ref() {
-            let new_schema = enrich_source_schema(
-                file_scan_config.file_schema(),
-                expr_adapter_factory,
-                eager_shredding,
-            );
+            let new_schema =
+                enrich_source_schema(file_scan_config.file_schema(), expr_adapter_factory);
             let table_partition_cols = new_source.table_schema().table_partition_cols();
             let new_table_schema =
                 TableSchema::new(Arc::new(new_schema), table_partition_cols.clone());
@@ -198,12 +118,11 @@ fn try_optimize_parquet_source(
 fn enrich_source_schema(
     file_schema: &SchemaRef,
     expr_adapter_factory: &Arc<dyn PhysicalExprAdapterFactory>,
-    eager_shredding: bool,
 ) -> Schema {
     let mut new_fields = vec![];
     for field in file_schema.fields() {
         if let Some(annotation) = metadata_from_factory(expr_adapter_factory, field.name()) {
-            new_fields.push(process_field_annotation(field, annotation, eager_shredding));
+            new_fields.push(process_field_annotation(field, annotation));
         } else {
             new_fields.push(field.clone());
         }
@@ -211,13 +130,8 @@ fn enrich_source_schema(
     Schema::new(new_fields)
 }
 
-fn process_field_annotation(
-    field: &Arc<Field>,
-    annotation: ColumnAnnotation,
-    eager_shredding: bool,
-) -> Arc<Field> {
+fn process_field_annotation(field: &Arc<Field>, annotation: ColumnAnnotation) -> Arc<Field> {
     let mut field_metadata = field.metadata().clone();
-    let mut updated_field = Field::clone(field.as_ref());
     match annotation {
         ColumnAnnotation::DatePart(unit) => {
             field_metadata.insert(
@@ -225,14 +139,7 @@ fn process_field_annotation(
                 serialize_date_part(&unit),
             );
         }
-        ColumnAnnotation::VariantPaths(paths) => {
-            if eager_shredding {
-                if let Some(serialized) = serialize_variant_mappings(&paths) {
-                    field_metadata.insert(VARIANT_MAPPING_METADATA_KEY.to_string(), serialized);
-                }
-                updated_field = enrich_variant_field_type(&updated_field, &paths);
-            }
-        }
+        ColumnAnnotation::VariantPaths(_) => {}
         ColumnAnnotation::SubstringSearch => {
             field_metadata.insert(
                 STRING_FINGERPRINT_METADATA_KEY.to_string(),
@@ -240,78 +147,7 @@ fn process_field_annotation(
             );
         }
     }
-    Arc::new(updated_field.with_metadata(field_metadata))
-}
-
-pub(crate) fn enrich_variant_field_type(field: &Field, fields: &[VariantField]) -> Field {
-    let typed_specs: Vec<&VariantField> = fields
-        .iter()
-        .filter(|field| field.data_type.is_some())
-        .collect();
-    if typed_specs.is_empty() {
-        return Field::clone(field);
-    }
-
-    let new_type = match field.data_type() {
-        DataType::Struct(children) => {
-            let mut rewritten = Vec::with_capacity(children.len() + 1);
-            let mut replaced = false;
-            for child in children.iter() {
-                if child.name() == "typed_value" {
-                    rewritten.push(build_variant_typed_value_field(
-                        Some(child.as_ref()),
-                        &typed_specs,
-                    ));
-                    replaced = true;
-                } else {
-                    let mut child_field = child.as_ref().clone();
-                    if child_field.name() == "value" {
-                        child_field =
-                            Field::new(child_field.name(), child_field.data_type().clone(), true)
-                                .with_metadata(child_field.metadata().clone());
-                    }
-                    rewritten.push(Arc::new(child_field));
-                }
-            }
-            if !replaced {
-                rewritten.push(build_variant_typed_value_field(None, &typed_specs));
-            }
-            DataType::Struct(Fields::from(rewritten))
-        }
-        other => other.clone(),
-    };
-    Field::clone(field).with_data_type(new_type)
-}
-
-pub(crate) fn enrich_schema_for_cache(schema: &SchemaRef) -> SchemaRef {
-    let mut fields = vec![];
-    for field in schema.fields() {
-        let new_field = if let Some(mappings) = variant_mappings_from_field(field.as_ref()) {
-            Arc::new(enrich_variant_field_type(field.as_ref(), &mappings))
-        } else {
-            field.clone()
-        };
-        fields.push(new_field);
-    }
-    Arc::new(Schema::new(fields))
-}
-
-fn build_variant_typed_value_field(
-    existing: Option<&Field>,
-    specs: &[&VariantField],
-) -> Arc<Field> {
-    let mut schema = VariantSchema::new(existing);
-    for spec in specs {
-        if let Some(data_type) = spec.data_type.as_ref() {
-            schema.insert_path(&spec.path, data_type);
-        }
-    }
-
-    Arc::new(Field::new(
-        "typed_value",
-        DataType::Struct(Fields::from(schema.typed_fields())),
-        true,
-    ))
+    Arc::new(Field::clone(field.as_ref()).with_metadata(field_metadata))
 }
 
 #[cfg(test)]
@@ -343,7 +179,7 @@ mod tests {
             )
             .await,
         );
-        let rewritten = rewrite_data_source_plan(plan, &liquid_cache, true);
+        let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 
         rewritten
             .apply(|node| {

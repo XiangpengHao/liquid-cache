@@ -112,7 +112,7 @@ cargo run --release --bin clickbench_client -- --manifest benchmark/stackoverflo
 cargo run --release --bin in_process -- \
   --manifest benchmark/stackoverflow/manifest.json \
   --bench-mode liquid \
-  --max-cache-mb 256
+  --max-memory-mb 256
 ```
 
 ## In process mode

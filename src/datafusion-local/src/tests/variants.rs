@@ -170,7 +170,7 @@ async fn test_variant_transcoding_falls_back_to_disk_arrow() {
 
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_batch_size(1)
-        .with_max_cache_bytes(64)
+        .with_max_memory_bytes(64)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
@@ -376,7 +376,7 @@ async fn test_large_variant_squeeze() {
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_max_cache_bytes(1024)
+        .with_max_memory_bytes(1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
         .await
@@ -416,7 +416,7 @@ async fn variant_multi_queries() {
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_max_cache_bytes(1024)
+        .with_max_memory_bytes(1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())
         .await
@@ -465,7 +465,7 @@ async fn variant_multi_queries_complex() {
 
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_max_cache_bytes(1024 * 600)
+        .with_max_memory_bytes(1024 * 600)
         .with_batch_size(8)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .build(SessionConfig::new())

@@ -144,8 +144,8 @@ pub struct CacheStats {
     pub memory_usage_bytes: usize,
     /// Total disk usage of the cache.
     pub disk_usage_bytes: usize,
-    /// Maximum cache size.
-    pub max_cache_bytes: usize,
+    /// Maximum memory size.
+    pub max_memory_bytes: usize,
     /// Runtime counters snapshot.
     pub runtime: RuntimeStatsSnapshot,
 }

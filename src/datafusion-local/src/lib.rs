@@ -12,8 +12,7 @@ use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy};
-use liquid_cache::cache_policies::CachePolicy;
-use liquid_cache::cache_policies::LiquidPolicy;
+use liquid_cache::cache_policies::{CachePolicy, LiquidPolicy};
 use liquid_cache_datafusion::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_datafusion::{
     LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
@@ -41,7 +40,7 @@ pub use liquid_cache_common as common;
 ///     let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheLocalBuilder::new()
-///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
+///         .with_max_memory_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
 ///         .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///         .build(SessionConfig::new())
@@ -58,8 +57,8 @@ pub use liquid_cache_common as common;
 pub struct LiquidCacheLocalBuilder {
     /// Size of batches for caching
     batch_size: usize,
-    /// Maximum cache size in bytes
-    max_cache_bytes: usize,
+    /// Maximum memory size in bytes
+    max_memory_bytes: usize,
     /// Directory for disk cache
     cache_dir: PathBuf,
     /// Cache policy
@@ -69,21 +68,18 @@ pub struct LiquidCacheLocalBuilder {
     /// Hydration policy
     hydration_policy: Box<dyn HydrationPolicy>,
     span: fastrace::Span,
-
-    eager_shredding: bool,
 }
 
 impl Default for LiquidCacheLocalBuilder {
     fn default() -> Self {
         Self {
             batch_size: 8192,
-            max_cache_bytes: 1024 * 1024 * 1024, // 1GB
+            max_memory_bytes: 1024 * 1024 * 1024, // 1GB
             cache_dir: std::env::temp_dir(),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             hydration_policy: Box::new(AlwaysHydrate::new()),
             span: fastrace::Span::enter_with_local_parent("liquid_cache_datafusion_local_builder"),
-            eager_shredding: true,
         }
     }
 }
@@ -100,9 +96,9 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set maximum cache size in bytes
-    pub fn with_max_cache_bytes(mut self, max_cache_bytes: usize) -> Self {
-        self.max_cache_bytes = max_cache_bytes;
+    /// Set maximum memory size in bytes
+    pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
+        self.max_memory_bytes = max_memory_bytes;
         self
     }
 
@@ -136,12 +132,6 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set enable shredding
-    pub fn with_eager_shredding(mut self, eager_shredding: bool) -> Self {
-        self.eager_shredding = eager_shredding;
-        self
-    }
-
     /// Build a SessionContext with liquid cache configured
     /// Returns the SessionContext and the liquid cache reference
     pub async fn build(
@@ -161,20 +151,33 @@ impl LiquidCacheLocalBuilder {
         let store = t4::mount(self.cache_dir.join("liquid_cache.t4"))
             .await
             .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        #[cfg(not(test))]
         let cache = LiquidCacheParquet::new(
             self.batch_size,
-            self.max_cache_bytes,
+            self.max_memory_bytes,
             store,
             self.cache_policy,
             self.squeeze_policy,
             self.hydration_policy,
         )
         .await;
+
+        #[cfg(test)]
+        let cache = LiquidCacheParquet::new_with_squeeze_victim_concurrency(
+            self.batch_size,
+            self.max_memory_bytes,
+            store,
+            self.cache_policy,
+            self.squeeze_policy,
+            self.hydration_policy,
+            false,
+        )
+        .await;
         let cache_ref = Arc::new(cache);
 
         let date_extract_optimizer = Arc::new(LineageOptimizer::new());
 
-        let optimizer = LocalModeOptimizer::new(cache_ref.clone(), self.eager_shredding);
+        let optimizer = LocalModeOptimizer::new(cache_ref.clone());
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)

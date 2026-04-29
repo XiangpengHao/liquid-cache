@@ -6,7 +6,6 @@ pub mod optimizers;
 mod reader;
 mod sync;
 pub(crate) mod utils;
-pub use liquid_cache::utils::VariantSchema;
 
 pub mod cache;
 pub use cache::{LiquidCacheParquet, LiquidCacheParquetRef};

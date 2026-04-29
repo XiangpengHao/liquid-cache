@@ -150,13 +150,13 @@ jobs:
                   cargo llvm-cov clean --workspace
                   cargo build --bin bench_server
                   cargo build --bin clickbench_client
-                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
                   sleep 2  # Wait for server to start up
                   env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
                   echo "=== Server logs ==="
                   cat server.log || echo "No server log found"
                   curl http://localhost:53703/shutdown
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-cache-mb 256
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-memory-mb 256
                   cargo llvm-cov report --codecov --output-path codecov_clickbench.json
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
@@ -190,13 +190,13 @@ jobs:
                   cargo llvm-cov clean --workspace
                   cargo build --bin bench_server
                   cargo build --bin tpch_client
-                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
                   sleep 2  # Wait for server to start up
                   env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
                   echo "=== Server logs ==="
                   cat server.log || echo "No server log found"
                   curl http://localhost:53703/shutdown
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpch/manifest.json --bench-mode liquid --max-cache-mb 256
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpch/manifest.json --bench-mode liquid --max-memory-mb 256
                   cargo llvm-cov report --codecov --output-path codecov_tpch.json
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
@@ -205,45 +205,46 @@ jobs:
                   files: codecov_tpch.json
                   fail_ci_if_error: true
 
-    tpcds:
-        name: TPC-DS
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-            - uses: ./.github/actions/free-disk-space
-            - uses: dtolnay/rust-toolchain@stable
-            - run: sudo apt-get update && sudo apt-get install -y wget
-            - name: Install cargo-llvm-cov
-              uses: taiki-e/install-action@cargo-llvm-cov
-            - uses: Swatinem/rust-cache@v2
-              with:
-                  shared-key: ci-${{ runner.os }}
-                  save-if: ${{ github.ref == 'refs/heads/main' }}
-            - name: Setup TPC-DS data
-              run: |
-                  curl -LsSf https://astral.sh/uv/install.sh | sh
-                  cd benchmark/tpcds
-                  uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers --data-dir data --queries-dir queries
-            - name: Run TPC-DS
-              run: |
-                  source <(cargo llvm-cov show-env --export-prefix)
-                  cargo llvm-cov clean --workspace
-                  cargo build --bin bench_server
-                  cargo build --bin tpcds_client
-                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
-                  sleep 2  # Wait for server to start up
-                  env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
-                  echo "=== Server logs ==="
-                  cat server.log || echo "No server log found"
-                  curl http://localhost:53703/shutdown
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-cache-mb 256
-                  cargo llvm-cov report --codecov --output-path codecov_tpcds.json
-            - name: Upload coverage to Codecov
-              uses: codecov/codecov-action@v5
-              with:
-                  token: ${{ secrets.CODECOV_TOKEN }}
-                  files: codecov_tpcds.json
-                  fail_ci_if_error: true
+    # Diable for now, because the upstream datafusion has a bug.
+    # tpcds:
+    #     name: TPC-DS
+    #     runs-on: ubuntu-latest
+    #     steps:
+    #         - uses: actions/checkout@v4
+    #         - uses: ./.github/actions/free-disk-space
+    #         - uses: dtolnay/rust-toolchain@stable
+    #         - run: sudo apt-get update && sudo apt-get install -y wget
+    #         - name: Install cargo-llvm-cov
+    #           uses: taiki-e/install-action@cargo-llvm-cov
+    #         - uses: Swatinem/rust-cache@v2
+    #           with:
+    #               shared-key: ci-${{ runner.os }}
+    #               save-if: ${{ github.ref == 'refs/heads/main' }}
+    #         - name: Setup TPC-DS data
+    #           run: |
+    #               curl -LsSf https://astral.sh/uv/install.sh | sh
+    #               cd benchmark/tpcds
+    #               uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers --data-dir data --queries-dir queries
+    #         - name: Run TPC-DS
+    #           run: |
+    #               source <(cargo llvm-cov show-env --export-prefix)
+    #               cargo llvm-cov clean --workspace
+    #               cargo build --bin bench_server
+    #               cargo build --bin tpcds_client
+    #               env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
+    #               sleep 2  # Wait for server to start up
+    #               env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
+    #               echo "=== Server logs ==="
+    #               cat server.log || echo "No server log found"
+    #               curl http://localhost:53703/shutdown
+    #               env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-memory-mb 256
+    #               cargo llvm-cov report --codecov --output-path codecov_tpcds.json
+    #         - name: Upload coverage to Codecov
+    #           uses: codecov/codecov-action@v5
+    #           with:
+    #               token: ${{ secrets.CODECOV_TOKEN }}
+    #               files: codecov_tpcds.json
+    #               fail_ci_if_error: true
 
     stackoverflow:
         name: StackOverflow
@@ -291,7 +292,7 @@ jobs:
                   source <(cargo llvm-cov show-env --export-prefix)
                   cargo llvm-cov clean --workspace
                   cargo build --bin in_process
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-memory-mb 10
                   cargo llvm-cov report --codecov --output-path codecov_stackoverflow.json
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
@@ -339,7 +340,7 @@ jobs:
                     --iteration 5 \
                     --reset-cache \
                     --bench-mode liquid \
-                    --max-cache-mb 64
+                    --max-memory-mb 64
 
             - name: Run DataFusion benchmark (plain parquet)
               run: |

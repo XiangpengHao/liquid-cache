@@ -10,7 +10,7 @@ use tonic::transport::Server;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let liquid_cache = LiquidCacheService::new(
         SessionContext::new(),
-        Some(1024 * 1024 * 1024),          // max memory cache size 1GB
+        Some(1024 * 1024 * 1024),          // max memory size 1GB
         Some(tempfile::tempdir()?.keep()), // disk cache dir
         Box::new(LruPolicy::new()),
         Box::new(TranscodeSqueezeEvict),
