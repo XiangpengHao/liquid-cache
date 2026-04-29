@@ -6722,9 +6722,9 @@ dependencies = [
 
 [[package]]
 name = "t4"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eccdd03de7e3dce853d87da6ab55b5fdc1f08e2827661b14a1d9082643c46f8d"
+checksum = "dea97b3f25826306b821d1c0b070709ef61d28e98c3ef1153de1048c33acf381"
 dependencies = [
  "io-uring",
  "libc",
@@ -6735,9 +6735,9 @@ dependencies = [
 
 [[package]]
 name = "t4-verified"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e71a90d4a53e6964d4dad38fc756d8ea7f7b8c04d464eced583a7ab2f92c8986"
+checksum = "a729c7595d4771ff781dcd1fdd5f65d14c8225dce6341ddf28792b292e6f5cdb"
 dependencies = [
  "vstd",
 ]

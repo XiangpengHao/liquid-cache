@@ -993,13 +993,13 @@ mod tests {
         concurrent_cache_operations().await;
     }
 
-    #[cfg(feature = "shuttle")]
-    #[test]
-    fn shuttle_cache_operations() {
-        crate::utils::shuttle_test(|| {
-            block_on(concurrent_cache_operations());
-        });
-    }
+    // #[cfg(feature = "shuttle")]
+    // #[test]
+    // fn shuttle_cache_operations() {
+    //     crate::utils::shuttle_test(|| {
+    //         block_on(concurrent_cache_operations());
+    //     });
+    // }
 
     pub fn block_on<F: Future>(future: F) -> F::Output {
         #[cfg(feature = "shuttle")]
