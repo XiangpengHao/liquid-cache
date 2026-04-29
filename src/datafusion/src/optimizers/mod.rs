@@ -94,10 +94,8 @@ fn try_optimize_parquet_source(
         let mut new_source =
             LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone());
         if let Some(expr_adapter_factory) = file_scan_config.expr_adapter_factory.as_ref() {
-            let new_schema = enrich_source_schema(
-                file_scan_config.file_schema(),
-                expr_adapter_factory,
-            );
+            let new_schema =
+                enrich_source_schema(file_scan_config.file_schema(), expr_adapter_factory);
             let table_partition_cols = new_source.table_schema().table_partition_cols();
             let new_table_schema =
                 TableSchema::new(Arc::new(new_schema), table_partition_cols.clone());
@@ -132,10 +130,7 @@ fn enrich_source_schema(
     Schema::new(new_fields)
 }
 
-fn process_field_annotation(
-    field: &Arc<Field>,
-    annotation: ColumnAnnotation,
-) -> Arc<Field> {
+fn process_field_annotation(field: &Arc<Field>, annotation: ColumnAnnotation) -> Arc<Field> {
     let mut field_metadata = field.metadata().clone();
     match annotation {
         ColumnAnnotation::DatePart(unit) => {

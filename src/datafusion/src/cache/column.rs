@@ -164,8 +164,7 @@ impl CachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
-        self
-            .cache_store
+        self.cache_store
             .get(&entry_id)
             .with_selection(filter)
             .with_optional_expression_hint(self.expression())

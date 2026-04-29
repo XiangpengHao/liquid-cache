@@ -12,8 +12,7 @@ use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy};
-use liquid_cache::cache_policies::CachePolicy;
-use liquid_cache::cache_policies::LiquidPolicy;
+use liquid_cache::cache_policies::{CachePolicy, LiquidPolicy};
 use liquid_cache_datafusion::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_datafusion::{
     LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
@@ -69,7 +68,6 @@ pub struct LiquidCacheLocalBuilder {
     /// Hydration policy
     hydration_policy: Box<dyn HydrationPolicy>,
     span: fastrace::Span,
-
 }
 
 impl Default for LiquidCacheLocalBuilder {
