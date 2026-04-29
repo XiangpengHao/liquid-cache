@@ -8,14 +8,14 @@ use bytes::Bytes;
 #[derive(Debug)]
 pub struct CacheConfig {
     batch_size: usize,
-    max_cache_bytes: usize,
+    max_memory_bytes: usize,
 }
 
 impl CacheConfig {
-    pub(super) fn new(batch_size: usize, max_cache_bytes: usize) -> Self {
+    pub(super) fn new(batch_size: usize, max_memory_bytes: usize) -> Self {
         Self {
             batch_size,
-            max_cache_bytes,
+            max_memory_bytes,
         }
     }
 
@@ -23,8 +23,8 @@ impl CacheConfig {
         self.batch_size
     }
 
-    pub fn max_cache_bytes(&self) -> usize {
-        self.max_cache_bytes
+    pub fn max_memory_bytes(&self) -> usize {
+        self.max_memory_bytes
     }
 }
 
@@ -46,7 +46,7 @@ pub(crate) fn create_test_arrow_array(size: usize) -> ArrayRef {
 
 #[cfg(test)]
 pub(crate) async fn create_cache_store(
-    max_cache_bytes: usize,
+    max_memory_bytes: usize,
     policy: Box<dyn super::policies::CachePolicy>,
 ) -> Arc<super::core::LiquidCache> {
     use crate::cache::{AlwaysHydrate, LiquidCacheBuilder, TranscodeSqueezeEvict};
@@ -55,7 +55,7 @@ pub(crate) async fn create_cache_store(
 
     let builder = LiquidCacheBuilder::new()
         .with_batch_size(batch_size)
-        .with_max_cache_bytes(max_cache_bytes)
+        .with_max_memory_bytes(max_memory_bytes)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_cache_policy(policy);

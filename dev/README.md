@@ -59,7 +59,7 @@ sudo bpftrace -e '
     delete(@t[args->user_data]);
   }
   ' \
--c 'target/release/in_process --manifest benchmark/clickbench/manifest.json --bench-mode liquid-no-squeeze --max-cache-mb 128 --query-index 20 --io-mode uring'
+-c 'target/release/in_process --manifest benchmark/clickbench/manifest.json --bench-mode liquid-no-squeeze --max-memory-mb 128 --query-index 20 --io-mode uring'
 ```
 This will trace the execution of `iteration = 2` (`arg1 == 2`) and print the `io_uring` latency in us (from submission to completion) histogram:
 ```
@@ -90,7 +90,7 @@ tracepoint:syscalls:sys_exit_read     /@go==1 && @s[tid]/ { @r = hist((nsecs-@s[
 tracepoint:syscalls:sys_exit_pread64  /@go==1 && @s[tid]/ { @r = hist((nsecs-@s[tid])/1000); delete(@s[tid]); }
 tracepoint:syscalls:sys_exit_write    /@go==1 && @s[tid]/ { @w = hist((nsecs-@s[tid])/1000); delete(@s[tid]); }
 tracepoint:syscalls:sys_exit_pwrite64 /@go==1 && @s[tid]/ { @w = hist((nsecs-@s[tid])/1000); delete(@s[tid]); }
-' -c 'target/release/in_process --manifest benchmark/clickbench/manifest.json --bench-mode liquid-no-squeeze --max-cache-mb 128 --query-index 20 --io-mode std-blocking'
+' -c 'target/release/in_process --manifest benchmark/clickbench/manifest.json --bench-mode liquid-no-squeeze --max-memory-mb 128 --query-index 20 --io-mode std-blocking'
 ```
 
 It will generate:

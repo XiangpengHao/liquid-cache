@@ -403,9 +403,7 @@ impl LineageAnalyzer {
         let input_map = self.analyze_plan(alias.input.as_ref())?;
         let input_columns = alias.input.schema().columns();
         let mut output = LineageMap::new();
-        for (input_column, output_column) in
-            input_columns.iter().zip(alias.schema.columns().into_iter())
-        {
+        for (input_column, output_column) in input_columns.iter().zip(alias.schema.columns()) {
             let key = ColumnKey::from_column(&output_column);
             let usages = input_map
                 .get(&ColumnKey::from_column(input_column))
@@ -526,7 +524,7 @@ impl LineageAnalyzer {
         for (expr, column) in distinct_on
             .select_expr
             .iter()
-            .zip(distinct_on.schema.columns().into_iter())
+            .zip(distinct_on.schema.columns())
         {
             let usages = lineage_for_expr(expr, &input_map, schema.as_ref())?;
             output.insert(ColumnKey::from_column(&column), usages);

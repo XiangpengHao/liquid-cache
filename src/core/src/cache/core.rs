@@ -110,7 +110,7 @@ impl LiquidCache {
             memory_squeezed_liquid_bytes,
             memory_usage_bytes,
             disk_usage_bytes,
-            max_cache_bytes: self.config.max_cache_bytes(),
+            max_memory_bytes: self.config.max_memory_bytes(),
             runtime,
         }
     }
@@ -334,16 +334,16 @@ impl LiquidCache {
     /// Create a new instance of CacheStorage.
     pub(crate) fn new(
         batch_size: usize,
-        max_cache_bytes: usize,
+        max_memory_bytes: usize,
         squeeze_policy: Box<dyn SqueezePolicy>,
         cache_policy: Box<dyn CachePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
         io_worker: Arc<dyn IoContext>,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_cache_bytes);
+        let config = CacheConfig::new(batch_size, max_memory_bytes);
         Self {
             index: ArtIndex::new(),
-            budget: BudgetAccounting::new(config.max_cache_bytes()),
+            budget: BudgetAccounting::new(config.max_memory_bytes()),
             config,
             cache_policy,
             hydration_policy,
@@ -1046,7 +1046,7 @@ mod tests {
     async fn test_cache_stats_memory_and_disk_usage() {
         // Build a small cache in blocking liquid mode to avoid background tasks
         let storage = LiquidCacheBuilder::new()
-            .with_max_cache_bytes(10 * 1024 * 1024)
+            .with_max_memory_bytes(10 * 1024 * 1024)
             .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
             .build()
             .await;
@@ -1062,7 +1062,7 @@ mod tests {
         assert_eq!(s.total_entries, 2);
         assert!(s.memory_usage_bytes > 0);
         assert_eq!(s.disk_usage_bytes, 0);
-        assert_eq!(s.max_cache_bytes, 10 * 1024 * 1024);
+        assert_eq!(s.max_memory_bytes, 10 * 1024 * 1024);
 
         // Flush to disk and verify memory usage drops and disk usage increases
         storage.flush_all_to_disk().await;

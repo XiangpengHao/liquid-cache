@@ -40,7 +40,7 @@ pub use liquid_cache_common as common;
 ///     let temp_dir = TempDir::new().unwrap();
 ///
 ///     let (ctx, _) = LiquidCacheLocalBuilder::new()
-///         .with_max_cache_bytes(1024 * 1024 * 1024) // 1GB
+///         .with_max_memory_bytes(1024 * 1024 * 1024) // 1GB
 ///         .with_cache_dir(temp_dir.path().to_path_buf())
 ///         .with_cache_policy(Box::new(LiquidPolicy::new()))
 ///         .build(SessionConfig::new())
@@ -57,8 +57,8 @@ pub use liquid_cache_common as common;
 pub struct LiquidCacheLocalBuilder {
     /// Size of batches for caching
     batch_size: usize,
-    /// Maximum cache size in bytes
-    max_cache_bytes: usize,
+    /// Maximum memory size in bytes
+    max_memory_bytes: usize,
     /// Directory for disk cache
     cache_dir: PathBuf,
     /// Cache policy
@@ -74,7 +74,7 @@ impl Default for LiquidCacheLocalBuilder {
     fn default() -> Self {
         Self {
             batch_size: 8192,
-            max_cache_bytes: 1024 * 1024 * 1024, // 1GB
+            max_memory_bytes: 1024 * 1024 * 1024, // 1GB
             cache_dir: std::env::temp_dir(),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
@@ -96,9 +96,9 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set maximum cache size in bytes
-    pub fn with_max_cache_bytes(mut self, max_cache_bytes: usize) -> Self {
-        self.max_cache_bytes = max_cache_bytes;
+    /// Set maximum memory size in bytes
+    pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
+        self.max_memory_bytes = max_memory_bytes;
         self
     }
 
@@ -153,7 +153,7 @@ impl LiquidCacheLocalBuilder {
             .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
         let cache = LiquidCacheParquet::new(
             self.batch_size,
-            self.max_cache_bytes,
+            self.max_memory_bytes,
             store,
             self.cache_policy,
             self.squeeze_policy,

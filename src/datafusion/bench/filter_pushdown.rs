@@ -43,7 +43,7 @@ fn setup_cache() -> (Arc<CachedColumn>, tempfile::TempDir) {
     let store = tokio_test::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
     let cache = tokio_test::block_on(LiquidCacheParquet::new(
         BATCH_SIZE,
-        1024 * 1024 * 1024, // max_cache_bytes (1GB)
+        1024 * 1024 * 1024, // max_memory_bytes (1GB)
         store,
         Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),

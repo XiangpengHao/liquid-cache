@@ -10,7 +10,7 @@ const TEST_FILE: &str = "../../examples/nano_hits.parquet";
 async fn basic_squeeze() {
     let cache_dir = TempDir::new().unwrap();
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 128)
+        .with_max_memory_bytes(1024 * 128)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
         .await
@@ -37,7 +37,7 @@ async fn basic_squeeze() {
 async fn squeeze_strings() {
     let cache_dir = TempDir::new().unwrap();
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 1024)
+        .with_max_memory_bytes(1024 * 1024)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
         .await
@@ -64,7 +64,7 @@ async fn squeeze_strings() {
 async fn squeeze_substrings_search() {
     let cache_dir = TempDir::new().unwrap();
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 256)
+        .with_max_memory_bytes(1024 * 256)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
         .await
@@ -88,7 +88,7 @@ async fn squeeze_substrings_search() {
 async fn squeeze_substrings_search_title() {
     let cache_dir = TempDir::new().unwrap();
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 1024 * 4)
+        .with_max_memory_bytes(1024 * 1024 * 4)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
         .await
@@ -113,7 +113,7 @@ async fn squeeze_substrings_search_title() {
 async fn squeeze_distinct_search_phase() {
     let cache_dir = TempDir::new().unwrap();
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
-        .with_max_cache_bytes(1024 * 256)
+        .with_max_memory_bytes(1024 * 256)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .build(SessionConfig::new())
         .await

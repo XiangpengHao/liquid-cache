@@ -46,7 +46,7 @@ pub(crate) struct LiquidCacheServiceInner {
 impl LiquidCacheServiceInner {
     pub async fn new(
         default_ctx: Arc<SessionContext>,
-        max_cache_bytes: Option<usize>,
+        max_memory_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
@@ -64,7 +64,7 @@ impl LiquidCacheServiceInner {
         let liquid_cache = Arc::new(
             LiquidCacheParquet::new(
                 batch_size,
-                max_cache_bytes.unwrap_or(usize::MAX),
+                max_memory_bytes.unwrap_or(usize::MAX),
                 store,
                 cache_policy,
                 squeeze_policy,

@@ -243,7 +243,7 @@ impl LiquidCacheParquet {
     /// Create a new cache for parquet files.
     pub async fn new(
         batch_size: usize,
-        max_cache_bytes: usize,
+        max_memory_bytes: usize,
         store: t4::Store,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
@@ -253,7 +253,7 @@ impl LiquidCacheParquet {
         let io_context = Arc::new(ParquetIoContext::new(store));
         let cache_storage = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
-            .with_max_cache_bytes(max_cache_bytes)
+            .with_max_memory_bytes(max_memory_bytes)
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
@@ -292,9 +292,9 @@ impl LiquidCacheParquet {
         self.cache_store.config().batch_size()
     }
 
-    /// Get the max cache bytes of the cache.
-    pub fn max_cache_bytes(&self) -> usize {
-        self.cache_store.config().max_cache_bytes()
+    /// Get the max memory bytes of the cache.
+    pub fn max_memory_bytes(&self) -> usize {
+        self.cache_store.config().max_memory_bytes()
     }
 
     /// Get the memory usage of the cache in bytes.
