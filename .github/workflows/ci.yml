@@ -150,13 +150,13 @@ jobs:
                   cargo llvm-cov clean --workspace
                   cargo build --bin bench_server
                   cargo build --bin clickbench_client
-                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
                   sleep 2  # Wait for server to start up
                   env RUST_LOG=info cargo run --bin clickbench_client -- --manifest benchmark/clickbench/benchmark_manifest.json
                   echo "=== Server logs ==="
                   cat server.log || echo "No server log found"
                   curl http://localhost:53703/shutdown
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-cache-mb 256
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/clickbench/benchmark_manifest.json --bench-mode liquid --max-memory-mb 256
                   cargo llvm-cov report --codecov --output-path codecov_clickbench.json
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
@@ -190,13 +190,13 @@ jobs:
                   cargo llvm-cov clean --workspace
                   cargo build --bin bench_server
                   cargo build --bin tpch_client
-                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
                   sleep 2  # Wait for server to start up
                   env RUST_LOG=info cargo run --bin tpch_client -- --manifest benchmark/tpch/manifest.json --answer-dir benchmark/tpch/answers/sf0.1
                   echo "=== Server logs ==="
                   cat server.log || echo "No server log found"
                   curl http://localhost:53703/shutdown
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpch/manifest.json --bench-mode liquid --max-cache-mb 256
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpch/manifest.json --bench-mode liquid --max-memory-mb 256
                   cargo llvm-cov report --codecov --output-path codecov_tpch.json
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
@@ -230,13 +230,13 @@ jobs:
                   cargo llvm-cov clean --workspace
                   cargo build --bin bench_server
                   cargo build --bin tpcds_client
-                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-cache-mb 256 &> server.log &
+                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
                   sleep 2  # Wait for server to start up
                   env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
                   echo "=== Server logs ==="
                   cat server.log || echo "No server log found"
                   curl http://localhost:53703/shutdown
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-cache-mb 256
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-memory-mb 256
                   cargo llvm-cov report --codecov --output-path codecov_tpcds.json
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
@@ -291,7 +291,7 @@ jobs:
                   source <(cargo llvm-cov show-env --export-prefix)
                   cargo llvm-cov clean --workspace
                   cargo build --bin in_process
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-cache-mb 10
+                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/stackoverflow/manifest.dba.json --bench-mode liquid --max-memory-mb 10
                   cargo llvm-cov report --codecov --output-path codecov_stackoverflow.json
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v5
@@ -339,7 +339,7 @@ jobs:
                     --iteration 5 \
                     --reset-cache \
                     --bench-mode liquid \
-                    --max-cache-mb 64
+                    --max-memory-mb 64
 
             - name: Run DataFusion benchmark (plain parquet)
               run: |
