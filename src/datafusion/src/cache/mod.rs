@@ -249,6 +249,29 @@ impl LiquidCacheParquet {
         squeeze_policy: Box<dyn SqueezePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
     ) -> Self {
+        Self::new_with_squeeze_victim_concurrency(
+            batch_size,
+            max_memory_bytes,
+            store,
+            cache_policy,
+            squeeze_policy,
+            hydration_policy,
+            !cfg!(test),
+        )
+        .await
+    }
+
+    /// Create a new cache for parquet files with explicit victim squeeze concurrency.
+    #[doc(hidden)]
+    pub async fn new_with_squeeze_victim_concurrency(
+        batch_size: usize,
+        max_memory_bytes: usize,
+        store: t4::Store,
+        cache_policy: Box<dyn CachePolicy>,
+        squeeze_policy: Box<dyn SqueezePolicy>,
+        hydration_policy: Box<dyn HydrationPolicy>,
+        squeeze_victims_concurrently: bool,
+    ) -> Self {
         assert!(batch_size.is_power_of_two());
         let io_context = Arc::new(ParquetIoContext::new(store));
         let cache_storage = LiquidCacheBuilder::new()
@@ -258,6 +281,7 @@ impl LiquidCacheParquet {
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
             .with_io_context(io_context)
+            .with_squeeze_victims_concurrently(squeeze_victims_concurrently)
             .build()
             .await;
 

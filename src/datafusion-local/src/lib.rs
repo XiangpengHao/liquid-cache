@@ -151,6 +151,7 @@ impl LiquidCacheLocalBuilder {
         let store = t4::mount(self.cache_dir.join("liquid_cache.t4"))
             .await
             .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        #[cfg(not(test))]
         let cache = LiquidCacheParquet::new(
             self.batch_size,
             self.max_memory_bytes,
@@ -158,6 +159,18 @@ impl LiquidCacheLocalBuilder {
             self.cache_policy,
             self.squeeze_policy,
             self.hydration_policy,
+        )
+        .await;
+
+        #[cfg(test)]
+        let cache = LiquidCacheParquet::new_with_squeeze_victim_concurrency(
+            self.batch_size,
+            self.max_memory_bytes,
+            store,
+            self.cache_policy,
+            self.squeeze_policy,
+            self.hydration_policy,
+            false,
         )
         .await;
         let cache_ref = Arc::new(cache);

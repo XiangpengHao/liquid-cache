@@ -58,6 +58,7 @@ pub struct LiquidCache {
     squeeze_policy: Box<dyn SqueezePolicy>,
     observer: Arc<Observer>,
     io_context: Arc<dyn IoContext>,
+    squeeze_victims_concurrently: bool,
 }
 
 /// Builder returned by [`LiquidCache::insert`] for configuring cache writes.
@@ -339,6 +340,7 @@ impl LiquidCache {
         cache_policy: Box<dyn CachePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
         io_worker: Arc<dyn IoContext>,
+        squeeze_victims_concurrently: bool,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_memory_bytes);
         Self {
@@ -350,6 +352,7 @@ impl LiquidCache {
             squeeze_policy,
             observer: Arc::new(Observer::new()),
             io_context: io_worker,
+            squeeze_victims_concurrently,
         }
     }
 
@@ -403,15 +406,20 @@ impl LiquidCache {
 
     #[fastrace::trace]
     async fn squeeze_victims(&self, victims: Vec<EntryID>) {
-        // Run squeeze operations sequentially using async I/O
         self.trace(InternalEvent::SqueezeBegin {
             victims: victims.clone(),
         });
-        futures::stream::iter(victims)
-            .for_each_concurrent(None, |victim| async move {
+        if self.squeeze_victims_concurrently {
+            futures::stream::iter(victims)
+                .for_each_concurrent(None, |victim| async move {
+                    self.squeeze_victim_inner(victim).await;
+                })
+                .await;
+        } else {
+            for victim in victims {
                 self.squeeze_victim_inner(victim).await;
-            })
-            .await;
+            }
+        }
     }
 
     async fn squeeze_victim_inner(&self, to_squeeze: EntryID) {

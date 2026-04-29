@@ -36,6 +36,7 @@ pub struct LiquidCacheBuilder {
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
     io_context: Option<Arc<dyn IoContext>>,
+    squeeze_victims_concurrently: bool,
 }
 
 impl Default for LiquidCacheBuilder {
@@ -54,6 +55,7 @@ impl LiquidCacheBuilder {
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             io_context: None,
+            squeeze_victims_concurrently: !cfg!(test),
         }
     }
 
@@ -99,6 +101,12 @@ impl LiquidCacheBuilder {
         self
     }
 
+    /// Set whether cache victims are squeezed concurrently.
+    pub fn with_squeeze_victims_concurrently(mut self, enabled: bool) -> Self {
+        self.squeeze_victims_concurrently = enabled;
+        self
+    }
+
     /// Build the cache storage.
     ///
     /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
@@ -123,6 +131,7 @@ impl LiquidCacheBuilder {
             self.cache_policy,
             self.hydration_policy,
             io_worker,
+            self.squeeze_victims_concurrently,
         ))
     }
 }
