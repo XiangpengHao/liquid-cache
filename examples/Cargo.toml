@@ -41,5 +41,5 @@ arrow-flight = { workspace = true }
 tonic = { workspace = true }
 url = { workspace = true }
 tempfile = "3.27.0"
-clap = { version = "4.6.0", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 object_store = { workspace = true, features = ["http"] }

@@ -23,7 +23,7 @@ liquid-cache-datafusion = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }
 liquid-cache-common = { workspace = true }
 tempfile = { workspace = true }
-axum = "0.8.8"
+axum = "0.8.9"
 serde = { workspace = true }
 tower-http = { version = "0.6.8", features = ["cors"] }
 sysinfo = { version = "0.38.4", default-features = false, features = [
