@@ -110,6 +110,21 @@ pub struct ParquetMetadataCacheReader {
     path: Path,
 }
 
+#[cfg(test)]
+impl ParquetMetadataCacheReader {
+    pub(crate) fn from_parts(
+        file_metrics: ParquetFileMetrics,
+        inner: ParquetObjectReader,
+        path: Path,
+    ) -> Self {
+        Self {
+            file_metrics,
+            inner,
+            path,
+        }
+    }
+}
+
 impl AsyncFileReader for ParquetMetadataCacheReader {
     fn get_byte_ranges(
         &mut self,
