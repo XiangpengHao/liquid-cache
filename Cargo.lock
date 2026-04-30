@@ -4215,7 +4215,6 @@ dependencies = [
  "ahash",
  "arrow",
  "arrow-schema",
- "async-trait",
  "bytes",
  "datafusion",
  "divan",
