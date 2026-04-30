@@ -48,12 +48,6 @@ divan = "0.1.21"
 insta = { workspace = true }
 datafusion = { workspace = true }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-	'cfg(rust_analyzer)',
-] }
-
-
 [features]
 shuttle = ["t4/shuttle"]
 

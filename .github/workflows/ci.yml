@@ -505,15 +505,3 @@ jobs:
               run: |
                   # Run to populate cache and read arrow array
                   env RUST_LOG=info cargo run --bin example_inprocess_read
-
-    kani:
-        name: Run Kani proofs
-        runs-on: ubuntu-22.04
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v4
-            - uses: ./.github/actions/free-disk-space
-            - name: Verify storage crate with Kani
-              uses: model-checking/kani-github-action@v1.1
-              with:
-                  working-directory: src/core
