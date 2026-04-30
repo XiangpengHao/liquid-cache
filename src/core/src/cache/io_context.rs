@@ -43,7 +43,7 @@ pub(crate) fn entry_id_to_key(entry_id: &EntryID) -> Vec<u8> {
     usize::from(*entry_id).to_le_bytes().to_vec()
 }
 
-/// A default implementation of [`CacheMetadata`].
+/// A default implementation of [`EntryMetadata`].
 ///
 /// All entries share a single [`LiquidCompressorStates`] and squeeze hints are
 /// stored in a flat map keyed by [`EntryID`].
