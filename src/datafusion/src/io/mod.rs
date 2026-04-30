@@ -4,7 +4,7 @@ use std::{
 };
 
 use ahash::AHashMap;
-use liquid_cache::cache::{CacheExpression, EntryMetadata, EntryID, LiquidCompressorStates};
+use liquid_cache::cache::{CacheExpression, EntryID, EntryMetadata, LiquidCompressorStates};
 
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 

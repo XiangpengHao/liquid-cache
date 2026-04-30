@@ -6,8 +6,8 @@ use parquet_variant_compute::json_to_variant;
 
 use crate::{
     cache::{
-        AlwaysHydrate, CacheExpression, EntryID, LiquidCacheBuilder,
-        LiquidPolicy, TranscodeSqueezeEvict,
+        AlwaysHydrate, CacheExpression, EntryID, LiquidCacheBuilder, LiquidPolicy,
+        TranscodeSqueezeEvict,
     },
     liquid_array::Date32Field,
 };
