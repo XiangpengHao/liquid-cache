@@ -21,7 +21,6 @@ object_store = { workspace = true, features = ["http"] }
 liquid-cache-common = { workspace = true }
 liquid-cache = { workspace = true }
 fastrace = { workspace = true }
-async-trait = { workspace = true }
 parquet-variant-json = { workspace = true }
 serde_json = { workspace = true }
 

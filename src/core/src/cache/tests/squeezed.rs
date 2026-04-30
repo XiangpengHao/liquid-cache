@@ -6,8 +6,8 @@ use parquet_variant_compute::json_to_variant;
 
 use crate::{
     cache::{
-        AlwaysHydrate, CacheExpression, DefaultIoContext, EntryID, LiquidCacheBuilder,
-        LiquidPolicy, TranscodeSqueezeEvict,
+        AlwaysHydrate, CacheExpression, EntryID, LiquidCacheBuilder, LiquidPolicy,
+        TranscodeSqueezeEvict,
     },
     liquid_array::Date32Field,
 };
@@ -28,11 +28,11 @@ async fn read_squeezed_date_time() {
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_memory_bytes(array_size * 2)
-        .with_io_context(Arc::new(DefaultIoContext::new(
+        .with_store(
             t4::mount(temp_dir.path().join("liquid_cache.t4"))
                 .await
                 .unwrap(),
-        )))
+        )
         .build()
         .await;
 
@@ -93,11 +93,11 @@ async fn read_squeezed_variant_path() {
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_memory_bytes(array_size * 3 / 2)
-        .with_io_context(Arc::new(DefaultIoContext::new(
+        .with_store(
             t4::mount(temp_dir.path().join("liquid_cache.t4"))
                 .await
                 .unwrap(),
-        )))
+        )
         .build()
         .await;
 
@@ -155,11 +155,11 @@ async fn read_squeezed_int64_array() {
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
         .with_max_memory_bytes(array_size * 2)
-        .with_io_context(Arc::new(DefaultIoContext::new(
+        .with_store(
             t4::mount(temp_dir.path().join("liquid_cache.t4"))
                 .await
                 .unwrap(),
-        )))
+        )
         .build()
         .await;
 

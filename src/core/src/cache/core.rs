@@ -10,7 +10,7 @@ use super::{
     budget::BudgetAccounting,
     builders::{EvaluatePredicate, Get, Insert},
     cached_batch::{CacheEntry, CachedBatchType},
-    io_context::IoContext,
+    io_context::{EntryMetadata, entry_id_to_key},
     observer::{CacheTracer, InternalEvent, Observer},
     policies::{CachePolicy, HydrationPolicy, HydrationRequest, MaterializedEntry},
     utils::CacheConfig,
@@ -57,7 +57,8 @@ pub struct LiquidCache {
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
     observer: Arc<Observer>,
-    io_context: Arc<dyn IoContext>,
+    metadata: Arc<dyn EntryMetadata>,
+    store: t4::Store,
     squeeze_victims_concurrently: bool,
 }
 
@@ -210,12 +211,12 @@ impl LiquidCache {
 
     /// Get the compressor states of the cache.
     pub fn compressor_states(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        self.io_context.get_compressor(entry_id)
+        self.metadata.get_compressor(entry_id)
     }
 
     /// Add a squeeze hint for an entry.
     pub fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
-        self.io_context.add_squeeze_hint(entry_id, expression);
+        self.metadata.add_squeeze_hint(entry_id, expression);
     }
 
     /// Flush all entries to disk.
@@ -266,13 +267,13 @@ impl LiquidCache {
         match &batch {
             batch @ CacheEntry::MemoryArrow(_) => {
                 let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(DefaultSqueezeIo::new(
-                    self.io_context.clone(),
+                    self.store.clone(),
                     entry_id,
                     self.observer.clone(),
                 ));
                 let (new_batch, bytes_to_write) = self.squeeze_policy.squeeze(
                     batch,
-                    self.io_context.get_compressor(&entry_id).as_ref(),
+                    self.metadata.get_compressor(&entry_id).as_ref(),
                     None,
                     &squeeze_io,
                 );
@@ -333,13 +334,15 @@ impl LiquidCache {
     }
 
     /// Create a new instance of CacheStorage.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         batch_size: usize,
         max_memory_bytes: usize,
         squeeze_policy: Box<dyn SqueezePolicy>,
         cache_policy: Box<dyn CachePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
-        io_worker: Arc<dyn IoContext>,
+        metadata: Arc<dyn EntryMetadata>,
+        store: t4::Store,
         squeeze_victims_concurrently: bool,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_memory_bytes);
@@ -351,7 +354,8 @@ impl LiquidCache {
             hydration_policy,
             squeeze_policy,
             observer: Arc::new(Observer::new()),
-            io_context: io_worker,
+            metadata,
+            store,
             squeeze_victims_concurrently,
         }
     }
@@ -427,11 +431,11 @@ impl LiquidCache {
             return;
         };
         self.trace(InternalEvent::SqueezeVictim { entry: to_squeeze });
-        let compressor = self.io_context.get_compressor(&to_squeeze);
-        let squeeze_hint_arc = self.io_context.squeeze_hint(&to_squeeze);
+        let compressor = self.metadata.get_compressor(&to_squeeze);
+        let squeeze_hint_arc = self.metadata.squeeze_hint(&to_squeeze);
         let squeeze_hint = squeeze_hint_arc.as_deref();
         let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(DefaultSqueezeIo::new(
-            self.io_context.clone(),
+            self.store.clone(),
             to_squeeze,
             self.observer.clone(),
         ));
@@ -474,7 +478,7 @@ impl LiquidCache {
         materialized: MaterializedEntry<'_>,
         expression: Option<&CacheExpression>,
     ) {
-        let compressor = self.io_context.get_compressor(entry_id);
+        let compressor = self.metadata.get_compressor(entry_id);
         if let Some(new_entry) = self.hydration_policy.hydrate(&HydrationRequest {
             entry_id: *entry_id,
             cached,
@@ -695,24 +699,28 @@ impl LiquidCache {
             bytes: bytes.len(),
         });
         let len = bytes.len();
-        self.io_context.write(&entry_id, bytes).await.unwrap();
+        self.store
+            .put(entry_id_to_key(&entry_id), bytes.to_vec())
+            .await
+            .expect("write failed");
         self.budget.add_used_disk_bytes(len);
     }
 
     async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> ArrayRef {
         let bytes = self
-            .io_context
-            .read(entry_id, None)
+            .store
+            .get(&entry_id_to_key(entry_id))
             .await
             .expect("read failed");
-        let cursor = std::io::Cursor::new(bytes.to_vec());
+        let bytes_len = bytes.len();
+        let cursor = std::io::Cursor::new(bytes);
         let mut reader =
             arrow::ipc::reader::StreamReader::try_new(cursor, None).expect("create reader failed");
         let batch = reader.next().unwrap().expect("read batch failed");
         let array = batch.column(0).clone();
         self.trace(InternalEvent::IoReadArrow {
             entry: *entry_id,
-            bytes: bytes.len(),
+            bytes: bytes_len,
         });
         array
     }
@@ -722,19 +730,19 @@ impl LiquidCache {
         entry_id: &EntryID,
     ) -> crate::liquid_array::LiquidArrayRef {
         let bytes = self
-            .io_context
-            .read(entry_id, None)
+            .store
+            .get(&entry_id_to_key(entry_id))
             .await
             .expect("read failed");
         self.trace(InternalEvent::IoReadLiquid {
             entry: *entry_id,
             bytes: bytes.len(),
         });
-        let compressor_states = self.io_context.get_compressor(entry_id);
+        let compressor_states = self.metadata.get_compressor(entry_id);
         let compressor = compressor_states.fsst_compressor();
 
         (crate::liquid_array::ipc::read_from_bytes(
-            bytes,
+            Bytes::from(bytes),
             &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
         )) as _
     }

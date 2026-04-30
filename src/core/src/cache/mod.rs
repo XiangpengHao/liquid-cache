@@ -19,7 +19,7 @@ pub use core::LiquidCache;
 pub use expressions::{CacheExpression, VariantRequest};
 #[cfg(test)]
 pub(crate) use io_context::TestSqueezeIo;
-pub use io_context::{DefaultIoContext, DefaultSqueezeIo, IoContext};
+pub use io_context::{DefaultCacheMetadata, DefaultSqueezeIo, EntryMetadata};
 pub use liquid_expr::LiquidExpr;
 pub use observer::EventTrace;
 pub use observer::Observer;

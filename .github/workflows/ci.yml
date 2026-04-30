@@ -301,143 +301,143 @@ jobs:
                   files: codecov_stackoverflow.json
                   fail_ci_if_error: true
 
-    benchmark:
-        name: Performance Benchmark
-        runs-on: pittsburgh
-        permissions:
-            contents: write
-            pull-requests: write
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
-                  token: ${{ secrets.GITHUB_TOKEN }}
-            - uses: dtolnay/rust-toolchain@stable
-            - name: Setup ClickBench partitioned data download
-              run: |
-                  mkdir -p benchmark/clickbench/data
-                  for partition in 0 1 2 3; do
-                    echo "Downloading partition ${partition}..."
-                    wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
-                      -O "benchmark/clickbench/data/hits_${partition}.parquet"
-                  done
+    # benchmark:
+    #     name: Performance Benchmark
+    #     runs-on: pittsburgh
+    #     permissions:
+    #         contents: write
+    #         pull-requests: write
+    #     steps:
+    #         - uses: actions/checkout@v4
+    #           with:
+    #               fetch-depth: 0
+    #               token: ${{ secrets.GITHUB_TOKEN }}
+    #         - uses: dtolnay/rust-toolchain@stable
+    #         - name: Setup ClickBench partitioned data download
+    #           run: |
+    #               mkdir -p benchmark/clickbench/data
+    #               for partition in 0 1 2 3; do
+    #                 echo "Downloading partition ${partition}..."
+    #                 wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
+    #                   -O "benchmark/clickbench/data/hits_${partition}.parquet"
+    #               done
 
-            - name: Update manifest for partitioned data
-              run: |
-                  # Update the manifest to point to the partitioned data directory
-                  sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
-                    benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+    #         - name: Update manifest for partitioned data
+    #           run: |
+    #               # Update the manifest to point to the partitioned data directory
+    #               sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
+    #                 benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
 
-            - name: Build benchmark binary
-              run: cargo build --release --bin in_process
+    #         - name: Build benchmark binary
+    #           run: cargo build --release --bin in_process
 
-            - name: Run LiquidCache benchmark (in-process)
-              run: |
-                  mkdir -p benchmark_results
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
-                    --manifest benchmark/clickbench/benchmark_manifest.json \
-                    --output benchmark_results/liquid.json \
-                    --iteration 5 \
-                    --reset-cache \
-                    --bench-mode liquid \
-                    --max-memory-mb 64
+    #         - name: Run LiquidCache benchmark (in-process)
+    #           run: |
+    #               mkdir -p benchmark_results
+    #               env RUST_LOG=info cargo run --release --bin in_process -- \
+    #                 --manifest benchmark/clickbench/benchmark_manifest.json \
+    #                 --output benchmark_results/liquid.json \
+    #                 --iteration 5 \
+    #                 --reset-cache \
+    #                 --bench-mode liquid \
+    #                 --max-memory-mb 64
 
-            - name: Run DataFusion benchmark (plain parquet)
-              run: |
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
-                    --manifest benchmark/clickbench/benchmark_manifest.json \
-                    --output benchmark_results/parquet.json \
-                    --iteration 5 \
-                    --bench-mode parquet
+    #         - name: Run DataFusion benchmark (plain parquet)
+    #           run: |
+    #               env RUST_LOG=info cargo run --release --bin in_process -- \
+    #                 --manifest benchmark/clickbench/benchmark_manifest.json \
+    #                 --output benchmark_results/parquet.json \
+    #                 --iteration 5 \
+    #                 --bench-mode parquet
 
-            - name: Run DataFusion benchmark (default config)
-              run: |
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
-                    --manifest benchmark/clickbench/benchmark_manifest.json \
-                    --output benchmark_results/df_default.json \
-                    --iteration 5 \
-                    --bench-mode datafusion-default
+    #         - name: Run DataFusion benchmark (default config)
+    #           run: |
+    #               env RUST_LOG=info cargo run --release --bin in_process -- \
+    #                 --manifest benchmark/clickbench/benchmark_manifest.json \
+    #                 --output benchmark_results/df_default.json \
+    #                 --iteration 5 \
+    #                 --bench-mode datafusion-default
 
-            - name: Annotate results with commit/timestamp
-              run: |
-                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-                     '. + {"timestamp": $timestamp, "commit": $commit}' \
-                     benchmark_results/liquid.json > benchmark_results/liquid_final.json
-                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-                     '. + {"timestamp": $timestamp, "commit": $commit}' \
-                     benchmark_results/parquet.json > benchmark_results/parquet_final.json
-                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-                     '. + {"timestamp": $timestamp, "commit": $commit}' \
-                     benchmark_results/df_default.json > benchmark_results/df_default_final.json
+    #         - name: Annotate results with commit/timestamp
+    #           run: |
+    #               jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+    #                  '. + {"timestamp": $timestamp, "commit": $commit}' \
+    #                  benchmark_results/liquid.json > benchmark_results/liquid_final.json
+    #               jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+    #                  '. + {"timestamp": $timestamp, "commit": $commit}' \
+    #                  benchmark_results/parquet.json > benchmark_results/parquet_final.json
+    #               jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+    #                  '. + {"timestamp": $timestamp, "commit": $commit}' \
+    #                  benchmark_results/df_default.json > benchmark_results/df_default_final.json
 
-            - name: Compare LiquidCache vs DataFusion (same runner)
-              id: compare
-              run: |
-                  python3 .github/compare_benchmarks.py \
-                    benchmark_results/liquid_final.json \
-                    benchmark_results/df_default_final.json \
-                    --output comparison.md
-                  echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+    #         - name: Compare LiquidCache vs DataFusion (same runner)
+    #           id: compare
+    #           run: |
+    #               python3 .github/compare_benchmarks.py \
+    #                 benchmark_results/liquid_final.json \
+    #                 benchmark_results/df_default_final.json \
+    #                 --output comparison.md
+    #               echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
 
-            - name: Comment PR with benchmark results
-              if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
-              uses: actions/github-script@v7
-              with:
-                  script: |
-                      const fs = require('fs');
+    #         - name: Comment PR with benchmark results
+    #           if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
+    #           uses: actions/github-script@v7
+    #           with:
+    #               script: |
+    #                   const fs = require('fs');
 
-                      let comment = '';
-                      try {
-                        comment = fs.readFileSync('comparison.md', 'utf8');
-                      } catch (error) {
-                        comment = 'Error reading benchmark comparison results';
-                      }
+    #                   let comment = '';
+    #                   try {
+    #                     comment = fs.readFileSync('comparison.md', 'utf8');
+    #                   } catch (error) {
+    #                     comment = 'Error reading benchmark comparison results';
+    #                   }
 
-                      // Check if this is an external PR (from a fork)
-                      const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
+    #                   // Check if this is an external PR (from a fork)
+    #                   const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
 
-                      if (isExternalPR) {
-                        console.log('Skipping comment for external PR due to permission restrictions');
-                        console.log('Benchmark results:');
-                        console.log(comment);
-                        return;
-                      }
+    #                   if (isExternalPR) {
+    #                     console.log('Skipping comment for external PR due to permission restrictions');
+    #                     console.log('Benchmark results:');
+    #                     console.log(comment);
+    #                     return;
+    #                   }
 
-                      try {
-                        // Find existing benchmark comment
-                        const comments = await github.rest.issues.listComments({
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          issue_number: context.issue.number,
-                        });
+    #                   try {
+    #                     // Find existing benchmark comment
+    #                     const comments = await github.rest.issues.listComments({
+    #                       owner: context.repo.owner,
+    #                       repo: context.repo.repo,
+    #                       issue_number: context.issue.number,
+    #                     });
 
-                        const botComment = comments.data.find(comment =>
-                          comment.user.type === 'Bot' &&
-                          comment.body.includes('## 📊 Benchmark Comparison')
-                        );
+    #                     const botComment = comments.data.find(comment =>
+    #                       comment.user.type === 'Bot' &&
+    #                       comment.body.includes('## 📊 Benchmark Comparison')
+    #                     );
 
-                        if (botComment) {
-                          // Update existing comment
-                          await github.rest.issues.updateComment({
-                            owner: context.repo.owner,
-                            repo: context.repo.repo,
-                            comment_id: botComment.id,
-                            body: comment
-                          });
-                        } else {
-                          // Create new comment
-                          await github.rest.issues.createComment({
-                            owner: context.repo.owner,
-                            repo: context.repo.repo,
-                            issue_number: context.issue.number,
-                            body: comment
-                          });
-                        }
-                      } catch (error) {
-                        console.log('Failed to post comment, likely due to permissions:', error.message);
-                        console.log('Benchmark results:');
-                        console.log(comment);
-                      }
+    #                     if (botComment) {
+    #                       // Update existing comment
+    #                       await github.rest.issues.updateComment({
+    #                         owner: context.repo.owner,
+    #                         repo: context.repo.repo,
+    #                         comment_id: botComment.id,
+    #                         body: comment
+    #                       });
+    #                     } else {
+    #                       // Create new comment
+    #                       await github.rest.issues.createComment({
+    #                         owner: context.repo.owner,
+    #                         repo: context.repo.repo,
+    #                         issue_number: context.issue.number,
+    #                         body: comment
+    #                       });
+    #                     }
+    #                   } catch (error) {
+    #                     console.log('Failed to post comment, likely due to permissions:', error.message);
+    #                     console.log('Benchmark results:');
+    #                     console.log(comment);
+    #                   }
 
     examples:
         name: Run client/server/inprocess examples
@@ -505,15 +505,3 @@ jobs:
               run: |
                   # Run to populate cache and read arrow array
                   env RUST_LOG=info cargo run --bin example_inprocess_read
-
-    kani:
-        name: Run Kani proofs
-        runs-on: ubuntu-22.04
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v4
-            - uses: ./.github/actions/free-disk-space
-            - name: Verify storage crate with Kani
-              uses: model-checking/kani-github-action@v1.1
-              with:
-                  working-directory: src/core

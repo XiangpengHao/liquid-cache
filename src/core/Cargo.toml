@@ -7,10 +7,6 @@ readme = "README.md"
 description = { workspace = true }
 repository = { workspace = true }
 
-[package.metadata.cargo-shear]
-ignored = ["kani-verifier"]
-
-
 [dependencies]
 async-stream = "0.3.6"
 async-trait = { workspace = true }
@@ -49,16 +45,8 @@ serde_json = { workspace = true }
 mimalloc = "0.1.50"
 clap = { version = "4.6.1", features = ["derive"] }
 divan = "0.1.21"
-kani-verifier = "0.67.0"
 insta = { workspace = true }
 datafusion = { workspace = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-	'cfg(rust_analyzer)',
-	'cfg(kani)',
-] }
-
 
 [features]
 shuttle = ["t4/shuttle"]
