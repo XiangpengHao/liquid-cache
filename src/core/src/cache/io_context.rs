@@ -13,12 +13,12 @@ use crate::{
     liquid_array::SqueezeIoHandler,
 };
 
-/// A trait for objects that can handle IO operations for the cache.
+/// Per-entry metadata used by the cache.
 ///
-/// All IO is key-based: entries are identified by their [`EntryID`] and stored
-/// in a [`t4::Store`] rather than as individual files on disk.
-#[async_trait::async_trait]
-pub trait IoContext: Debug + Send + Sync {
+/// This trait covers only the metadata side of the cache: where to find a
+/// batch's compressor and squeeze hints. All actual byte IO goes through the
+/// [`t4::Store`] held by the cache itself.
+pub trait EntryMetadata: Debug + Send + Sync {
     /// Add a squeeze hint for an entry.
     fn add_squeeze_hint(&self, _entry_id: &EntryID, _expression: Arc<CacheExpression>) {
         // Do nothing by default
@@ -36,44 +36,34 @@ pub trait IoContext: Debug + Send + Sync {
 
     /// Get the compressor for an entry.
     fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
-
-    /// Read bytes for the given entry, optionally restricted to the provided range.
-    async fn read(
-        &self,
-        entry_id: &EntryID,
-        range: Option<Range<u64>>,
-    ) -> Result<Bytes, std::io::Error>;
-
-    /// Write data for the given entry.
-    async fn write(&self, entry_id: &EntryID, data: Bytes) -> Result<(), std::io::Error>;
 }
 
 /// Convert an [`EntryID`] to a t4 key (8-byte little-endian representation).
-fn entry_id_to_key(entry_id: &EntryID) -> Vec<u8> {
+pub(crate) fn entry_id_to_key(entry_id: &EntryID) -> Vec<u8> {
     usize::from(*entry_id).to_le_bytes().to_vec()
 }
 
-/// A default implementation of [`IoContext`] backed by a [`t4::Store`].
-#[derive(Debug)]
-pub struct DefaultIoContext {
+/// A default implementation of [`CacheMetadata`].
+///
+/// All entries share a single [`LiquidCompressorStates`] and squeeze hints are
+/// stored in a flat map keyed by [`EntryID`].
+#[derive(Debug, Default)]
+pub struct DefaultCacheMetadata {
     compressor_state: Arc<LiquidCompressorStates>,
     squeeze_hints: RwLock<AHashMap<EntryID, Arc<CacheExpression>>>,
-    store: t4::Store,
 }
 
-impl DefaultIoContext {
-    /// Create a new instance of [`DefaultIoContext`] backed by the given [`t4::Store`].
-    pub fn new(store: t4::Store) -> Self {
+impl DefaultCacheMetadata {
+    /// Create a new instance of [`DefaultCacheMetadata`].
+    pub fn new() -> Self {
         Self {
             compressor_state: Arc::new(LiquidCompressorStates::new()),
-            store,
             squeeze_hints: RwLock::new(AHashMap::new()),
         }
     }
 }
 
-#[async_trait::async_trait]
-impl IoContext for DefaultIoContext {
+impl EntryMetadata for DefaultCacheMetadata {
     fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
         let mut guard = self.squeeze_hints.write().unwrap();
         guard.insert(*entry_id, expression);
@@ -87,57 +77,21 @@ impl IoContext for DefaultIoContext {
     fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.compressor_state.clone()
     }
-
-    async fn read(
-        &self,
-        entry_id: &EntryID,
-        range: Option<Range<u64>>,
-    ) -> Result<Bytes, std::io::Error> {
-        let key = entry_id_to_key(entry_id);
-        match range {
-            Some(range) => {
-                let len = range.end - range.start;
-                let bytes = self
-                    .store
-                    .get_range(&key, range.start, len)
-                    .await
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
-                Ok(Bytes::from(bytes))
-            }
-            None => {
-                let bytes = self
-                    .store
-                    .get(&key)
-                    .await
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
-                Ok(Bytes::from(bytes))
-            }
-        }
-    }
-
-    async fn write(&self, entry_id: &EntryID, data: Bytes) -> Result<(), std::io::Error> {
-        let key = entry_id_to_key(entry_id);
-        self.store
-            .put(key, data.to_vec())
-            .await
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        Ok(())
-    }
 }
 
-/// A default implementation of [SqueezeIoHandler] that uses the default [IoContext].
+/// A default implementation of [SqueezeIoHandler] backed by a [`t4::Store`].
 #[derive(Debug)]
 pub struct DefaultSqueezeIo {
-    io_context: Arc<dyn IoContext>,
+    store: t4::Store,
     entry_id: EntryID,
     observer: Arc<Observer>,
 }
 
 impl DefaultSqueezeIo {
     /// Create a new instance of [DefaultSqueezeIo].
-    pub fn new(io_context: Arc<dyn IoContext>, entry_id: EntryID, observer: Arc<Observer>) -> Self {
+    pub fn new(store: t4::Store, entry_id: EntryID, observer: Arc<Observer>) -> Self {
         Self {
-            io_context,
+            store,
             entry_id,
             observer,
         }
@@ -147,7 +101,22 @@ impl DefaultSqueezeIo {
 #[async_trait::async_trait]
 impl SqueezeIoHandler for DefaultSqueezeIo {
     async fn read(&self, range: Option<Range<u64>>) -> std::io::Result<Bytes> {
-        let bytes = self.io_context.read(&self.entry_id, range).await?;
+        let key = entry_id_to_key(&self.entry_id);
+        let bytes = match range {
+            Some(range) => {
+                let len = range.end - range.start;
+                self.store
+                    .get_range(&key, range.start, len)
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?
+            }
+            None => self
+                .store
+                .get(&key)
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))?,
+        };
+        let bytes = Bytes::from(bytes);
         self.observer
             .record_internal(InternalEvent::IoReadSqueezedBacking {
                 entry: self.entry_id,

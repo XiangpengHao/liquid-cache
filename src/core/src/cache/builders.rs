@@ -8,7 +8,7 @@ use arrow::buffer::BooleanBuffer;
 
 use super::cached_batch::CacheEntry;
 use super::core::LiquidCache;
-use super::io_context::{DefaultIoContext, IoContext};
+use super::io_context::{DefaultCacheMetadata, EntryMetadata};
 use super::policies::{CachePolicy, HydrationPolicy, SqueezePolicy, TranscodeSqueezeEvict};
 use super::{CacheExpression, EntryID, LiquidExpr, LiquidPolicy};
 use crate::sync::Arc;
@@ -35,7 +35,8 @@ pub struct LiquidCacheBuilder {
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
-    io_context: Option<Arc<dyn IoContext>>,
+    metadata: Option<Arc<dyn EntryMetadata>>,
+    store: Option<t4::Store>,
     squeeze_victims_concurrently: bool,
 }
 
@@ -54,7 +55,8 @@ impl LiquidCacheBuilder {
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
-            io_context: None,
+            metadata: None,
+            store: None,
             squeeze_victims_concurrently: !cfg!(test),
         }
     }
@@ -94,10 +96,17 @@ impl LiquidCacheBuilder {
         self
     }
 
-    /// Set the [IoContext] for the cache.
-    /// Default is [DefaultIoContext].
-    pub fn with_io_context(mut self, io_context: Arc<dyn IoContext>) -> Self {
-        self.io_context = Some(io_context);
+    /// Set the [EntryMetadata] for the cache.
+    /// Default is [DefaultCacheMetadata].
+    pub fn with_metadata(mut self, metadata: Arc<dyn EntryMetadata>) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Set the [`t4::Store`] used for on-disk IO.
+    /// If not provided, the builder mounts a fresh store at a temporary directory.
+    pub fn with_store(mut self, store: t4::Store) -> Self {
+        self.store = Some(store);
         self
     }
 
@@ -110,27 +119,29 @@ impl LiquidCacheBuilder {
     /// Build the cache storage.
     ///
     /// The cache storage is wrapped in an [Arc] to allow for concurrent access.
-    /// When no custom [IoContext] is provided, a [`t4::Store`] is mounted at a
-    /// temporary directory.
+    /// When no [`t4::Store`] is provided, one is mounted at a temporary directory.
     pub async fn build(self) -> Arc<LiquidCache> {
-        let io_worker = match self.io_context {
-            Some(io_context) => io_context,
+        let store = match self.store {
+            Some(store) => store,
             None => {
                 let cache_dir = tempfile::tempdir().unwrap().keep();
                 let store_path = cache_dir.join("liquid_cache.t4");
-                let store = t4::mount(&store_path)
+                t4::mount(&store_path)
                     .await
-                    .expect("failed to mount t4 store");
-                Arc::new(DefaultIoContext::new(store))
+                    .expect("failed to mount t4 store")
             }
         };
+        let metadata = self
+            .metadata
+            .unwrap_or_else(|| Arc::new(DefaultCacheMetadata::new()));
         Arc::new(LiquidCache::new(
             self.batch_size,
             self.max_memory_bytes,
             self.squeeze_policy,
             self.cache_policy,
             self.hydration_policy,
-            io_worker,
+            metadata,
+            store,
             self.squeeze_victims_concurrently,
         ))
     }

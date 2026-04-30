@@ -1,7 +1,7 @@
 //! This module contains the cache implementation for the Parquet reader.
 //!
 
-use crate::io::ParquetIoContext;
+use crate::io::ParquetCacheMetadata;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
 use crate::sync::Mutex;
 use ahash::AHashMap;
@@ -273,14 +273,15 @@ impl LiquidCacheParquet {
         squeeze_victims_concurrently: bool,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
-        let io_context = Arc::new(ParquetIoContext::new(store));
+        let metadata = Arc::new(ParquetCacheMetadata::new());
         let cache_storage = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_memory_bytes(max_memory_bytes)
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
-            .with_io_context(io_context)
+            .with_metadata(metadata)
+            .with_store(store)
             .with_squeeze_victims_concurrently(squeeze_victims_concurrently)
             .build()
             .await;
