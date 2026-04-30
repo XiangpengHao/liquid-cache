@@ -5,14 +5,12 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
-    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
     { nixpkgs
     , rust-overlay
     , flake-utils
-    , crane
     , ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -21,18 +19,6 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
           inherit system overlays;
-        };
-        craneLib = crane.mkLib pkgs;
-        kaniVerifier = craneLib.buildPackage {
-          pname = "kani-verifier";
-          version = "0.67.0";
-          src = craneLib.downloadCargoPackage {
-            name = "kani-verifier";
-            version = "0.67.0";
-            source = "registry+https://github.com/rust-lang/crates.io-index";
-            checksum = "sha256-1iJafsEwN+mE9r692jPTQ5DmQ6HNKkUiy11ejm7YXis=";
-          };
-          doCheck = false;
         };
         # Fetch daisyUI bundle files
         daisyui-bundle = pkgs.fetchurl {
@@ -52,7 +38,6 @@
               pkg-config
               eza
               fd
-              kaniVerifier
               llvmPackages.bintools
               lldb
               cargo-fuzz
