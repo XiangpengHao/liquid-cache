@@ -22,7 +22,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::liquid_cache_reader::LiquidCacheReader;
+use super::liquid_cache_reader::{FallbackReader, LiquidCacheReader};
 use super::utils::{get_root_column_ids, limit_row_selection, offset_row_selection};
 
 type PlanResult = Option<PlanningContext>;
@@ -591,6 +591,27 @@ impl LiquidStream {
     pub fn schema(&self) -> &SchemaRef {
         &self.schema
     }
+
+    fn make_cache_reader(&mut self, context: PlanningContext) -> LiquidCacheReader {
+        let row_group_idx = context.row_group_idx;
+        let reader_factory = self.reader.as_mut().unwrap();
+        let fallback = FallbackReader::new(
+            reader_factory.input.clone(),
+            Arc::clone(&self.metadata),
+            row_group_idx,
+            self.projection.clone(),
+            self.metadata.row_group(row_group_idx).num_rows() as usize,
+        );
+        LiquidCacheReader::new(
+            context.batch_size,
+            context.selection,
+            reader_factory.filter.take(),
+            context.cached_row_group,
+            context.projection_column_ids,
+            Arc::clone(&self.schema),
+            Some(fallback),
+        )
+    }
 }
 
 impl Stream for LiquidStream {
@@ -652,15 +673,7 @@ impl Stream for LiquidStream {
                                 self.state = StreamState::FillCache(fut);
                             } else {
                                 LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
-                                let reader_factory = self.reader.as_mut().unwrap();
-                                let batch_reader = LiquidCacheReader::new(
-                                    context.batch_size,
-                                    context.selection,
-                                    reader_factory.filter.take(),
-                                    context.cached_row_group,
-                                    context.projection_column_ids,
-                                    Arc::clone(&self.schema),
-                                );
+                                let batch_reader = self.make_cache_reader(context);
                                 self.state = StreamState::ReadFromCache(batch_reader);
                             }
                         }
@@ -678,15 +691,7 @@ impl Stream for LiquidStream {
                         Ok((reader_factory, context)) => {
                             self.reader = Some(reader_factory);
                             LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
-                            let reader_factory = self.reader.as_mut().unwrap();
-                            let batch_reader = LiquidCacheReader::new(
-                                context.batch_size,
-                                context.selection,
-                                reader_factory.filter.take(),
-                                context.cached_row_group,
-                                context.projection_column_ids,
-                                Arc::clone(&self.schema),
-                            );
+                            let batch_reader = self.make_cache_reader(context);
                             self.state = StreamState::ReadFromCache(batch_reader);
                         }
                         Err(e) => {
