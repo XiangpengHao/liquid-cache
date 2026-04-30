@@ -20,23 +20,12 @@ use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
 use crate::reader::runtime::utils::{get_root_column_ids, take_next_batch};
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
 
-/// Context for reading batches directly from the source Parquet file.
-///
-/// Used as a fallback when cache entries have been evicted (e.g., due to disk
-/// pressure). The reader attempts the cache first; if an entry is missing, it
-/// uses this context to fetch the batch from the original file without
-/// re-populating the cache.
 #[derive(Clone)]
 pub(crate) struct FallbackReader {
-    /// Async reader for the underlying Parquet file.
     input: ParquetMetadataCacheReader,
-    /// Parquet file metadata (schema, row group info, etc.).
     metadata: Arc<ParquetMetaData>,
-    /// Index of the row group being read.
     row_group_idx: usize,
-    /// Column projection mask matching the query's projection.
     projection: ProjectionMask,
-    /// Total number of rows in the row group.
     row_count: usize,
 }
 
@@ -297,7 +286,6 @@ impl LiquidCacheReaderInner {
             arrays.push(array);
         }
 
-        // If any columns were evicted, read the batch from the source file
         if need_fallback {
             let fb = self.read_batch_fallback(selection).await?;
             for (i, slot) in arrays.iter_mut().enumerate() {
@@ -313,7 +301,6 @@ impl LiquidCacheReaderInner {
         ))
     }
 
-    /// Read the current batch from the source file when cache entries are missing.
     async fn read_batch_fallback(
         &self,
         selection: &BooleanBuffer,
@@ -352,7 +339,6 @@ impl LiquidCacheReaderInner {
             .ok_or_else(|| ArrowError::ComputeError("fallback reader produced no data".into()))?
             .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
 
-        // Map source columns to projection order and apply selection
         let src_cols =
             get_root_column_ids(fb.metadata.file_metadata().schema_descr(), &fb.projection);
         let mask = arrow::array::BooleanArray::new(selection.clone(), None);
@@ -389,10 +375,13 @@ mod tests {
     use liquid_cache::cache::{AlwaysHydrate, squeeze_policies::Evict};
     use liquid_cache::cache_policies::LiquidPolicy;
     use parquet::arrow::{
-        ArrowWriter,
+        ArrowWriter, ProjectionMask,
         arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection, RowSelector},
     };
     use std::sync::Arc;
+
+    use super::FallbackReader;
+    use crate::reader::plantime::ParquetMetadataCacheReader;
 
     async fn make_row_group(
         batch_size: usize,
@@ -697,5 +686,78 @@ mod tests {
         });
 
         assert!(next_batch.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallback_reads_evicted_batch_from_parquet() {
+        use object_store::local::LocalFileSystem;
+        use parquet::arrow::async_reader::ParquetObjectReader;
+
+        let batch_size = 2;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "col0",
+            DataType::Int32,
+            false,
+        )]));
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let parquet_path = tmp_dir.path().join("test.parquet");
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let store = t4::mount(tmp_dir.path().join("cache.t4")).await.unwrap();
+        let cache = LiquidCacheParquet::new(
+            batch_size,
+            usize::MAX,
+            store,
+            Box::new(LiquidPolicy::new()),
+            Box::new(Evict),
+            Box::new(AlwaysHydrate::new()),
+        )
+        .await;
+        let cached_file = cache.register_or_get_file("test".to_string(), schema.clone());
+        let row_group = cached_file.create_row_group(0, vec![]);
+        let column = row_group.get_column(0).unwrap();
+        let b0: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        column.insert(BatchID::from_raw(0), b0).await.unwrap();
+
+        let object_store = Arc::new(LocalFileSystem::new_with_prefix(tmp_dir.path()).unwrap());
+        let obj_path = object_store::path::Path::from("test.parquet");
+        let parquet_reader = ParquetObjectReader::new(object_store, obj_path.clone());
+
+        let file_reader = std::fs::File::open(&parquet_path).unwrap();
+        let arrow_meta =
+            ArrowReaderMetadata::load(&file_reader, ArrowReaderOptions::new()).unwrap();
+        let metadata = Arc::new(arrow_meta.metadata().clone());
+        let projection = ProjectionMask::roots(metadata.file_metadata().schema_descr(), vec![0]);
+
+        use datafusion::datasource::physical_plan::ParquetFileMetrics;
+        use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+        let metrics = ExecutionPlanMetricsSet::new();
+        let file_metrics = ParquetFileMetrics::new(0, "test.parquet", &metrics);
+        let pq_reader =
+            ParquetMetadataCacheReader::from_parts(file_metrics, parquet_reader, obj_path);
+
+        let fallback = FallbackReader::new(pq_reader, Arc::clone(&metadata), 0, projection, 4);
+
+        let selection = RowSelection::from(vec![RowSelector::select(4)]);
+        let reader = LiquidCacheReader::new(
+            batch_size,
+            selection,
+            None,
+            row_group,
+            vec![0],
+            schema,
+            Some(fallback),
+        );
+
+        let batches = collect_batches(reader);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(as_i32_values(&batches[0]), vec![1, 2]);
+        assert_eq!(as_i32_values(&batches[1]), vec![3, 4]);
     }
 }
