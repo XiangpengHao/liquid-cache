@@ -49,7 +49,7 @@
               nodejs
               tailwindcss_4
               dioxus-cli
-              wasm-bindgen-cli_0_2_108
+              wasm-bindgen-cli_0_2_118
               binaryen
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
                 extensions = [ "rust-src" "llvm-tools-preview" ];

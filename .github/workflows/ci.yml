@@ -56,6 +56,22 @@ jobs:
             - name: Check for unused dependencies
               run: cargo shear
 
+    dev_tools:
+        name: Dev Tools
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/free-disk-space
+            - uses: cachix/install-nix-action@v31
+              with:
+                  github_access_token: ${{ secrets.GITHUB_TOKEN }}
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  shared-key: ci-${{ runner.os }}
+                  save-if: ${{ github.ref == 'refs/heads/main' }}
+            - name: Build dev tools
+              run: nix develop -c bash -lc 'cd dev/dev-tools && dx build'
+
     unit_test:
         name: Unit Test
         runs-on: ubuntu-latest
