@@ -22,12 +22,12 @@
         };
         # Fetch daisyUI bundle files
         daisyui-bundle = pkgs.fetchurl {
-          url = "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.mjs";
-          sha256 = "sha256-dH6epo+aSV+eeh3uQbxd7MkWlG+6hCaGaknQ4Bnljj4=";
+          url = "https://github.com/saadeghi/daisyui/releases/download/v5.5.19/daisyui.mjs";
+          sha256 = "sha256-X+Q/9eg8XPUZzMMtdqoagu1r/FDuPm9dxgB+6mI5rx8=";
         };
         daisyui-theme-bundle = pkgs.fetchurl {
-          url = "https://github.com/saadeghi/daisyui/releases/latest/download/daisyui-theme.mjs";
-          sha256 = "sha256-iiUODarjHRxAD+tyOPh95xhHJELC40oczt+dsDo86yE=";
+          url = "https://github.com/saadeghi/daisyui/releases/download/v5.5.19/daisyui-theme.mjs";
+          sha256 = "sha256-tAcb7y5ZvYNQllnB5ybMGXBKH9FP8uVtR5vBampT8m0=";
         };
       in
       {
@@ -49,7 +49,7 @@
               nodejs
               tailwindcss_4
               dioxus-cli
-              wasm-bindgen-cli_0_2_108
+              wasm-bindgen-cli_0_2_118
               binaryen
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
                 extensions = [ "rust-src" "llvm-tools-preview" ];
