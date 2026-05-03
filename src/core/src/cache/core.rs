@@ -113,6 +113,7 @@ impl LiquidCache {
             memory_usage_bytes,
             disk_usage_bytes,
             max_memory_bytes: self.config.max_memory_bytes(),
+            max_disk_bytes: self.config.max_disk_bytes(),
             runtime,
         }
     }
@@ -338,6 +339,8 @@ impl LiquidCache {
     pub(crate) fn new(
         batch_size: usize,
         max_memory_bytes: usize,
+        max_disk_bytes: usize,
+        disk_watermark: f64,
         squeeze_policy: Box<dyn SqueezePolicy>,
         cache_policy: Box<dyn CachePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
@@ -345,10 +348,14 @@ impl LiquidCache {
         store: t4::Store,
         squeeze_victims_concurrently: bool,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_memory_bytes);
+        let config = CacheConfig::new(batch_size, max_memory_bytes, max_disk_bytes, disk_watermark);
         Self {
             index: ArtIndex::new(),
-            budget: BudgetAccounting::new(config.max_memory_bytes()),
+            budget: BudgetAccounting::new(
+                config.max_memory_bytes(),
+                config.max_disk_bytes(),
+                config.disk_watermark(),
+            ),
             config,
             cache_policy,
             hydration_policy,
@@ -693,6 +700,10 @@ impl LiquidCache {
     }
 
     async fn write_batch_to_disk(&self, entry_id: EntryID, batch: &CacheEntry, bytes: Bytes) {
+        if self.budget.disk_budget_exceeded() {
+            self.evict_disk_entries().await;
+        }
+
         self.trace(InternalEvent::IoWrite {
             entry: entry_id,
             kind: CachedBatchType::from(batch),
@@ -704,6 +715,29 @@ impl LiquidCache {
             .await
             .expect("write failed");
         self.budget.add_used_disk_bytes(len);
+    }
+
+    async fn evict_disk_entries(&self) {
+        while self.budget.disk_budget_exceeded() {
+            let victims = self.cache_policy.find_disk_victims(8);
+            if victims.is_empty() {
+                break;
+            }
+            for victim in victims {
+                if !self.budget.disk_budget_exceeded() {
+                    break;
+                }
+                if let Some(_removed) = self.index.remove(&victim) {
+                    let key = crate::cache::io_context::entry_id_to_key(&victim);
+                    let _ = self.store.remove(&key).await;
+                    self.budget.sub_used_disk_bytes(
+                        self.budget
+                            .disk_usage_bytes()
+                            .min(self.config.batch_size() * 8),
+                    );
+                }
+            }
+        }
     }
 
     async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> ArrayRef {

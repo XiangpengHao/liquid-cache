@@ -249,9 +249,10 @@ impl LiquidCacheParquet {
         squeeze_policy: Box<dyn SqueezePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
     ) -> Self {
-        Self::new_with_squeeze_victim_concurrency(
+        Self::new_with_options(
             batch_size,
             max_memory_bytes,
+            usize::MAX,
             store,
             cache_policy,
             squeeze_policy,
@@ -272,11 +273,36 @@ impl LiquidCacheParquet {
         hydration_policy: Box<dyn HydrationPolicy>,
         squeeze_victims_concurrently: bool,
     ) -> Self {
+        Self::new_with_options(
+            batch_size,
+            max_memory_bytes,
+            usize::MAX,
+            store,
+            cache_policy,
+            squeeze_policy,
+            hydration_policy,
+            squeeze_victims_concurrently,
+        )
+        .await
+    }
+
+    /// Create a new cache with all options including disk budget.
+    pub async fn new_with_options(
+        batch_size: usize,
+        max_memory_bytes: usize,
+        max_disk_bytes: usize,
+        store: t4::Store,
+        cache_policy: Box<dyn CachePolicy>,
+        squeeze_policy: Box<dyn SqueezePolicy>,
+        hydration_policy: Box<dyn HydrationPolicy>,
+        squeeze_victims_concurrently: bool,
+    ) -> Self {
         assert!(batch_size.is_power_of_two());
         let metadata = Arc::new(ParquetCacheMetadata::new());
         let cache_storage = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_memory_bytes(max_memory_bytes)
+            .with_max_disk_bytes(max_disk_bytes)
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
@@ -330,6 +356,11 @@ impl LiquidCacheParquet {
     /// Get the disk usage of the cache in bytes.
     pub fn disk_usage_bytes(&self) -> usize {
         self.cache_store.budget().disk_usage_bytes()
+    }
+
+    /// Get the max disk bytes of the cache.
+    pub fn max_disk_bytes(&self) -> usize {
+        self.cache_store.budget().max_disk_bytes()
     }
 
     /// Flush the cache trace to a file.

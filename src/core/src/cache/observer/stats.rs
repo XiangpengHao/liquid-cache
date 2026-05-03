@@ -146,6 +146,8 @@ pub struct CacheStats {
     pub disk_usage_bytes: usize,
     /// Maximum memory size.
     pub max_memory_bytes: usize,
+    /// Maximum disk size.
+    pub max_disk_bytes: usize,
     /// Runtime counters snapshot.
     pub runtime: RuntimeStatsSnapshot,
 }

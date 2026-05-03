@@ -8,13 +8,44 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::prep_null_mask_filter;
 use arrow::record_batch::RecordBatchOptions;
 use arrow_schema::{ArrowError, SchemaRef};
-use futures::{Stream, future::BoxFuture};
-use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
+use futures::{Stream, StreamExt, future::BoxFuture};
+use parquet::arrow::arrow_reader::{
+    ArrowReaderMetadata, ArrowReaderOptions, RowSelection, RowSelector,
+};
+use parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask};
+use parquet::file::metadata::ParquetMetaData;
 
 use crate::cache::{BatchID, CachedRowGroupRef};
-use crate::reader::plantime::LiquidRowFilter;
-use crate::reader::runtime::utils::take_next_batch;
+use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
+use crate::reader::runtime::utils::{get_root_column_ids, take_next_batch};
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
+
+#[derive(Clone)]
+pub(crate) struct FallbackReader {
+    input: ParquetMetadataCacheReader,
+    metadata: Arc<ParquetMetaData>,
+    row_group_idx: usize,
+    projection: ProjectionMask,
+    row_count: usize,
+}
+
+impl FallbackReader {
+    pub(crate) fn new(
+        input: ParquetMetadataCacheReader,
+        metadata: Arc<ParquetMetaData>,
+        row_group_idx: usize,
+        projection: ProjectionMask,
+        row_count: usize,
+    ) -> Self {
+        Self {
+            input,
+            metadata,
+            row_group_idx,
+            projection,
+            row_count,
+        }
+    }
+}
 
 pub(crate) struct LiquidCacheReader {
     state: ReaderState,
@@ -48,6 +79,7 @@ struct LiquidCacheReaderInner {
     schema: SchemaRef,
     batch_size: usize,
     projection_columns: Vec<usize>,
+    fallback_reader: Option<FallbackReader>,
 }
 
 impl LiquidCacheReader {
@@ -58,6 +90,7 @@ impl LiquidCacheReader {
         cached_row_group: CachedRowGroupRef,
         projection_columns: Vec<usize>,
         schema: SchemaRef,
+        fallback_reader: Option<FallbackReader>,
     ) -> Self {
         let inner = LiquidCacheReaderInner::new(
             batch_size,
@@ -65,6 +98,7 @@ impl LiquidCacheReader {
             cached_row_group,
             projection_columns,
             Arc::clone(&schema),
+            fallback_reader,
         );
         Self {
             state: ReaderState::Ready(inner),
@@ -132,6 +166,7 @@ impl LiquidCacheReaderInner {
         cached_row_group: CachedRowGroupRef,
         projection_columns: Vec<usize>,
         schema: SchemaRef,
+        fallback_reader: Option<FallbackReader>,
     ) -> Self {
         Self {
             cached_row_group,
@@ -140,6 +175,7 @@ impl LiquidCacheReaderInner {
             schema,
             batch_size,
             projection_columns,
+            fallback_reader,
         }
     }
 
@@ -232,6 +268,7 @@ impl LiquidCacheReaderInner {
         }
 
         let mut arrays = Vec::with_capacity(self.projection_columns.len());
+        let mut need_fallback = false;
         for &column_idx in &self.projection_columns {
             let column = self
                 .cached_row_group
@@ -244,20 +281,77 @@ impl LiquidCacheReaderInner {
 
             let array = column
                 .get_arrow_array_with_filter(self.current_batch_id, selection)
-                .await
-                .ok_or_else(|| {
-                    ArrowError::ComputeError(format!(
-                        "column {column_idx} batch {} not cached",
-                        *self.current_batch_id as usize
-                    ))
-                })?;
-
+                .await;
+            need_fallback |= array.is_none();
             arrays.push(array);
         }
 
+        if need_fallback {
+            let fb = self.read_batch_fallback(selection).await?;
+            for (i, slot) in arrays.iter_mut().enumerate() {
+                if slot.is_none() {
+                    *slot = Some(fb.column(i).clone());
+                }
+            }
+        }
+
+        let arrays: Vec<_> = arrays.into_iter().flatten().collect();
         Ok(Some(
             RecordBatch::try_new(self.schema.clone(), arrays).unwrap(),
         ))
+    }
+
+    async fn read_batch_fallback(
+        &self,
+        selection: &BooleanBuffer,
+    ) -> Result<RecordBatch, ArrowError> {
+        let fb = self.fallback_reader.as_ref().ok_or_else(|| {
+            ArrowError::ComputeError("batch evicted from cache with no fallback reader".into())
+        })?;
+
+        let idx = usize::from(*self.current_batch_id);
+        let start = idx * self.batch_size;
+        let end = ((idx + 1) * self.batch_size).min(fb.row_count);
+
+        let mut sel = Vec::new();
+        if start > 0 {
+            sel.push(RowSelector::skip(start));
+        }
+        sel.push(RowSelector::select(end - start));
+        if end < fb.row_count {
+            sel.push(RowSelector::skip(fb.row_count - end));
+        }
+
+        let meta =
+            ArrowReaderMetadata::try_new(Arc::clone(&fb.metadata), ArrowReaderOptions::new())
+                .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
+        let mut stream = ParquetRecordBatchStreamBuilder::new_with_metadata(fb.input.clone(), meta)
+            .with_projection(fb.projection.clone())
+            .with_row_groups(vec![fb.row_group_idx])
+            .with_row_selection(RowSelection::from(sel))
+            .with_batch_size(self.batch_size)
+            .build()
+            .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
+
+        let batch = stream
+            .next()
+            .await
+            .ok_or_else(|| ArrowError::ComputeError("fallback reader produced no data".into()))?
+            .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
+
+        let src_cols =
+            get_root_column_ids(fb.metadata.file_metadata().schema_descr(), &fb.projection);
+        let mask = arrow::array::BooleanArray::new(selection.clone(), None);
+        let result: Result<Vec<_>, _> = self
+            .projection_columns
+            .iter()
+            .map(|&col| {
+                let pos = src_cols.iter().position(|&c| c == col).unwrap();
+                arrow::compute::filter(batch.column(pos), &mask)
+            })
+            .collect();
+
+        RecordBatch::try_new(self.schema.clone(), result?)
     }
 }
 
@@ -281,10 +375,13 @@ mod tests {
     use liquid_cache::cache::{AlwaysHydrate, squeeze_policies::Evict};
     use liquid_cache::cache_policies::LiquidPolicy;
     use parquet::arrow::{
-        ArrowWriter,
+        ArrowWriter, ProjectionMask,
         arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection, RowSelector},
     };
     use std::sync::Arc;
+
+    use super::FallbackReader;
+    use crate::reader::plantime::ParquetMetadataCacheReader;
 
     async fn make_row_group(
         batch_size: usize,
@@ -380,8 +477,15 @@ mod tests {
         let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2], vec![3, 4]]).await;
         let selection = RowSelection::from(vec![RowSelector::select(4)]);
 
-        let reader =
-            LiquidCacheReader::new(batch_size, selection, None, row_group, vec![0], schema);
+        let reader = LiquidCacheReader::new(
+            batch_size,
+            selection,
+            None,
+            row_group,
+            vec![0],
+            schema,
+            None,
+        );
 
         let batches = collect_batches(reader);
         assert_eq!(batches.len(), 2);
@@ -395,8 +499,15 @@ mod tests {
         let (row_group, schema) = make_row_group(batch_size, &[vec![1, 2], vec![3, 4]]).await;
         let selection = RowSelection::from(vec![RowSelector::skip(2), RowSelector::select(2)]);
 
-        let reader =
-            LiquidCacheReader::new(batch_size, selection, None, row_group, vec![0], schema);
+        let reader = LiquidCacheReader::new(
+            batch_size,
+            selection,
+            None,
+            row_group,
+            vec![0],
+            schema,
+            None,
+        );
 
         let batches = collect_batches(reader);
         assert_eq!(batches.len(), 1);
@@ -416,6 +527,7 @@ mod tests {
             row_group,
             Vec::new(),
             Arc::new(Schema::new(Vec::<Field>::new())),
+            None,
         );
 
         let batches = collect_batches(reader);
@@ -439,6 +551,7 @@ mod tests {
             row_group,
             vec![0],
             schema,
+            None,
         );
 
         let waker = futures::task::noop_waker();
@@ -467,6 +580,7 @@ mod tests {
             row_group,
             vec![0],
             schema,
+            None,
         );
 
         let batches = collect_batches(reader);
@@ -510,6 +624,7 @@ mod tests {
             row_group,
             vec![0],
             schema,
+            None,
         );
 
         let batches = collect_batches(reader);
@@ -538,6 +653,7 @@ mod tests {
             row_group,
             vec![0],
             schema,
+            None,
         );
 
         let mut batches = collect_batches(reader);
@@ -561,6 +677,7 @@ mod tests {
             row_group,
             vec![0],
             schema,
+            None,
         );
 
         let next_batch = futures::executor::block_on(async {
@@ -569,5 +686,78 @@ mod tests {
         });
 
         assert!(next_batch.is_none());
+    }
+
+    #[tokio::test]
+    async fn fallback_reads_evicted_batch_from_parquet() {
+        use object_store::local::LocalFileSystem;
+        use parquet::arrow::async_reader::ParquetObjectReader;
+
+        let batch_size = 2;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "col0",
+            DataType::Int32,
+            false,
+        )]));
+
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let parquet_path = tmp_dir.path().join("test.parquet");
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap();
+        let file = std::fs::File::create(&parquet_path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let store = t4::mount(tmp_dir.path().join("cache.t4")).await.unwrap();
+        let cache = LiquidCacheParquet::new(
+            batch_size,
+            usize::MAX,
+            store,
+            Box::new(LiquidPolicy::new()),
+            Box::new(Evict),
+            Box::new(AlwaysHydrate::new()),
+        )
+        .await;
+        let cached_file = cache.register_or_get_file("test".to_string(), schema.clone());
+        let row_group = cached_file.create_row_group(0, vec![]);
+        let column = row_group.get_column(0).unwrap();
+        let b0: ArrayRef = Arc::new(Int32Array::from(vec![1, 2]));
+        column.insert(BatchID::from_raw(0), b0).await.unwrap();
+
+        let object_store = Arc::new(LocalFileSystem::new_with_prefix(tmp_dir.path()).unwrap());
+        let obj_path = object_store::path::Path::from("test.parquet");
+        let parquet_reader = ParquetObjectReader::new(object_store, obj_path.clone());
+
+        let file_reader = std::fs::File::open(&parquet_path).unwrap();
+        let arrow_meta =
+            ArrowReaderMetadata::load(&file_reader, ArrowReaderOptions::new()).unwrap();
+        let metadata = Arc::new(arrow_meta.metadata().clone());
+        let projection = ProjectionMask::roots(metadata.file_metadata().schema_descr(), vec![0]);
+
+        use datafusion::datasource::physical_plan::ParquetFileMetrics;
+        use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+        let metrics = ExecutionPlanMetricsSet::new();
+        let file_metrics = ParquetFileMetrics::new(0, "test.parquet", &metrics);
+        let pq_reader =
+            ParquetMetadataCacheReader::from_parts(file_metrics, parquet_reader, obj_path);
+
+        let fallback = FallbackReader::new(pq_reader, Arc::clone(&metadata), 0, projection, 4);
+
+        let selection = RowSelection::from(vec![RowSelector::select(4)]);
+        let reader = LiquidCacheReader::new(
+            batch_size,
+            selection,
+            None,
+            row_group,
+            vec![0],
+            schema,
+            Some(fallback),
+        );
+
+        let batches = collect_batches(reader);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(as_i32_values(&batches[0]), vec![1, 2]);
+        assert_eq!(as_i32_values(&batches[1]), vec![3, 4]);
     }
 }

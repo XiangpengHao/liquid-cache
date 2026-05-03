@@ -59,6 +59,8 @@ pub struct LiquidCacheLocalBuilder {
     batch_size: usize,
     /// Maximum memory size in bytes
     max_memory_bytes: usize,
+    /// Maximum disk size in bytes
+    max_disk_bytes: usize,
     /// Directory for disk cache
     cache_dir: PathBuf,
     /// Cache policy
@@ -75,6 +77,7 @@ impl Default for LiquidCacheLocalBuilder {
         Self {
             batch_size: 8192,
             max_memory_bytes: 1024 * 1024 * 1024, // 1GB
+            max_disk_bytes: usize::MAX,
             cache_dir: std::env::temp_dir(),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
@@ -99,6 +102,12 @@ impl LiquidCacheLocalBuilder {
     /// Set maximum memory size in bytes
     pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
         self.max_memory_bytes = max_memory_bytes;
+        self
+    }
+
+    /// Set maximum disk size in bytes
+    pub fn with_max_disk_bytes(mut self, max_disk_bytes: usize) -> Self {
+        self.max_disk_bytes = max_disk_bytes;
         self
     }
 
@@ -152,20 +161,23 @@ impl LiquidCacheLocalBuilder {
             .await
             .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
         #[cfg(not(test))]
-        let cache = LiquidCacheParquet::new(
+        let cache = LiquidCacheParquet::new_with_options(
             self.batch_size,
             self.max_memory_bytes,
+            self.max_disk_bytes,
             store,
             self.cache_policy,
             self.squeeze_policy,
             self.hydration_policy,
+            true,
         )
         .await;
 
         #[cfg(test)]
-        let cache = LiquidCacheParquet::new_with_squeeze_victim_concurrency(
+        let cache = LiquidCacheParquet::new_with_options(
             self.batch_size,
             self.max_memory_bytes,
+            self.max_disk_bytes,
             store,
             self.cache_policy,
             self.squeeze_policy,
