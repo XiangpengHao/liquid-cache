@@ -80,6 +80,15 @@ impl ArtIndex {
     pub(crate) fn entry_count(&self) -> usize {
         self.entry_count.load(Ordering::Relaxed)
     }
+
+    pub(crate) fn remove(&self, entry_id: &EntryID) -> Option<Arc<CacheEntry>> {
+        let guard = self.art.pin();
+        let removed = self.art.remove(*entry_id, &guard);
+        if removed.is_some() {
+            self.entry_count.fetch_sub(1, Ordering::Relaxed);
+        }
+        removed
+    }
 }
 
 #[cfg(test)]
@@ -133,5 +142,27 @@ mod tests {
         store.reset();
         let entry_id: EntryID = EntryID::from(1);
         assert!(!store.is_cached(&entry_id));
+    }
+
+    #[test]
+    fn test_remove() {
+        let store = ArtIndex::new();
+        let entry_id = EntryID::from(1);
+        let entry_id2 = EntryID::from(2);
+        let array = create_test_array(50);
+
+        store.insert(&entry_id, array.clone());
+        store.insert(&entry_id2, array.clone());
+        assert_eq!(store.entry_count(), 2);
+
+        let removed = store.remove(&entry_id);
+        assert!(removed.is_some());
+        assert!(!store.is_cached(&entry_id));
+        assert!(store.is_cached(&entry_id2));
+        assert_eq!(store.entry_count(), 1);
+
+        let removed = store.remove(&EntryID::from(99));
+        assert!(removed.is_none());
+        assert_eq!(store.entry_count(), 1);
     }
 }

@@ -32,6 +32,8 @@ use crate::sync::Arc;
 pub struct LiquidCacheBuilder {
     batch_size: usize,
     max_memory_bytes: usize,
+    max_disk_bytes: usize,
+    disk_watermark: f64,
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
@@ -52,6 +54,8 @@ impl LiquidCacheBuilder {
         Self {
             batch_size: 8192,
             max_memory_bytes: 1024 * 1024 * 1024,
+            max_disk_bytes: usize::MAX,
+            disk_watermark: 0.9,
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
@@ -72,6 +76,20 @@ impl LiquidCacheBuilder {
     /// Default is 1GB.
     pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
         self.max_memory_bytes = max_memory_bytes;
+        self
+    }
+
+    /// Set the max disk bytes for the cache.
+    /// Default is unlimited — the cache will use available disk space without a cap.
+    pub fn with_max_disk_bytes(mut self, max_disk_bytes: usize) -> Self {
+        self.max_disk_bytes = max_disk_bytes;
+        self
+    }
+
+    /// Set the disk watermark ratio (0.0–1.0). Default is 0.9.
+    /// Eviction triggers when disk usage exceeds this fraction of max_disk_bytes.
+    pub fn with_disk_watermark(mut self, ratio: f64) -> Self {
+        self.disk_watermark = ratio;
         self
     }
 
@@ -137,6 +155,8 @@ impl LiquidCacheBuilder {
         Arc::new(LiquidCache::new(
             self.batch_size,
             self.max_memory_bytes,
+            self.max_disk_bytes,
+            self.disk_watermark,
             self.squeeze_policy,
             self.cache_policy,
             self.hydration_policy,

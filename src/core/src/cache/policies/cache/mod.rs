@@ -24,6 +24,12 @@ pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     /// Give cnt amount of entries to evict when cache is full.
     fn find_victim(&self, cnt: usize) -> Vec<EntryID>;
 
+    /// Give cnt amount of disk entries to evict when disk is full.
+    /// Default returns empty — policies that track disk entries can override.
+    fn find_disk_victims(&self, _cnt: usize) -> Vec<EntryID> {
+        vec![]
+    }
+
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
 

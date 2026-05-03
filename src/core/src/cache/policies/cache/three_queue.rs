@@ -185,6 +185,24 @@ impl CachePolicy for LiquidPolicy {
         victims
     }
 
+    fn find_disk_victims(&self, cnt: usize) -> Vec<EntryID> {
+        if cnt == 0 {
+            return vec![];
+        }
+
+        let mut inner = self.inner.lock().unwrap();
+        let mut victims = Vec::with_capacity(cnt);
+
+        while victims.len() < cnt {
+            match inner.pop_front(QueueKind::Disk) {
+                Some(entry) => victims.push(entry),
+                None => break,
+            }
+        }
+
+        victims
+    }
+
     fn notify_access(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
 }
 
@@ -288,5 +306,50 @@ mod tests {
 
         let victims = policy.find_victim(2);
         assert_eq!(victims, vec![entry_id]);
+    }
+
+    #[test]
+    fn test_find_disk_victims_returns_disk_entries_fifo() {
+        let policy = LiquidPolicy::new();
+
+        let d1 = entry(10);
+        let d2 = entry(11);
+        let d3 = entry(12);
+
+        policy.notify_insert(&d1, CachedBatchType::DiskLiquid);
+        policy.notify_insert(&d2, CachedBatchType::DiskArrow);
+        policy.notify_insert(&d3, CachedBatchType::DiskLiquid);
+
+        let victims = policy.find_disk_victims(2);
+        assert_eq!(victims, vec![d1, d2]);
+
+        let victims = policy.find_disk_victims(5);
+        assert_eq!(victims, vec![d3]);
+
+        assert!(policy.find_disk_victims(1).is_empty());
+    }
+
+    #[test]
+    fn test_find_disk_victims_zero_returns_empty() {
+        let policy = LiquidPolicy::new();
+        policy.notify_insert(&entry(1), CachedBatchType::DiskLiquid);
+        assert!(policy.find_disk_victims(0).is_empty());
+    }
+
+    #[test]
+    fn test_find_disk_victims_does_not_affect_memory_eviction() {
+        let policy = LiquidPolicy::new();
+
+        let mem = entry(1);
+        let disk = entry(2);
+
+        policy.notify_insert(&mem, CachedBatchType::MemoryArrow);
+        policy.notify_insert(&disk, CachedBatchType::DiskLiquid);
+
+        let disk_victims = policy.find_disk_victims(5);
+        assert_eq!(disk_victims, vec![disk]);
+
+        let mem_victims = policy.find_victim(5);
+        assert_eq!(mem_victims, vec![mem]);
     }
 }

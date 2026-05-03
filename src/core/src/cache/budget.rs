@@ -3,14 +3,22 @@ use crate::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Debug)]
 pub struct BudgetAccounting {
     max_memory_bytes: usize,
+    max_disk_bytes: usize,
+    watermark_ratio: f64,
     used_memory_bytes: AtomicUsize,
     used_disk_bytes: AtomicUsize,
 }
 
 impl BudgetAccounting {
-    pub(super) fn new(max_memory_bytes: usize) -> Self {
+    pub(super) fn new(
+        max_memory_bytes: usize,
+        max_disk_bytes: usize,
+        watermark_ratio: f64,
+    ) -> Self {
         Self {
             max_memory_bytes,
+            max_disk_bytes,
+            watermark_ratio,
             used_memory_bytes: AtomicUsize::new(0),
             used_disk_bytes: AtomicUsize::new(0),
         }
@@ -69,6 +77,20 @@ impl BudgetAccounting {
     pub fn add_used_disk_bytes(&self, bytes: usize) {
         self.used_disk_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
+
+    pub fn sub_used_disk_bytes(&self, bytes: usize) {
+        self.used_disk_bytes.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    pub fn disk_budget_exceeded(&self) -> bool {
+        self.max_disk_bytes != usize::MAX
+            && self.used_disk_bytes.load(Ordering::Relaxed)
+                > (self.max_disk_bytes as f64 * self.watermark_ratio) as usize
+    }
+
+    pub fn max_disk_bytes(&self) -> usize {
+        self.max_disk_bytes
+    }
 }
 
 #[cfg(test)]
@@ -78,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_memory_reservation_and_accounting() {
-        let config = BudgetAccounting::new(1000);
+        let config = BudgetAccounting::new(1000, usize::MAX, 0.9);
 
         assert_eq!(config.memory_usage_bytes(), 0);
 
@@ -93,6 +115,34 @@ mod tests {
 
         config.reset_usage();
         assert_eq!(config.memory_usage_bytes(), 0);
+    }
+
+    #[test]
+    fn test_disk_budget_tracking() {
+        let budget = BudgetAccounting::new(1000, 500, 0.9);
+
+        assert_eq!(budget.disk_usage_bytes(), 0);
+        assert!(!budget.disk_budget_exceeded());
+
+        budget.add_used_disk_bytes(400);
+        assert_eq!(budget.disk_usage_bytes(), 400);
+        assert!(!budget.disk_budget_exceeded());
+
+        budget.add_used_disk_bytes(200);
+        assert_eq!(budget.disk_usage_bytes(), 600);
+        assert!(budget.disk_budget_exceeded());
+
+        budget.sub_used_disk_bytes(300);
+        assert_eq!(budget.disk_usage_bytes(), 300);
+        assert!(!budget.disk_budget_exceeded());
+    }
+
+    #[test]
+    fn test_disk_budget_unlimited() {
+        let budget = BudgetAccounting::new(1000, usize::MAX, 0.9);
+
+        budget.add_used_disk_bytes(usize::MAX / 2);
+        assert!(!budget.disk_budget_exceeded());
     }
 
     #[test]
@@ -111,7 +161,7 @@ mod tests {
         let max_memory = 10000;
         let operations_per_thread = 100;
 
-        let budget = Arc::new(BudgetAccounting::new(max_memory));
+        let budget = Arc::new(BudgetAccounting::new(max_memory, usize::MAX, 0.9));
         let barrier = Arc::new(Barrier::new(num_threads));
 
         let mut thread_handles = vec![];
