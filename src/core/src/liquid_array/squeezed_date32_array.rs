@@ -261,12 +261,14 @@ impl SqueezedDate32Array {
         self.field
     }
 
-    /// Convert to an Arrow array holding the extracted component.
+    /// Convert to an Arrow array shaped like the original input, encoded so that
+    /// re-applying `date_part` (or any equivalent extraction) recovers the
+    /// component value originally squeezed.
     pub fn to_component_array(&self) -> ArrayRef {
         match &self.original_data_type {
-            DataType::Date32 => Arc::new(self.to_component_date32()) as ArrayRef,
-            DataType::Timestamp(unit, _) => self.to_component_timestamp(*unit),
-            _ => Arc::new(self.to_component_date32()) as ArrayRef,
+            DataType::Date32 => Arc::new(self.to_arrow_date32_lossy()) as ArrayRef,
+            DataType::Timestamp(unit, _) => self.to_arrow_timestamp_lossy(*unit),
+            _ => Arc::new(self.to_arrow_date32_lossy()) as ArrayRef,
         }
     }
 
@@ -281,28 +283,35 @@ impl SqueezedDate32Array {
         PrimitiveArray::<Date32Type>::new(signed_values, nulls)
     }
 
-    fn to_component_timestamp(&self, unit: TimeUnit) -> ArrayRef {
-        let unsigned: PrimitiveArray<UInt32Type> = self.bit_packed.to_primitive();
-        let (_dt, values, nulls) = unsigned.into_parts();
-        let ref_v = self.reference_value;
-        let signed_values: ScalarBuffer<i64> =
-            ScalarBuffer::from_iter(values.iter().map(|&v| (v as i32 + ref_v) as i64));
-
+    /// Lossy reconstruction to Arrow Timestamp at the requested unit, using the
+    /// same date mapping as [`Self::to_arrow_date32_lossy`] (midnight UTC of the
+    /// reconstructed date).
+    pub fn to_arrow_timestamp_lossy(&self, unit: TimeUnit) -> ArrayRef {
+        let date_array = self.to_arrow_date32_lossy();
+        let (_dt, day_values, nulls) = date_array.into_parts();
+        let ticks_per_day: i64 = match unit {
+            TimeUnit::Second => 86_400,
+            TimeUnit::Millisecond => 86_400_000,
+            TimeUnit::Microsecond => 86_400_000_000,
+            TimeUnit::Nanosecond => 86_400_000_000_000,
+        };
+        let tick_values: ScalarBuffer<i64> =
+            ScalarBuffer::from_iter(day_values.iter().map(|&d| (d as i64) * ticks_per_day));
         match unit {
             TimeUnit::Second => Arc::new(PrimitiveArray::<TimestampSecondType>::new(
-                signed_values,
+                tick_values,
                 nulls,
             )),
             TimeUnit::Millisecond => Arc::new(PrimitiveArray::<TimestampMillisecondType>::new(
-                signed_values.clone(),
+                tick_values,
                 nulls,
             )),
             TimeUnit::Microsecond => Arc::new(PrimitiveArray::<TimestampMicrosecondType>::new(
-                signed_values.clone(),
+                tick_values,
                 nulls,
             )),
             TimeUnit::Nanosecond => Arc::new(PrimitiveArray::<TimestampNanosecondType>::new(
-                signed_values,
+                tick_values,
                 nulls,
             )),
         }
@@ -645,8 +654,56 @@ mod tests {
         }
     }
 
+    /// `to_component_array` is consumed by [`crate::cache::core::LiquidCache::try_read_squeezed_date32_array`]
+    /// as the SQL fast path. The query plan still runs `date_part` on the returned array, so the
+    /// values must round-trip through `component_from_days`: feeding a returned Date32 day-value
+    /// back into `component_from_days(field, days)` must recover the original component.
+    ///
+    /// Before the encoding fix, the Year case returned `Date32(year_int)` (e.g. year 1970 became
+    /// Date32 day-1970 = 1975-05-24), so re-extracting the year gave 1975 instead of 1970.
+    #[test]
+    fn to_component_array_date32_round_trips_through_extract() {
+        let inputs: Vec<Option<i32>> = vec![
+            Some(ymd_to_epoch_days(1970, 1, 1)),
+            Some(ymd_to_epoch_days(1971, 7, 15)),
+            Some(ymd_to_epoch_days(1999, 12, 31)),
+            Some(ymd_to_epoch_days(2024, 2, 29)),
+            Some(ymd_to_epoch_days(4709, 11, 24)),
+            None,
+        ];
+        let expected_components: Vec<Option<i32>> = inputs
+            .iter()
+            .map(|opt| opt.map(|d| component_from_days(Date32Field::Year, d)))
+            .collect();
+
+        let arr = dates(&inputs);
+        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(arr);
+        let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
+        let component = squeezed
+            .to_component_array()
+            .as_any()
+            .downcast_ref::<PrimitiveArray<Date32Type>>()
+            .expect("date32 component array")
+            .clone();
+
+        for (idx, expected) in expected_components.iter().enumerate() {
+            match expected {
+                Some(year) => {
+                    assert!(!component.is_null(idx), "row {idx} unexpectedly null");
+                    let recovered = component_from_days(Date32Field::Year, component.value(idx));
+                    assert_eq!(
+                        recovered, *year,
+                        "row {idx}: extracting Year from to_component_array output recovered {recovered}, expected {year}",
+                    );
+                }
+                None => assert!(component.is_null(idx), "row {idx} should be null"),
+            }
+        }
+    }
+
     #[test]
     fn test_timestamp_extraction() {
+        // Two Microsecond timestamps at 2021-01-01 00:00:00 UTC and 2022-01-01 00:00:00 UTC.
         let input = vec![
             Some(1_609_459_200_000_000),
             Some(1_640_995_200_000_000),
@@ -661,8 +718,23 @@ mod tests {
             .downcast_ref::<PrimitiveArray<TimestampMicrosecondType>>()
             .expect("timestamp array");
 
-        assert_eq!(out.value(0), 2021);
-        assert_eq!(out.value(1), 2022);
+        // to_component_array returns Timestamps that round-trip through `date_part`:
+        // year 2021 maps to (2021,1,1) at midnight UTC.
+        let micros_per_day: i64 = 86_400_000_000;
+        assert_eq!(
+            out.value(0),
+            ymd_to_epoch_days(2021, 1, 1) as i64 * micros_per_day,
+        );
+        assert_eq!(
+            out.value(1),
+            ymd_to_epoch_days(2022, 1, 1) as i64 * micros_per_day,
+        );
         assert!(out.is_null(2));
+
+        // Direct integer view is still available via `to_component_date32`.
+        let int_view = squeezed.to_component_date32();
+        assert_eq!(int_view.value(0), 2021);
+        assert_eq!(int_view.value(1), 2022);
+        assert!(int_view.is_null(2));
     }
 }
