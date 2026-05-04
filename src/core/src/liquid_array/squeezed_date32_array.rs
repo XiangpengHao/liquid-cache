@@ -295,9 +295,8 @@ impl SqueezedDate32Array {
             TimeUnit::Microsecond => 86_400_000_000,
             TimeUnit::Nanosecond => 86_400_000_000_000,
         };
-        let tick_values: ScalarBuffer<i64> = ScalarBuffer::from_iter(
-            day_values.iter().map(|&d| (d as i64) * ticks_per_day),
-        );
+        let tick_values: ScalarBuffer<i64> =
+            ScalarBuffer::from_iter(day_values.iter().map(|&d| (d as i64) * ticks_per_day));
         match unit {
             TimeUnit::Second => Arc::new(PrimitiveArray::<TimestampSecondType>::new(
                 tick_values,
