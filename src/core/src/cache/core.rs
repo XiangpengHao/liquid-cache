@@ -967,7 +967,8 @@ mod tests {
         let store = create_cache_store(1 << 20, Box::new(LruPolicy::new())).await;
         let entry_id = EntryID::from(42);
 
-        let date_values = Date32Array::from(vec![Some(0), Some(365), None, Some(730)]);
+        let date_values =
+            Date32Array::from(vec![Some(0 + 1), Some(365 + 1), None, Some(365 + 100)]);
         let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(date_values.clone());
         let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
         let squeezed: LiquidSqueezedArrayRef = Arc::new(squeezed);
@@ -993,10 +994,10 @@ mod tests {
             .downcast_ref::<Date32Array>()
             .expect("date32 result");
         assert_eq!(result.len(), 4);
-        assert_eq!(result.value(0), 1970);
-        assert_eq!(result.value(1), 1971);
+        assert_eq!(result.value(0), 0);
+        assert_eq!(result.value(1), 365);
         assert!(result.is_null(2));
-        assert_eq!(result.value(3), 1972);
+        assert_eq!(result.value(3), 365);
     }
 
     #[tokio::test]
