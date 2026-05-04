@@ -28,7 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage
         .storage()
         .insert(entry_id, arrow_array.clone())
-        .await;
+        .await
+        .unwrap();
 
     assert!(storage.storage().is_cached(&entry_id));
 

@@ -172,6 +172,7 @@ mod tests {
             LiquidCacheParquet::new(
                 8192,
                 1000000,
+                usize::MAX,
                 store,
                 Box::new(LiquidPolicy::new()),
                 Box::new(TranscodeSqueezeEvict),

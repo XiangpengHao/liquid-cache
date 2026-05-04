@@ -5,7 +5,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, DataType, Field, Schema};
-use liquid_cache::cache::{CacheExpression, LiquidCache, LiquidExpr};
+use liquid_cache::cache::{CacheExpression, CacheFull, LiquidCache, LiquidExpr};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 
 use crate::{
@@ -52,6 +52,14 @@ fn infer_expression(field: &Field) -> Option<CacheExpression> {
 pub enum InsertArrowArrayError {
     /// The array is already cached.
     AlreadyCached,
+    /// The cache does not have enough disk budget to accept the array.
+    CacheFull,
+}
+
+impl From<CacheFull> for InsertArrowArrayError {
+    fn from(_: CacheFull) -> Self {
+        Self::CacheFull
+    }
 }
 
 impl CachedColumn {
@@ -190,7 +198,7 @@ impl CachedColumn {
 
         self.cache_store
             .insert(self.entry_id(batch_id).into(), array)
-            .await;
+            .await?;
         Ok(())
     }
 }

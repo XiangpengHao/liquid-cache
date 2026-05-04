@@ -188,6 +188,7 @@ mod tests {
         let cache = LiquidCacheParquet::new(
             1024,
             usize::MAX,
+            usize::MAX,
             store,
             Box::new(LiquidPolicy::new()),
             Box::new(Evict),
