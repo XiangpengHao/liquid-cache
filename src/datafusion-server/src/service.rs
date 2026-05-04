@@ -65,6 +65,7 @@ impl LiquidCacheServiceInner {
             LiquidCacheParquet::new(
                 batch_size,
                 max_memory_bytes.unwrap_or(usize::MAX),
+                usize::MAX,
                 store,
                 cache_policy,
                 squeeze_policy,

@@ -209,15 +209,27 @@ mod tests {
         let entry_id2 = EntryID::from(2);
         let entry_id3 = EntryID::from(3);
 
-        store.insert(entry_id1, create_test_arrow_array(100)).await;
+        store
+            .insert(entry_id1, create_test_arrow_array(100))
+            .await
+            .unwrap();
 
         let data = store.index().get(&entry_id1).unwrap();
         assert!(matches!(data.as_ref(), CacheEntry::MemoryArrow(_)));
-        store.insert(entry_id2, create_test_arrow_array(100)).await;
-        store.insert(entry_id3, create_test_arrow_array(100)).await;
+        store
+            .insert(entry_id2, create_test_arrow_array(100))
+            .await
+            .unwrap();
+        store
+            .insert(entry_id3, create_test_arrow_array(100))
+            .await
+            .unwrap();
 
         let entry_id4: EntryID = EntryID::from(4);
-        store.insert(entry_id4, create_test_arrow_array(100)).await;
+        store
+            .insert(entry_id4, create_test_arrow_array(100))
+            .await
+            .unwrap();
 
         assert!(store.index().get(&entry_id1).is_some());
         assert!(store.index().get(&entry_id2).is_some());

@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) use source::CachedMetaReaderFactory;
 pub use source::LiquidParquetSource;
 pub(crate) use source::ParquetMetadataCacheReader;
 

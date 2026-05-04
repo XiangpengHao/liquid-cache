@@ -18,7 +18,7 @@ async fn default_policies() {
 
     for i in 0..5 {
         let entry_id = EntryID::from(i);
-        cache.insert(entry_id, test_array.clone()).await;
+        cache.insert(entry_id, test_array.clone()).await.unwrap();
     }
 
     for i in 0..5 {
@@ -43,11 +43,17 @@ async fn insert_wont_fit_cache() {
         .with_max_memory_bytes(capacity)
         .build()
         .await;
-    cache.insert(EntryID::from(0), test_array.clone()).await;
+    cache
+        .insert(EntryID::from(0), test_array.clone())
+        .await
+        .unwrap();
     let array_3x = arrow::compute::concat(&[&test_array, &test_array, &test_array]).unwrap();
     let array_9x = arrow::compute::concat(&[&array_3x, &array_3x, &array_3x]).unwrap();
     let array_27x = arrow::compute::concat(&[&array_9x, &array_9x, &array_9x]).unwrap();
-    cache.insert(EntryID::from(1), array_27x.clone()).await;
+    cache
+        .insert(EntryID::from(1), array_27x.clone())
+        .await
+        .unwrap();
     cache.get(&EntryID::from(1)).read().await.unwrap();
 
     let trace = cache.consume_event_trace();

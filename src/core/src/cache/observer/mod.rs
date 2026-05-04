@@ -99,6 +99,16 @@ impl Observer {
         self.runtime.incr_hit_date32_expression();
     }
 
+    #[inline]
+    pub(crate) fn on_cache_full_bypass(&self) {
+        self.runtime.incr_cache_full_bypasses();
+    }
+
+    #[inline]
+    pub(crate) fn on_disk_reservation_failure(&self) {
+        self.runtime.incr_disk_reservation_failures();
+    }
+
     pub(crate) fn record_internal(&self, event: InternalEvent) {
         match event {
             InternalEvent::IoWrite { .. } => self.runtime.incr_write_io_count(),

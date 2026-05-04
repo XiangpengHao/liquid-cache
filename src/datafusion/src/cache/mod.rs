@@ -216,6 +216,10 @@ impl CachedFile {
         self.cache_store.config().batch_size()
     }
 
+    pub(crate) fn record_cache_full_bypass(&self) {
+        self.cache_store.record_cache_full_bypass();
+    }
+
     /// Return the full file schema tracked by the cache entry.
     pub fn schema(&self) -> SchemaRef {
         Arc::clone(&self.file_schema)
@@ -244,6 +248,7 @@ impl LiquidCacheParquet {
     pub async fn new(
         batch_size: usize,
         max_memory_bytes: usize,
+        max_disk_bytes: usize,
         store: t4::Store,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
@@ -252,6 +257,7 @@ impl LiquidCacheParquet {
         Self::new_with_squeeze_victim_concurrency(
             batch_size,
             max_memory_bytes,
+            max_disk_bytes,
             store,
             cache_policy,
             squeeze_policy,
@@ -263,9 +269,11 @@ impl LiquidCacheParquet {
 
     /// Create a new cache for parquet files with explicit victim squeeze concurrency.
     #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_with_squeeze_victim_concurrency(
         batch_size: usize,
         max_memory_bytes: usize,
+        max_disk_bytes: usize,
         store: t4::Store,
         cache_policy: Box<dyn CachePolicy>,
         squeeze_policy: Box<dyn SqueezePolicy>,
@@ -277,6 +285,7 @@ impl LiquidCacheParquet {
         let cache_storage = LiquidCacheBuilder::new()
             .with_batch_size(batch_size)
             .with_max_memory_bytes(max_memory_bytes)
+            .with_max_disk_bytes(max_disk_bytes)
             .with_squeeze_policy(squeeze_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
@@ -322,6 +331,11 @@ impl LiquidCacheParquet {
         self.cache_store.config().max_memory_bytes()
     }
 
+    /// Get the max disk bytes of the cache.
+    pub fn max_disk_bytes(&self) -> usize {
+        self.cache_store.config().max_disk_bytes()
+    }
+
     /// Get the memory usage of the cache in bytes.
     pub fn memory_usage_bytes(&self) -> usize {
         self.cache_store.budget().memory_usage_bytes()
@@ -365,8 +379,8 @@ impl LiquidCacheParquet {
     /// This is for admin use only.
     /// This has no guarantees that some new entry will not be inserted in the meantime, or some entries are promoted to memory again.
     /// You mostly want to use this when no one else is using the cache.
-    pub async fn flush_data(&self) {
-        self.cache_store.flush_all_to_disk().await;
+    pub async fn flush_data(&self) -> Result<(), liquid_cache::cache::CacheFull> {
+        self.cache_store.flush_all_to_disk().await
     }
 
     /// Get the storage of the cache.
@@ -408,6 +422,7 @@ mod tests {
             .unwrap();
         let cache = LiquidCacheParquet::new(
             batch_size,
+            usize::MAX,
             usize::MAX,
             store,
             Box::new(LiquidPolicy::new()),

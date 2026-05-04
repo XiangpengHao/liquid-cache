@@ -19,7 +19,7 @@ use crate::cache::DefaultSqueezeIo;
 use crate::cache::policies::SqueezePolicy;
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, LiquidExpr, index::ArtIndex, utils::EntryID};
-use crate::cache::{CacheStats, EventTrace};
+use crate::cache::{CacheFull, CacheStats, EventTrace};
 use crate::liquid_array::{
     LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
     VariantStructSqueezedArray,
@@ -113,6 +113,7 @@ impl LiquidCache {
             memory_usage_bytes,
             disk_usage_bytes,
             max_memory_bytes: self.config.max_memory_bytes(),
+            max_disk_bytes: self.config.max_disk_bytes(),
             runtime,
         }
     }
@@ -209,6 +210,11 @@ impl LiquidCache {
         &self.observer
     }
 
+    /// Record that a parquet row group bypassed the cache because it was full.
+    pub fn record_cache_full_bypass(&self) {
+        self.observer.on_cache_full_bypass();
+    }
+
     /// Get the compressor states of the cache.
     pub fn compressor_states(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.metadata.get_compressor(entry_id)
@@ -220,7 +226,7 @@ impl LiquidCache {
     }
 
     /// Flush all entries to disk.
-    pub async fn flush_all_to_disk(&self) {
+    pub async fn flush_all_to_disk(&self) -> Result<(), CacheFull> {
         let mut entires = Vec::new();
         self.for_each_entry(|entry_id, batch| {
             entires.push((*entry_id, batch.clone()));
@@ -229,14 +235,14 @@ impl LiquidCache {
             match &batch {
                 CacheEntry::MemoryArrow(array) => {
                     let bytes = arrow_to_bytes(array).expect("failed to convert arrow to bytes");
-                    self.write_batch_to_disk(entry_id, &batch, bytes).await;
+                    self.write_batch_to_disk(entry_id, &batch, bytes).await?;
                     self.try_insert(entry_id, CacheEntry::disk_arrow(array.data_type().clone()))
                         .expect("failed to insert disk arrow entry");
                 }
                 CacheEntry::MemoryLiquid(liquid_array) => {
                     let liquid_bytes = liquid_array.to_bytes();
                     self.write_batch_to_disk(entry_id, &batch, Bytes::from(liquid_bytes))
-                        .await;
+                        .await?;
                     self.try_insert(
                         entry_id,
                         CacheEntry::disk_liquid(liquid_array.original_arrow_data_type()),
@@ -254,6 +260,7 @@ impl LiquidCache {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -263,7 +270,7 @@ impl LiquidCache {
         &self,
         entry_id: EntryID,
         batch: CacheEntry,
-    ) -> CacheEntry {
+    ) -> Result<CacheEntry, CacheFull> {
         match &batch {
             batch @ CacheEntry::MemoryArrow(_) => {
                 let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(DefaultSqueezeIo::new(
@@ -279,24 +286,27 @@ impl LiquidCache {
                 );
                 if let Some(bytes_to_write) = bytes_to_write {
                     self.write_batch_to_disk(entry_id, &new_batch, bytes_to_write)
-                        .await;
+                        .await?;
                 }
-                new_batch
+                Ok(new_batch)
             }
             CacheEntry::MemoryLiquid(liquid_array) => {
                 let liquid_bytes = Bytes::from(liquid_array.to_bytes());
                 self.write_batch_to_disk(entry_id, &batch, liquid_bytes)
-                    .await;
-                CacheEntry::disk_liquid(liquid_array.original_arrow_data_type())
+                    .await?;
+                Ok(CacheEntry::disk_liquid(
+                    liquid_array.original_arrow_data_type(),
+                ))
             }
             CacheEntry::MemorySqueezedLiquid(squeezed_array) => {
                 // The full data is already on disk, so we just need to mark ourself as disk entry
                 let backing = squeezed_array.disk_backing();
-                if backing == SqueezedBacking::Liquid {
+                let entry = if backing == SqueezedBacking::Liquid {
                     CacheEntry::disk_liquid(squeezed_array.original_arrow_data_type())
                 } else {
                     CacheEntry::disk_arrow(squeezed_array.original_arrow_data_type())
-                }
+                };
+                Ok(entry)
             }
             CacheEntry::DiskLiquid(_) | CacheEntry::DiskArrow(_) => {
                 unreachable!("Unexpected batch in write_in_memory_batch_to_disk")
@@ -305,10 +315,14 @@ impl LiquidCache {
     }
 
     /// Insert a batch into the cache, it will run cache replacement policy until the batch is inserted.
-    pub(crate) async fn insert_inner(&self, entry_id: EntryID, mut batch_to_cache: CacheEntry) {
+    pub(crate) async fn insert_inner(
+        &self,
+        entry_id: EntryID,
+        mut batch_to_cache: CacheEntry,
+    ) -> Result<(), CacheFull> {
         loop {
             let Err(not_inserted) = self.try_insert(entry_id, batch_to_cache) else {
-                return;
+                return Ok(());
             };
             self.trace(InternalEvent::InsertFailed {
                 entry: entry_id,
@@ -322,11 +336,11 @@ impl LiquidCache {
                 // we write it to disk
                 let on_disk_batch = self
                     .write_in_memory_batch_to_disk(entry_id, not_inserted)
-                    .await;
+                    .await?;
                 batch_to_cache = on_disk_batch;
                 continue;
             }
-            self.squeeze_victims(victims).await;
+            self.squeeze_victims(victims).await?;
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
@@ -338,6 +352,7 @@ impl LiquidCache {
     pub(crate) fn new(
         batch_size: usize,
         max_memory_bytes: usize,
+        max_disk_bytes: usize,
         squeeze_policy: Box<dyn SqueezePolicy>,
         cache_policy: Box<dyn CachePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
@@ -345,15 +360,20 @@ impl LiquidCache {
         store: t4::Store,
         squeeze_victims_concurrently: bool,
     ) -> Self {
-        let config = CacheConfig::new(batch_size, max_memory_bytes);
+        let config = CacheConfig::new(batch_size, max_memory_bytes, max_disk_bytes);
+        let observer = Arc::new(Observer::new());
         Self {
             index: ArtIndex::new(),
-            budget: BudgetAccounting::new(config.max_memory_bytes()),
+            budget: BudgetAccounting::new(
+                config.max_memory_bytes(),
+                config.max_disk_bytes(),
+                observer.clone(),
+            ),
             config,
             cache_policy,
             hydration_policy,
             squeeze_policy,
-            observer: Arc::new(Observer::new()),
+            observer,
             metadata,
             store,
             squeeze_victims_concurrently,
@@ -409,26 +429,28 @@ impl LiquidCache {
     }
 
     #[fastrace::trace]
-    async fn squeeze_victims(&self, victims: Vec<EntryID>) {
+    async fn squeeze_victims(&self, victims: Vec<EntryID>) -> Result<(), CacheFull> {
         self.trace(InternalEvent::SqueezeBegin {
             victims: victims.clone(),
         });
         if self.squeeze_victims_concurrently {
-            futures::stream::iter(victims)
-                .for_each_concurrent(None, |victim| async move {
-                    self.squeeze_victim_inner(victim).await;
-                })
+            let results = futures::stream::iter(victims)
+                .map(|victim| self.squeeze_victim_inner(victim))
+                .buffer_unordered(usize::MAX)
+                .collect::<Vec<_>>()
                 .await;
+            results.into_iter().collect::<Result<Vec<_>, _>>()?;
         } else {
             for victim in victims {
-                self.squeeze_victim_inner(victim).await;
+                self.squeeze_victim_inner(victim).await?;
             }
         }
+        Ok(())
     }
 
-    async fn squeeze_victim_inner(&self, to_squeeze: EntryID) {
+    async fn squeeze_victim_inner(&self, to_squeeze: EntryID) -> Result<(), CacheFull> {
         let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
-            return;
+            return Ok(());
         };
         self.trace(InternalEvent::SqueezeVictim { entry: to_squeeze });
         let compressor = self.metadata.get_compressor(&to_squeeze);
@@ -450,7 +472,7 @@ impl LiquidCache {
 
             if let Some(bytes_to_write) = bytes_to_write {
                 self.write_batch_to_disk(to_squeeze, &new_batch, bytes_to_write)
-                    .await;
+                    .await?;
             }
             match self.try_insert(to_squeeze, new_batch) {
                 Ok(()) => {
@@ -461,6 +483,7 @@ impl LiquidCache {
                 }
             }
         }
+        Ok(())
     }
 
     fn disk_entry_from_squeezed(array: &LiquidSqueezedArrayRef) -> CacheEntry {
@@ -493,7 +516,7 @@ impl LiquidCache {
                 cached: cached_type,
                 new: new_type,
             });
-            self.insert_inner(*entry_id, new_entry).await;
+            let _ = self.insert_inner(*entry_id, new_entry).await;
         }
     }
 
@@ -692,18 +715,24 @@ impl LiquidCache {
         }
     }
 
-    async fn write_batch_to_disk(&self, entry_id: EntryID, batch: &CacheEntry, bytes: Bytes) {
+    async fn write_batch_to_disk(
+        &self,
+        entry_id: EntryID,
+        batch: &CacheEntry,
+        bytes: Bytes,
+    ) -> Result<(), CacheFull> {
+        let len = bytes.len();
+        self.budget.try_reserve_disk(len).map_err(|()| CacheFull)?;
         self.trace(InternalEvent::IoWrite {
             entry: entry_id,
             kind: CachedBatchType::from(batch),
-            bytes: bytes.len(),
+            bytes: len,
         });
-        let len = bytes.len();
         self.store
             .put(entry_id_to_key(&entry_id), bytes.to_vec())
             .await
             .expect("write failed");
-        self.budget.add_used_disk_bytes(len);
+        Ok(())
     }
 
     async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> ArrayRef {
@@ -908,7 +937,7 @@ mod tests {
         let entry_id1: EntryID = EntryID::from(1);
         let array1 = create_test_array(100);
         let size1 = array1.memory_usage_bytes();
-        store.insert_inner(entry_id1, array1).await;
+        store.insert_inner(entry_id1, array1).await.unwrap();
 
         // Verify budget usage and data correctness
         assert_eq!(store.budget.memory_usage_bytes(), size1);
@@ -921,13 +950,13 @@ mod tests {
         let entry_id2: EntryID = EntryID::from(2);
         let array2 = create_test_array(200);
         let size2 = array2.memory_usage_bytes();
-        store.insert_inner(entry_id2, array2).await;
+        store.insert_inner(entry_id2, array2).await.unwrap();
 
         assert_eq!(store.budget.memory_usage_bytes(), size1 + size2);
 
         let array3 = create_test_array(150);
         let size3 = array3.memory_usage_bytes();
-        store.insert_inner(entry_id1, array3).await;
+        store.insert_inner(entry_id1, array3).await.unwrap();
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
         assert!(store.index().get(&EntryID::from(999)).is_none());
@@ -948,7 +977,8 @@ mod tests {
                 entry_id,
                 CacheEntry::memory_squeezed_liquid(squeezed.clone()),
             )
-            .await;
+            .await
+            .unwrap();
 
         let expr = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
         let result = store
@@ -982,13 +1012,19 @@ mod tests {
             let advisor = TestPolicy::new(Some(entry_id1));
             let store = create_cache_store(8000, Box::new(advisor)).await; // Small budget to force advice
 
-            store.insert_inner(entry_id1, create_test_array(800)).await;
+            store
+                .insert_inner(entry_id1, create_test_array(800))
+                .await
+                .unwrap();
             match store.index().get(&entry_id1).unwrap().as_ref() {
                 CacheEntry::MemoryArrow(_) => {}
                 other => panic!("Expected ArrowMemory, got {other:?}"),
             }
 
-            store.insert_inner(entry_id2, create_test_array(800)).await;
+            store
+                .insert_inner(entry_id2, create_test_array(800))
+                .await
+                .unwrap();
             match store.index().get(&entry_id1).unwrap().as_ref() {
                 CacheEntry::MemoryLiquid(_) => {}
                 other => panic!("Expected LiquidMemory after eviction, got {other:?}"),
@@ -1036,7 +1072,7 @@ mod tests {
                         let unique_id = thread_id * ops_per_thread + i;
                         let entry_id: EntryID = EntryID::from(unique_id);
                         let array = create_test_arrow_array(100);
-                        store.insert(entry_id, array).await;
+                        store.insert(entry_id, array).await.unwrap();
                     }
                 });
             }));
@@ -1070,8 +1106,8 @@ mod tests {
         // Insert two small batches
         let arr1: ArrayRef = Arc::new(Int32Array::from_iter_values(0..64));
         let arr2: ArrayRef = Arc::new(Int32Array::from_iter_values(0..128));
-        storage.insert(EntryID::from(1usize), arr1).await;
-        storage.insert(EntryID::from(2usize), arr2).await;
+        storage.insert(EntryID::from(1usize), arr1).await.unwrap();
+        storage.insert(EntryID::from(2usize), arr2).await.unwrap();
 
         // Stats after insert: 2 entries, memory usage > 0, disk usage == 0
         let s = storage.stats();
@@ -1081,7 +1117,7 @@ mod tests {
         assert_eq!(s.max_memory_bytes, 10 * 1024 * 1024);
 
         // Flush to disk and verify memory usage drops and disk usage increases
-        storage.flush_all_to_disk().await;
+        storage.flush_all_to_disk().await.unwrap();
         let s2 = storage.stats();
         assert_eq!(s2.total_entries, 2);
         assert!(s2.disk_usage_bytes > 0);
@@ -1095,8 +1131,8 @@ mod tests {
         let entry_id = EntryID::from(321usize);
         let array = create_test_arrow_array(8);
 
-        store.insert(entry_id, array.clone()).await;
-        store.flush_all_to_disk().await;
+        store.insert(entry_id, array.clone()).await.unwrap();
+        store.flush_all_to_disk().await.unwrap();
         {
             let entry = store.index().get(&entry_id).unwrap();
             assert!(matches!(entry.as_ref(), CacheEntry::DiskArrow(_)));
@@ -1120,8 +1156,9 @@ mod tests {
 
         store
             .insert_inner(entry_id, CacheEntry::memory_liquid(liquid.clone()))
-            .await;
-        store.flush_all_to_disk().await;
+            .await
+            .unwrap();
+        store.flush_all_to_disk().await.unwrap();
         {
             let entry = store.index().get(&entry_id).unwrap();
             assert!(matches!(entry.as_ref(), CacheEntry::DiskLiquid(_)));
@@ -1133,5 +1170,42 @@ mod tests {
             let entry = store.index().get(&entry_id).unwrap();
             assert!(matches!(entry.as_ref(), CacheEntry::MemoryLiquid(_)));
         }
+    }
+
+    #[tokio::test]
+    async fn insert_returns_cache_full_when_memory_and_disk_are_saturated() {
+        let cache = LiquidCacheBuilder::new()
+            .with_max_memory_bytes(0)
+            .with_max_disk_bytes(0)
+            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .build()
+            .await;
+        let array: ArrayRef = Arc::new(Int32Array::from_iter_values(0..16));
+
+        let err = cache.insert(EntryID::from(900usize), array).await;
+
+        assert_eq!(err, Err(CacheFull));
+        assert!(!cache.is_cached(&EntryID::from(900usize)));
+    }
+
+    #[tokio::test]
+    async fn flush_all_to_disk_returns_cache_full_on_overflow() {
+        let cache = LiquidCacheBuilder::new()
+            .with_max_memory_bytes(1 << 20)
+            .with_max_disk_bytes(0)
+            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .build()
+            .await;
+        let entry_id = EntryID::from(901usize);
+        let array: ArrayRef = Arc::new(Int32Array::from_iter_values(0..16));
+        cache.insert(entry_id, array).await.unwrap();
+
+        let err = cache.flush_all_to_disk().await;
+
+        assert_eq!(err, Err(CacheFull));
+        assert!(matches!(
+            cache.index().get(&entry_id).unwrap().as_ref(),
+            CacheEntry::MemoryArrow(_)
+        ));
     }
 }

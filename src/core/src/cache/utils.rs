@@ -9,13 +9,15 @@ use bytes::Bytes;
 pub struct CacheConfig {
     batch_size: usize,
     max_memory_bytes: usize,
+    max_disk_bytes: usize,
 }
 
 impl CacheConfig {
-    pub(super) fn new(batch_size: usize, max_memory_bytes: usize) -> Self {
+    pub(super) fn new(batch_size: usize, max_memory_bytes: usize, max_disk_bytes: usize) -> Self {
         Self {
             batch_size,
             max_memory_bytes,
+            max_disk_bytes,
         }
     }
 
@@ -25,6 +27,10 @@ impl CacheConfig {
 
     pub fn max_memory_bytes(&self) -> usize {
         self.max_memory_bytes
+    }
+
+    pub fn max_disk_bytes(&self) -> usize {
+        self.max_disk_bytes
     }
 }
 

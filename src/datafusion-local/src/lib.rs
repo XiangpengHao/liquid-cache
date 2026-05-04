@@ -155,6 +155,7 @@ impl LiquidCacheLocalBuilder {
         let cache = LiquidCacheParquet::new(
             self.batch_size,
             self.max_memory_bytes,
+            usize::MAX,
             store,
             self.cache_policy,
             self.squeeze_policy,
@@ -166,6 +167,7 @@ impl LiquidCacheLocalBuilder {
         let cache = LiquidCacheParquet::new_with_squeeze_victim_concurrency(
             self.batch_size,
             self.max_memory_bytes,
+            usize::MAX,
             store,
             self.cache_policy,
             self.squeeze_policy,

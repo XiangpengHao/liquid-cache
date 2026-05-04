@@ -1,18 +1,30 @@
-use crate::sync::atomic::{AtomicUsize, Ordering};
+use super::observer::Observer;
+use crate::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[derive(Debug)]
 pub struct BudgetAccounting {
     max_memory_bytes: usize,
+    max_disk_bytes: usize,
     used_memory_bytes: AtomicUsize,
     used_disk_bytes: AtomicUsize,
+    observer: Arc<Observer>,
 }
 
 impl BudgetAccounting {
-    pub(super) fn new(max_memory_bytes: usize) -> Self {
+    pub(super) fn new(
+        max_memory_bytes: usize,
+        max_disk_bytes: usize,
+        observer: Arc<Observer>,
+    ) -> Self {
         Self {
             max_memory_bytes,
+            max_disk_bytes,
             used_memory_bytes: AtomicUsize::new(0),
             used_disk_bytes: AtomicUsize::new(0),
+            observer,
         }
     }
 
@@ -66,8 +78,27 @@ impl BudgetAccounting {
         self.used_disk_bytes.load(Ordering::Relaxed)
     }
 
-    pub fn add_used_disk_bytes(&self, bytes: usize) {
-        self.used_disk_bytes.fetch_add(bytes, Ordering::Relaxed);
+    pub(super) fn try_reserve_disk(&self, request_bytes: usize) -> Result<(), ()> {
+        let used = self.used_disk_bytes.load(Ordering::Relaxed);
+        if used + request_bytes > self.max_disk_bytes {
+            self.observer.on_disk_reservation_failure();
+            return Err(());
+        }
+
+        match self.used_disk_bytes.compare_exchange(
+            used,
+            used + request_bytes,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => self.try_reserve_disk(request_bytes),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn release_disk(&self, bytes: usize) {
+        self.used_disk_bytes.fetch_sub(bytes, Ordering::Relaxed);
     }
 }
 
@@ -76,9 +107,13 @@ mod tests {
     use super::*;
     use crate::sync::{Arc, Barrier, thread};
 
+    fn test_budget(max_memory_bytes: usize, max_disk_bytes: usize) -> BudgetAccounting {
+        BudgetAccounting::new(max_memory_bytes, max_disk_bytes, Arc::new(Observer::new()))
+    }
+
     #[test]
     fn test_memory_reservation_and_accounting() {
-        let config = BudgetAccounting::new(1000);
+        let config = test_budget(1000, usize::MAX);
 
         assert_eq!(config.memory_usage_bytes(), 0);
 
@@ -111,7 +146,7 @@ mod tests {
         let max_memory = 10000;
         let operations_per_thread = 100;
 
-        let budget = Arc::new(BudgetAccounting::new(max_memory));
+        let budget = Arc::new(test_budget(max_memory, usize::MAX));
         let barrier = Arc::new(Barrier::new(num_threads));
 
         let mut thread_handles = vec![];
@@ -164,5 +199,23 @@ mod tests {
 
         assert_eq!(budget.memory_usage_bytes(), expected_memory_usage);
         assert!(budget.memory_usage_bytes() <= max_memory);
+    }
+
+    #[test]
+    fn disk_reservation_and_release() {
+        let budget = test_budget(usize::MAX, 1000);
+
+        assert_eq!(budget.disk_usage_bytes(), 0);
+        assert!(budget.try_reserve_disk(400).is_ok());
+        assert_eq!(budget.disk_usage_bytes(), 400);
+        assert!(budget.try_reserve_disk(600).is_ok());
+        assert_eq!(budget.disk_usage_bytes(), 1000);
+        assert!(budget.try_reserve_disk(1).is_err());
+        assert_eq!(budget.disk_usage_bytes(), 1000);
+
+        budget.release_disk(250);
+        assert_eq!(budget.disk_usage_bytes(), 750);
+        assert!(budget.try_reserve_disk(250).is_ok());
+        assert_eq!(budget.disk_usage_bytes(), 1000);
     }
 }

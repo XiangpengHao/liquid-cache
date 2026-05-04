@@ -43,7 +43,8 @@ async fn read_squeezed_date_time() {
         cache
             .insert(entry_id, array.clone())
             .with_squeeze_hint(expression.clone())
-            .await;
+            .await
+            .unwrap();
     }
 
     for i in 0..4 {
@@ -112,7 +113,8 @@ async fn read_squeezed_variant_path() {
         cache
             .insert(entry_id, variant_array.clone())
             .with_squeeze_hint(name_expr.clone())
-            .await;
+            .await
+            .unwrap();
     }
 
     let squeezed = cache
@@ -171,9 +173,10 @@ async fn read_squeezed_int64_array() {
             cache
                 .insert(entry_id, int64_array.clone())
                 .with_squeeze_hint(expression.clone())
-                .await;
+                .await
+                .unwrap();
         } else {
-            cache.insert(entry_id, int64_array.clone()).await;
+            cache.insert(entry_id, int64_array.clone()).await.unwrap();
         }
     }
 

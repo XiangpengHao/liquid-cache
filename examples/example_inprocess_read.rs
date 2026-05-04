@@ -9,10 +9,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let entry_id = EntryID::from(7);
     let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
-    storage.insert(entry_id, arrow_array.clone()).await;
+    storage.insert(entry_id, arrow_array.clone()).await.unwrap();
 
     // Move data to disk so the read will demonstrate async I/O
-    storage.flush_all_to_disk().await;
+    storage.flush_all_to_disk().await.unwrap();
 
     // Read asynchronously
     let retrieved = storage.get(&entry_id).await.unwrap();

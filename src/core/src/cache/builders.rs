@@ -10,7 +10,7 @@ use super::cached_batch::CacheEntry;
 use super::core::LiquidCache;
 use super::io_context::{DefaultCacheMetadata, EntryMetadata};
 use super::policies::{CachePolicy, HydrationPolicy, SqueezePolicy, TranscodeSqueezeEvict};
-use super::{CacheExpression, EntryID, LiquidExpr, LiquidPolicy};
+use super::{CacheExpression, CacheFull, EntryID, LiquidExpr, LiquidPolicy};
 use crate::sync::Arc;
 
 /// Builder for [LiquidCache].
@@ -32,6 +32,7 @@ use crate::sync::Arc;
 pub struct LiquidCacheBuilder {
     batch_size: usize,
     max_memory_bytes: usize,
+    max_disk_bytes: usize,
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
     squeeze_policy: Box<dyn SqueezePolicy>,
@@ -52,6 +53,7 @@ impl LiquidCacheBuilder {
         Self {
             batch_size: 8192,
             max_memory_bytes: 1024 * 1024 * 1024,
+            max_disk_bytes: usize::MAX,
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
@@ -72,6 +74,13 @@ impl LiquidCacheBuilder {
     /// Default is 1GB.
     pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
         self.max_memory_bytes = max_memory_bytes;
+        self
+    }
+
+    /// Set the max disk bytes for the cache.
+    /// Default is unlimited.
+    pub fn with_max_disk_bytes(mut self, max_disk_bytes: usize) -> Self {
+        self.max_disk_bytes = max_disk_bytes;
         self
     }
 
@@ -137,6 +146,7 @@ impl LiquidCacheBuilder {
         Arc::new(LiquidCache::new(
             self.batch_size,
             self.max_memory_bytes,
+            self.max_disk_bytes,
             self.squeeze_policy,
             self.cache_policy,
             self.hydration_policy,
@@ -180,7 +190,7 @@ impl<'a> Insert<'a> {
         self
     }
 
-    async fn run(self) {
+    async fn run(self) -> Result<(), CacheFull> {
         let batch = if self.skip_gc {
             self.batch.clone()
         } else {
@@ -190,13 +200,13 @@ impl<'a> Insert<'a> {
             self.storage.add_squeeze_hint(&self.entry_id, squeeze_hint);
         }
         let batch = CacheEntry::memory_arrow(batch);
-        self.storage.insert_inner(self.entry_id, batch).await;
+        self.storage.insert_inner(self.entry_id, batch).await
     }
 }
 
 impl<'a> IntoFuture for Insert<'a> {
-    type Output = ();
-    type IntoFuture = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    type Output = Result<(), CacheFull>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Result<(), CacheFull>> + Send + 'a>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move { self.run().await })
@@ -429,7 +439,7 @@ mod tests {
 
         let cache = LiquidCacheBuilder::new().build().await;
         let entry_id = EntryID::from(123usize);
-        cache.insert(entry_id, root.clone()).await;
+        cache.insert(entry_id, root.clone()).await.unwrap();
 
         let stored = cache.get(&entry_id).await.expect("array present");
         let post_size = stored.get_array_memory_size();

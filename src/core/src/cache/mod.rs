@@ -31,6 +31,10 @@ pub use policies::{
 pub use transcode::{transcode_liquid_inner, transcode_liquid_inner_with_hint};
 pub use utils::{EntryID, LiquidCompressorStates};
 
+/// The cache could not reserve enough disk budget for a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheFull;
+
 // Backwards-compatible module paths for existing imports.
 /// Legacy path: re-export cache policy types under `cache::cache_policies`.
 pub mod cache_policies {

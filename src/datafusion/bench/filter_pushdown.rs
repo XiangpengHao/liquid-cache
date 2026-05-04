@@ -44,6 +44,7 @@ fn setup_cache() -> (Arc<CachedColumn>, tempfile::TempDir) {
     let cache = tokio_test::block_on(LiquidCacheParquet::new(
         BATCH_SIZE,
         1024 * 1024 * 1024, // max_memory_bytes (1GB)
+        usize::MAX,
         store,
         Box::new(LiquidPolicy::new()),
         Box::new(TranscodeSqueezeEvict),

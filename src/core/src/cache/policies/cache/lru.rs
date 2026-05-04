@@ -371,9 +371,18 @@ mod tests {
         let entry_id2 = EntryID::from(2);
         let entry_id3 = EntryID::from(3);
 
-        store.insert(entry_id1, create_test_arrow_array(100)).await;
-        store.insert(entry_id2, create_test_arrow_array(100)).await;
-        store.insert(entry_id3, create_test_arrow_array(100)).await;
+        store
+            .insert(entry_id1, create_test_arrow_array(100))
+            .await
+            .unwrap();
+        store
+            .insert(entry_id2, create_test_arrow_array(100))
+            .await
+            .unwrap();
+        store
+            .insert(entry_id3, create_test_arrow_array(100))
+            .await
+            .unwrap();
 
         assert!(store.index().get(&entry_id1).is_some());
         assert!(store.index().get(&entry_id2).is_some());
