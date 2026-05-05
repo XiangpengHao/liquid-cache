@@ -210,11 +210,6 @@ impl LiquidCache {
         &self.observer
     }
 
-    /// Record that a parquet row group bypassed the cache because it was full.
-    pub fn record_cache_full_bypass(&self) {
-        self.observer.on_cache_full_bypass();
-    }
-
     /// Get the compressor states of the cache.
     pub fn compressor_states(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
         self.metadata.get_compressor(entry_id)

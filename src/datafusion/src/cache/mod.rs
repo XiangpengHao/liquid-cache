@@ -216,10 +216,6 @@ impl CachedFile {
         self.cache_store.config().batch_size()
     }
 
-    pub(crate) fn record_cache_full_bypass(&self) {
-        self.cache_store.record_cache_full_bypass();
-    }
-
     /// Return the full file schema tracked by the cache entry.
     pub fn schema(&self) -> SchemaRef {
         Arc::clone(&self.file_schema)
