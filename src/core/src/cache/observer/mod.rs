@@ -107,6 +107,7 @@ impl Observer {
     pub(crate) fn record_internal(&self, event: InternalEvent) {
         match event {
             InternalEvent::IoWrite { .. } => self.runtime.incr_write_io_count(),
+            InternalEvent::DiskEvict { .. } => self.runtime.incr_disk_evictions(),
             InternalEvent::IoReadArrow { .. } | InternalEvent::IoReadLiquid { .. } => {
                 self.runtime.incr_read_io_count()
             }

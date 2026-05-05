@@ -718,6 +718,10 @@ impl DiskBuffer {
         self.disk_range.clone()
     }
 
+    pub(crate) fn disk_range_len(&self) -> usize {
+        (self.disk_range.end - self.disk_range.start) as usize
+    }
+
     pub(crate) fn compressor_arc(&self) -> Arc<Compressor> {
         self.compressor.clone()
     }

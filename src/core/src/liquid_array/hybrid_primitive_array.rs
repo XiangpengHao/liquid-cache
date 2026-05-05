@@ -23,7 +23,7 @@ use crate::liquid_array::raw::BitPackedArray;
 use super::primitive_array::LiquidPrimitiveType;
 use super::{
     LiquidDataType, LiquidSqueezedArray, NeedsBacking, Operator, PrimitiveKind, SqueezeIoHandler,
-    SqueezeResult,
+    SqueezeResult, SqueezedBacking,
 };
 
 #[derive(Clone, Copy)]
@@ -315,6 +315,10 @@ where
 
     fn original_arrow_data_type(&self) -> DataType {
         T::DATA_TYPE.clone()
+    }
+
+    fn disk_backing(&self) -> SqueezedBacking {
+        SqueezedBacking::Liquid((self.disk_range.end - self.disk_range.start) as usize)
     }
 
     async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
@@ -687,6 +691,10 @@ where
 
     fn original_arrow_data_type(&self) -> DataType {
         T::DATA_TYPE.clone()
+    }
+
+    fn disk_backing(&self) -> SqueezedBacking {
+        SqueezedBacking::Liquid((self.disk_range.end - self.disk_range.start) as usize)
     }
 
     async fn try_eval_predicate(

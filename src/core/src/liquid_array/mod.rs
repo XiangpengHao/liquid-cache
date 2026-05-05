@@ -148,13 +148,25 @@ pub trait LiquidArray: std::fmt::Debug + Send + Sync {
 /// A reference to a Liquid array.
 pub type LiquidArrayRef = Arc<dyn LiquidArray>;
 
-/// On-disk backing type for a hybrid array.
+/// On-disk backing for a squeezed array.
+///
+/// Each variant carries the byte length of the persisted backing data, so the
+/// cache can release the disk budget when the entry is evicted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqueezedBacking {
     /// Bytes are stored using the Liquid IPC format.
-    Liquid,
+    Liquid(usize),
     /// Bytes are stored using Arrow IPC (or another Arrow-compatible encoding).
-    Arrow,
+    Arrow(usize),
+}
+
+impl SqueezedBacking {
+    /// Byte length of the backing data persisted on disk.
+    pub fn disk_bytes(&self) -> usize {
+        match self {
+            Self::Liquid(n) | Self::Arrow(n) => *n,
+        }
+    }
 }
 
 /// A reference to a Liquid squeezed array.
@@ -245,10 +257,9 @@ pub trait LiquidSqueezedArray: std::fmt::Debug + Send + Sync {
         eval_predicate_on_array(filtered, predicate)
     }
 
-    /// Describe how the squeezed array persists its backing bytes on disk.
-    fn disk_backing(&self) -> SqueezedBacking {
-        SqueezedBacking::Liquid
-    }
+    /// Describe how the squeezed array persists its backing bytes on disk,
+    /// including the byte length of the persisted data.
+    fn disk_backing(&self) -> SqueezedBacking;
 }
 
 pub(crate) fn eval_predicate_on_array(array: ArrayRef, predicate: &LiquidExpr) -> BooleanArray {

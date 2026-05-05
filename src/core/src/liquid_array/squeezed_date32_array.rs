@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use super::LiquidArray;
 use super::primitive_array::LiquidPrimitiveArray;
-use super::{LiquidDataType, LiquidSqueezedArray};
+use super::{LiquidDataType, LiquidSqueezedArray, SqueezedBacking};
 use crate::cache::LiquidExpr;
 use crate::liquid_array::LiquidPrimitiveType;
 use crate::liquid_array::SqueezeIoHandler;
@@ -49,11 +49,11 @@ pub struct SqueezedDate32Array {
     /// The minimum extracted value used as reference for offsetting.
     reference_value: i32,
     original_data_type: DataType,
-    backing: Option<SqueezedBacking>,
+    backing: Option<DiskBacking>,
 }
 
 #[derive(Debug, Clone)]
-struct SqueezedBacking {
+struct DiskBacking {
     io: Arc<dyn SqueezeIoHandler>,
     disk_range: Range<u64>,
 }
@@ -225,7 +225,7 @@ impl SqueezedDate32Array {
         io: Arc<dyn SqueezeIoHandler>,
         disk_range: Range<u64>,
     ) -> Self {
-        self.backing = Some(SqueezedBacking { io, disk_range });
+        self.backing = Some(DiskBacking { io, disk_range });
         self
     }
 
@@ -457,6 +457,14 @@ impl LiquidSqueezedArray for SqueezedDate32Array {
 
     fn original_arrow_data_type(&self) -> DataType {
         self.original_data_type.clone()
+    }
+
+    fn disk_backing(&self) -> SqueezedBacking {
+        let backing = self
+            .backing
+            .as_ref()
+            .expect("SqueezedDate32Array backing not set");
+        SqueezedBacking::Liquid((backing.disk_range.end - backing.disk_range.start) as usize)
     }
 
     async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {

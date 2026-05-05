@@ -129,15 +129,15 @@ impl LiquidCacheParquet {
                 CacheEntry::MemoryArrow(array) => Some(array.len() as u64),
                 CacheEntry::MemoryLiquid(array) => Some(array.len() as u64),
                 CacheEntry::MemorySqueezedLiquid(array) => Some(array.len() as u64),
-                CacheEntry::DiskLiquid(_) => None,
-                CacheEntry::DiskArrow(_) => None, // We'd need to read it to get the count
+                CacheEntry::DiskLiquid { .. } => None,
+                CacheEntry::DiskArrow { .. } => None, // We'd need to read it to get the count
             };
             let cache_type = match cached_batch {
                 CacheEntry::MemoryArrow(_) => "InMemory",
                 CacheEntry::MemoryLiquid(_) => "LiquidMemory",
                 CacheEntry::MemorySqueezedLiquid(_) => "LiquidSqueezed",
-                CacheEntry::DiskLiquid(_) => "OnDiskLiquid",
-                CacheEntry::DiskArrow(_) => "OnDiskArrow",
+                CacheEntry::DiskLiquid { .. } => "OnDiskLiquid",
+                CacheEntry::DiskArrow { .. } => "OnDiskArrow",
             };
             let reference_count = cached_batch.reference_count();
             let entry_id = ParquetArrayID::from(*entry_id);

@@ -96,7 +96,6 @@ impl BudgetAccounting {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn release_disk(&self, bytes: usize) {
         self.used_disk_bytes.fetch_sub(bytes, Ordering::Relaxed);
     }
