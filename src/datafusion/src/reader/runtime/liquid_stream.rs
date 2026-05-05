@@ -1,17 +1,14 @@
-use crate::cache::{BatchID, CachedFileRef, CachedRowGroupRef, InsertArrowArrayError};
+use crate::cache::{CachedFileRef, CachedRowGroupRef};
 use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
 use arrow::array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
 use fastrace::Event;
 use fastrace::local::LocalSpan;
-use futures::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
-use parquet::arrow::arrow_reader::{
-    ArrowPredicate, ArrowReaderMetadata, ArrowReaderOptions, RowFilter,
-};
+use futures::Stream;
 use parquet::{
     arrow::{
-        ParquetRecordBatchStreamBuilder, ProjectionMask,
-        arrow_reader::{RowSelection, RowSelector},
+        ProjectionMask,
+        arrow_reader::{ArrowPredicate, RowSelection, RowSelector},
     },
     errors::ParquetError,
     file::metadata::ParquetMetaData,
@@ -24,16 +21,12 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::liquid_cache_reader::LiquidCacheReader;
+use super::liquid_cache_reader::{
+    LiquidCacheReader, LiquidCacheReaderConfig, ParquetFallbackConfig,
+};
 use super::utils::{get_root_column_ids, limit_row_selection, offset_row_selection};
 
 type PlanResult = Option<PlanningContext>;
-type FillCacheResult = Result<(ReaderFactory, PlanningContext, FillOutcome), ParquetError>;
-
-enum FillOutcome {
-    Filled,
-    Bypass,
-}
 
 struct ReaderFactory {
     metadata: Arc<ParquetMetaData>,
@@ -106,17 +99,10 @@ impl ReaderFactory {
             *limit -= rows_after;
         }
 
-        let row_count = meta.num_rows() as usize;
-        let cache_batch_size = self.cached_file.batch_size();
-
         let mut cache_projection = projection.clone();
         if let Some(ref predicate_projection) = predicate_projection {
             cache_projection.union(predicate_projection);
         }
-
-        let selection_for_cache = selection.clone();
-        let selection_batches =
-            collect_selection_batches(&selection_for_cache, cache_batch_size, row_count);
 
         let schema_descr = self.metadata.file_metadata().schema_descr();
         let cache_column_ids = get_root_column_ids(schema_descr, &cache_projection);
@@ -130,8 +116,6 @@ impl ReaderFactory {
             .create_row_group(row_group_idx as u64, predicate_column_ids);
 
         let projection_column_ids = get_root_column_ids(schema_descr, &projection);
-        let missing_batches =
-            compute_missing_batches(&cached_row_group, &cache_column_ids, &selection_batches);
 
         let context = PlanningContext {
             row_group_idx,
@@ -141,106 +125,9 @@ impl ReaderFactory {
             cache_projection,
             projection_column_ids,
             cache_column_ids,
-            missing_batches,
         };
 
         Some(context)
-    }
-
-    /// Fills the cache by reading missing batches from parquet using official parquet reader
-    async fn fill_cache_from_parquet(self, context: PlanningContext) -> FillCacheResult {
-        let row_count = self.metadata.row_group(context.row_group_idx).num_rows() as usize;
-        let cache_batch_size = context.cached_row_group.batch_size();
-
-        if context.cache_column_ids.is_empty() || context.missing_batches.is_empty() {
-            return Ok((self, context, FillOutcome::Filled));
-        }
-
-        // Build row selection for the missing batches
-        let backfill_selection =
-            build_selection_for_batches(&context.missing_batches, cache_batch_size, row_count);
-
-        if !backfill_selection.selects_any() {
-            return Ok((self, context, FillOutcome::Filled));
-        }
-
-        // Clone the reader for this operation (cheap since it's Arc-based)
-        let reader_clone: ParquetMetadataCacheReader = self.input.clone();
-
-        // Use official parquet async reader
-        let options = ArrowReaderOptions::new();
-        let reader_metadata = ArrowReaderMetadata::try_new(Arc::clone(&self.metadata), options)?;
-
-        let mut stream =
-            ParquetRecordBatchStreamBuilder::new_with_metadata(reader_clone, reader_metadata)
-                .with_projection(context.cache_projection.clone())
-                .with_row_groups(vec![context.row_group_idx])
-                .with_row_selection(backfill_selection)
-                .with_batch_size(cache_batch_size)
-                .build()?;
-
-        let mut processed_batches = 0usize;
-
-        // Get the original column indices in projection order
-        let column_ids = get_root_column_ids(
-            self.metadata.file_metadata().schema_descr(),
-            &context.cache_projection,
-        );
-
-        while let Some(batch_result) = stream.next().await {
-            let record_batch = batch_result?;
-            if record_batch.num_rows() == 0 {
-                continue;
-            }
-
-            let Some(batch_id) = context.missing_batches.get(processed_batches) else {
-                return Err(ParquetError::General(
-                    "parquet stream produced more batches than expected".to_string(),
-                ));
-            };
-
-            let batch_index = usize::from(**batch_id);
-            let batch_start = batch_index * cache_batch_size;
-            let expected_len = ((batch_index + 1) * cache_batch_size)
-                .min(row_count)
-                .saturating_sub(batch_start.min(row_count));
-
-            debug_assert!(
-                record_batch.num_rows() <= cache_batch_size,
-                "parquet batch larger than cache batch size"
-            );
-            debug_assert_eq!(
-                record_batch.num_rows(),
-                expected_len,
-                "parquet batch length does not match expected cache slice"
-            );
-
-            let batch_id = *batch_id;
-            let outcome = insert_batch_into_cache(
-                &record_batch,
-                &column_ids,
-                batch_id,
-                cache_batch_size,
-                row_count,
-                &context.cached_row_group,
-            )
-            .await?;
-            if matches!(outcome, InsertBatchOutcome::CacheFull) {
-                return Ok((self, context, FillOutcome::Bypass));
-            }
-
-            processed_batches += 1;
-        }
-
-        if processed_batches != context.missing_batches.len() {
-            return Err(ParquetError::General(format!(
-                "expected {} batches from parquet stream, received {}",
-                context.missing_batches.len(),
-                processed_batches
-            )));
-        }
-
-        Ok((self, context, FillOutcome::Filled))
     }
 }
 
@@ -253,170 +140,6 @@ fn build_projection_schema(file_schema: &SchemaRef, projection_column_ids: &[usi
     Arc::new(Schema::new(fields))
 }
 
-fn collect_selection_batches(
-    selection: &RowSelection,
-    batch_size: usize,
-    row_count: usize,
-) -> Vec<BatchID> {
-    let mut batches = Vec::new();
-    let mut current_row = 0usize;
-    let selectors: Vec<RowSelector> = selection.clone().into();
-
-    for selector in selectors {
-        if selector.skip {
-            current_row += selector.row_count;
-            continue;
-        }
-
-        let start = current_row;
-        let end = (current_row + selector.row_count).min(row_count);
-        if start >= end {
-            current_row = current_row.saturating_add(selector.row_count);
-            continue;
-        }
-
-        let start_batch = start / batch_size;
-        let end_batch = (end - 1) / batch_size;
-        for batch_idx in start_batch..=end_batch {
-            let batch_id = BatchID::from_raw(batch_idx as u16);
-            let is_duplicate = batches.last().is_some_and(|last| last == &batch_id);
-            if !is_duplicate {
-                batches.push(batch_id);
-            }
-        }
-        current_row += selector.row_count;
-    }
-
-    batches
-}
-
-fn compute_missing_batches(
-    cached_row_group: &CachedRowGroupRef,
-    column_ids: &[usize],
-    selection_batches: &[BatchID],
-) -> Vec<BatchID> {
-    if column_ids.is_empty() || selection_batches.is_empty() {
-        return Vec::new();
-    }
-
-    let mut columns = Vec::with_capacity(column_ids.len());
-    for &column_idx in column_ids {
-        columns.push(cached_row_group.get_column(column_idx as u64));
-    }
-
-    let mut missing = Vec::new();
-
-    'batch: for &batch_id in selection_batches {
-        for column in &columns {
-            match column {
-                Some(column) => {
-                    if !column.is_cached(batch_id) {
-                        if missing.last().is_some_and(|last| last == &batch_id) {
-                            continue 'batch;
-                        }
-                        missing.push(batch_id);
-                        continue 'batch;
-                    }
-                }
-                None => {
-                    if missing.last().is_some_and(|last| last == &batch_id) {
-                        continue 'batch;
-                    }
-                    missing.push(batch_id);
-                    continue 'batch;
-                }
-            }
-        }
-    }
-
-    missing
-}
-
-fn build_selection_for_batches(
-    batches: &[BatchID],
-    batch_size: usize,
-    row_count: usize,
-) -> RowSelection {
-    if batches.is_empty() {
-        return RowSelection::from(Vec::<RowSelector>::new());
-    }
-
-    let mut selectors = Vec::new();
-    let mut current_row = 0usize;
-
-    for batch_id in batches {
-        let batch_idx = usize::from(**batch_id);
-        let start = batch_idx * batch_size;
-        if start >= row_count {
-            continue;
-        }
-        let end = ((batch_idx + 1) * batch_size).min(row_count);
-
-        if start > current_row {
-            selectors.push(RowSelector::skip(start - current_row));
-        }
-
-        selectors.push(RowSelector::select(end - start));
-        current_row = end;
-    }
-
-    RowSelection::from(selectors)
-}
-
-enum InsertBatchOutcome {
-    Ok,
-    CacheFull,
-}
-
-async fn insert_batch_into_cache(
-    record_batch: &RecordBatch,
-    column_ids: &[usize],
-    batch_id: BatchID,
-    batch_size: usize,
-    row_count: usize,
-    cached_row_group: &CachedRowGroupRef,
-) -> Result<InsertBatchOutcome, ParquetError> {
-    if column_ids.is_empty() || record_batch.num_rows() == 0 {
-        return Ok(InsertBatchOutcome::Ok);
-    }
-
-    debug_assert_eq!(record_batch.num_columns(), column_ids.len());
-
-    let batch_idx = usize::from(*batch_id);
-    let start = batch_idx * batch_size;
-    if start >= row_count {
-        return Ok(InsertBatchOutcome::Ok);
-    }
-    let end = ((batch_idx + 1) * batch_size).min(row_count);
-    let len = end - start;
-
-    debug_assert!(
-        len <= batch_size,
-        "cache batch length exceeded configured batch size"
-    );
-    debug_assert_eq!(
-        record_batch.num_rows(),
-        len,
-        "record batch length does not match cache batch window"
-    );
-
-    for (col_idx, column_id) in column_ids.iter().enumerate() {
-        let column = cached_row_group.get_column(*column_id as u64).unwrap();
-        let array = Arc::clone(record_batch.column(col_idx));
-
-        match column.insert(batch_id, array).await {
-            Ok(()) | Err(InsertArrowArrayError::AlreadyCached) => {
-                debug_assert!(column.is_cached(batch_id));
-            }
-            Err(InsertArrowArrayError::CacheFull) => {
-                return Ok(InsertBatchOutcome::CacheFull);
-            }
-        }
-    }
-
-    Ok(InsertBatchOutcome::Ok)
-}
-
 /// Context for planning what to read from cache vs parquet
 struct PlanningContext {
     row_group_idx: usize,
@@ -426,30 +149,49 @@ struct PlanningContext {
     cache_projection: ProjectionMask,
     projection_column_ids: Vec<usize>,
     cache_column_ids: Vec<usize>,
-    missing_batches: Vec<BatchID>,
+}
+
+fn build_liquid_cache_reader(
+    reader_factory: &mut ReaderFactory,
+    context: PlanningContext,
+    schema: SchemaRef,
+) -> LiquidCacheReader {
+    let row_count = reader_factory
+        .metadata
+        .row_group(context.row_group_idx)
+        .num_rows() as usize;
+    let cache_batch_size = context.cached_row_group.batch_size();
+    LiquidCacheReader::new(LiquidCacheReaderConfig {
+        batch_size: context.batch_size,
+        selection: context.selection,
+        row_filter: reader_factory.filter.take(),
+        cached_row_group: context.cached_row_group,
+        projection_columns: context.projection_column_ids,
+        schema,
+        parquet_fallback: ParquetFallbackConfig {
+            row_group_idx: context.row_group_idx,
+            metadata: Arc::clone(&reader_factory.metadata),
+            input: reader_factory.input.clone(),
+            cache_projection: context.cache_projection,
+            cache_column_ids: context.cache_column_ids,
+            cache_batch_size,
+            row_count,
+        },
+    })
 }
 
 enum StreamState {
     /// At the start of a new row group, or the end of the parquet stream
     Init,
-    /// Reading from parquet and filling cache
-    FillCache(BoxFuture<'static, FillCacheResult>),
     /// Decoding a batch from cache
-    ReadFromCache(LiquidCacheReader),
-    /// Reading a row group directly from parquet after cache fill hit disk budget.
-    BypassParquet {
-        stream: BoxStream<'static, Result<RecordBatch, ParquetError>>,
-        filter: Option<LiquidRowFilter>,
-    },
+    ReadFromCache(Box<LiquidCacheReader>),
 }
 
 impl std::fmt::Debug for StreamState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             StreamState::Init => write!(f, "StreamState::Init"),
-            StreamState::FillCache(_) => write!(f, "StreamState::FillingCache"),
             StreamState::ReadFromCache(_) => write!(f, "StreamState::Decoding"),
-            StreamState::BypassParquet { .. } => write!(f, "StreamState::BypassParquet"),
         }
     }
 }
@@ -623,7 +365,7 @@ impl Stream for LiquidStream {
 
             match state {
                 StreamState::ReadFromCache(mut batch_reader) => {
-                    match Pin::new(&mut batch_reader).poll_next(cx) {
+                    match Pin::new(&mut *batch_reader).poll_next(cx) {
                         Poll::Ready(Some(Ok(batch))) => {
                             self.state = StreamState::ReadFromCache(batch_reader);
                             return Poll::Ready(Some(Ok(batch)));
@@ -632,6 +374,7 @@ impl Stream for LiquidStream {
                             panic!("Decoding next batch error: {e:?}");
                         }
                         Poll::Ready(None) => {
+                            let batch_reader = *batch_reader;
                             let filter = batch_reader.into_filter();
                             self.reader.as_mut().unwrap().filter = filter;
                             // state left as Init, continue loop to plan next row group
@@ -663,114 +406,15 @@ impl Stream for LiquidStream {
                     );
                     match maybe_context {
                         Some(context) => {
-                            if !context.missing_batches.is_empty()
-                                && !context.cache_column_ids.is_empty()
-                            {
-                                LocalSpan::add_event(Event::new("LiquidStream::fill_cache"));
-                                let reader = self.reader.take().expect("lost reader");
-                                let fut = reader.fill_cache_from_parquet(context).boxed();
-                                self.state = StreamState::FillCache(fut);
-                            } else {
-                                LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
-                                let reader_factory = self.reader.as_mut().unwrap();
-                                let batch_reader = LiquidCacheReader::new(
-                                    context.batch_size,
-                                    context.selection,
-                                    reader_factory.filter.take(),
-                                    context.cached_row_group,
-                                    context.projection_column_ids,
-                                    Arc::clone(&self.schema),
-                                );
-                                self.state = StreamState::ReadFromCache(batch_reader);
-                            }
+                            LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
+                            let schema = Arc::clone(&self.schema);
+                            let reader_factory = self.reader.as_mut().unwrap();
+                            let batch_reader =
+                                build_liquid_cache_reader(reader_factory, context, schema);
+                            self.state = StreamState::ReadFromCache(Box::new(batch_reader));
                         }
                         None => {
                             self.state = StreamState::Init;
-                        }
-                    }
-                }
-                StreamState::FillCache(mut f) => match f.as_mut().poll(cx) {
-                    Poll::Pending => {
-                        self.state = StreamState::FillCache(f);
-                        return Poll::Pending;
-                    }
-                    Poll::Ready(result) => match result {
-                        Ok((reader_factory, context, FillOutcome::Filled)) => {
-                            self.reader = Some(reader_factory);
-                            LocalSpan::add_event(Event::new("LiquidStream::read_from_cache"));
-                            let reader_factory = self.reader.as_mut().unwrap();
-                            let batch_reader = LiquidCacheReader::new(
-                                context.batch_size,
-                                context.selection,
-                                reader_factory.filter.take(),
-                                context.cached_row_group,
-                                context.projection_column_ids,
-                                Arc::clone(&self.schema),
-                            );
-                            self.state = StreamState::ReadFromCache(batch_reader);
-                        }
-                        Ok((mut reader_factory, context, FillOutcome::Bypass)) => {
-                            LocalSpan::add_event(Event::new("LiquidStream::bypass_parquet"));
-                            reader_factory.cached_file.record_cache_full_bypass();
-                            let filter = reader_factory.filter.take();
-                            let reader_clone = reader_factory.input.clone();
-                            let reader_metadata = ArrowReaderMetadata::try_new(
-                                Arc::clone(&reader_factory.metadata),
-                                ArrowReaderOptions::new(),
-                            )
-                            .unwrap();
-                            let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
-                                reader_clone,
-                                reader_metadata,
-                            )
-                            .with_projection(self.projection.clone())
-                            .with_row_groups(vec![context.row_group_idx])
-                            .with_row_selection(context.selection)
-                            .with_batch_size(context.batch_size);
-                            // Push predicates into the parquet decoder so it
-                            // decodes each predicate's own columns and applies
-                            // the filter using its rebound column indices.
-                            // Clones share metric counters with the originals
-                            // (`metrics::Count`/`Time` are `Arc`-backed), so
-                            // accumulated stats are preserved when we restore
-                            // `filter` to `reader_factory` after this row group.
-                            if let Some(f) = filter.as_ref() {
-                                let predicates: Vec<Box<dyn ArrowPredicate>> = f
-                                    .predicates()
-                                    .iter()
-                                    .cloned()
-                                    .map(|p| Box::new(p) as Box<dyn ArrowPredicate>)
-                                    .collect();
-                                builder = builder.with_row_filter(RowFilter::new(predicates));
-                            }
-                            let stream = builder.build().unwrap().boxed();
-                            self.reader = Some(reader_factory);
-                            self.state = StreamState::BypassParquet { stream, filter };
-                        }
-                        Err(e) => {
-                            panic!("Filling cache error: {e:?}");
-                        }
-                    },
-                },
-                StreamState::BypassParquet { mut stream, filter } => {
-                    match Pin::new(&mut stream).poll_next(cx) {
-                        Poll::Ready(Some(Ok(batch))) => {
-                            self.state = StreamState::BypassParquet { stream, filter };
-                            if batch.num_rows() == 0 {
-                                continue;
-                            }
-                            return Poll::Ready(Some(Ok(batch)));
-                        }
-                        Poll::Ready(Some(Err(err))) => {
-                            self.state = StreamState::BypassParquet { stream, filter };
-                            return Poll::Ready(Some(Err(err)));
-                        }
-                        Poll::Ready(None) => {
-                            self.reader.as_mut().unwrap().filter = filter;
-                        }
-                        Poll::Pending => {
-                            self.state = StreamState::BypassParquet { stream, filter };
-                            return Poll::Pending;
                         }
                     }
                 }
@@ -782,7 +426,7 @@ impl Stream for LiquidStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{CachedFileRef, LiquidCacheParquet};
+    use crate::cache::{BatchID, CachedFileRef, LiquidCacheParquet};
     use crate::reader::plantime::{
         CachedMetaReaderFactory, FilterCandidateBuilder, LiquidPredicate,
     };
@@ -794,33 +438,15 @@ mod tests {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+    use futures::StreamExt;
     use liquid_cache::cache::AlwaysHydrate;
     use liquid_cache::cache::squeeze_policies::Evict;
     use liquid_cache::cache_policies::LiquidPolicy;
     use object_store::local::LocalFileSystem;
     use parquet::arrow::ArrowWriter;
-    use parquet::arrow::arrow_reader::RowSelection;
+    use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
     use std::fs::File;
     use std::sync::Arc;
-
-    async fn make_cache(batch_size: usize, schema: SchemaRef) -> CachedRowGroupRef {
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
-            .await
-            .unwrap();
-        let cache = LiquidCacheParquet::new(
-            batch_size,
-            usize::MAX,
-            usize::MAX,
-            store,
-            Box::new(LiquidPolicy::new()),
-            Box::new(Evict),
-            Box::new(AlwaysHydrate::new()),
-        )
-        .await;
-        let file = cache.register_or_get_file("test.parquet".to_string(), schema);
-        file.create_row_group(0, vec![])
-    }
 
     fn write_two_row_group_file(path: &std::path::Path, schema: SchemaRef) {
         let file = File::create(path).unwrap();
@@ -844,6 +470,19 @@ mod tests {
         writer.write(&batch0).unwrap();
         writer.flush().unwrap();
         writer.write(&batch1).unwrap();
+        writer.close().unwrap();
+    }
+
+    fn write_single_row_group_file(path: &std::path::Path, schema: SchemaRef, a: Vec<i32>) {
+        let file = File::create(path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
+        let b: Vec<_> = a.iter().map(|value| value + 1000).collect();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(a)), Arc::new(Int32Array::from(b))],
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
         writer.close().unwrap();
     }
 
@@ -933,6 +572,23 @@ mod tests {
             b.extend(b_array.iter().map(|value| value.unwrap()));
         }
         (a, b)
+    }
+
+    async fn collect_projected_a(stream: LiquidStream) -> Vec<i32> {
+        let batches = stream
+            .map(|batch| batch.expect("valid liquid stream batch"))
+            .collect::<Vec<_>>()
+            .await;
+        let mut a = Vec::new();
+        for batch in batches {
+            let a_array = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            a.extend(a_array.iter().map(|value| value.unwrap()));
+        }
+        a
     }
 
     fn gt_filter(schema: SchemaRef, literal: i32) -> LiquidRowFilter {
@@ -1026,6 +682,62 @@ mod tests {
         (stream, cache, cached_file, tmp_dir)
     }
 
+    async fn make_single_row_group_stream(
+        parquet_a: Vec<i32>,
+        projection_columns: Vec<usize>,
+    ) -> (LiquidStream, CachedFileRef, tempfile::TempDir) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let parquet_path = tmp_dir.path().join("data.parquet");
+        write_single_row_group_file(&parquet_path, schema.clone(), parquet_a);
+        let metadata_file = File::open(&parquet_path).unwrap();
+        let reader_metadata =
+            ArrowReaderMetadata::load(&metadata_file, ArrowReaderOptions::new()).unwrap();
+        let object_store = Arc::new(LocalFileSystem::new_with_prefix(tmp_dir.path()).unwrap());
+        let partitioned_file = PartitionedFile::new(
+            "data.parquet",
+            std::fs::metadata(&parquet_path).unwrap().len(),
+        );
+        let metrics = ExecutionPlanMetricsSet::new();
+        let input = CachedMetaReaderFactory::new(object_store).create_liquid_reader(
+            0,
+            partitioned_file,
+            None,
+            &metrics,
+        );
+
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
+        let cache = Arc::new(
+            LiquidCacheParquet::new(
+                4,
+                usize::MAX,
+                usize::MAX,
+                store,
+                Box::new(LiquidPolicy::new()),
+                Box::new(Evict),
+                Box::new(AlwaysHydrate::new()),
+            )
+            .await,
+        );
+        let cached_file = cache.register_or_get_file("data.parquet".to_string(), schema);
+        let projection = ProjectionMask::roots(
+            reader_metadata.metadata().file_metadata().schema_descr(),
+            projection_columns,
+        );
+        let stream = LiquidStreamBuilder::new(input, Arc::clone(reader_metadata.metadata()))
+            .with_batch_size(4)
+            .with_row_groups(vec![0])
+            .with_projection(projection)
+            .build(cached_file.clone())
+            .unwrap();
+        (stream, cached_file, tmp_dir)
+    }
+
     async fn insert_batches(
         row_group: &CachedRowGroupRef,
         column_id: usize,
@@ -1041,265 +753,132 @@ mod tests {
         }
     }
 
-    #[test]
-    fn collect_selection_batches_marks_all_selected_batches() {
-        let selection = RowSelection::from(vec![
-            RowSelector::select(3),
-            RowSelector::skip(2),
-            RowSelector::select(5),
-        ]);
-        let batches = collect_selection_batches(&selection, 4, 10);
-        let expected = vec![
-            BatchID::from_raw(0),
-            BatchID::from_raw(1),
-            BatchID::from_raw(2),
-        ];
-        assert_eq!(batches, expected);
-    }
-
-    #[test]
-    fn collect_selection_batches_handles_empty_selection() {
-        let selection = RowSelection::from(vec![]);
-        let batches = collect_selection_batches(&selection, 4, 10);
-        let expected: Vec<BatchID> = vec![];
-        assert_eq!(batches, expected);
-    }
-
-    #[test]
-    fn collect_selection_batches_handles_selection_beyond_row_count() {
-        let selection = RowSelection::from(vec![
-            RowSelector::select(5),  // Select 5 rows
-            RowSelector::skip(2),    // Skip 2 rows
-            RowSelector::select(10), // Select 10 rows (but only 3 rows left)
-        ]);
-        let batches = collect_selection_batches(&selection, 4, 8);
-        // Total rows: 8
-        // First selector: select 5 rows (rows 0-4) -> batches 0, 1
-        // Skip 2 rows (rows 5-6)
-        // Third selector: select 10 rows from row 7, but only 1 row left -> batch 1
-        let expected = vec![BatchID::from_raw(0), BatchID::from_raw(1)];
-        assert_eq!(batches, expected);
+    async fn is_cached(row_group: &CachedRowGroupRef, column_id: usize, batch_idx: u16) -> bool {
+        row_group
+            .get_column(column_id as u64)
+            .unwrap()
+            .get_arrow_array_test_only(BatchID::from_raw(batch_idx))
+            .await
+            .is_some()
     }
 
     #[tokio::test]
-    async fn compute_missing_batches_identifies_partial_columns() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("col_0", DataType::Int32, false),
-            Field::new("col_1", DataType::Int32, false),
-            Field::new("col_2", DataType::Int32, false),
-        ]));
-        let row_group = make_cache(4, schema.clone()).await;
-        insert_batches(&row_group, 0, &[(0, &[1, 2, 3, 4]), (2, &[9, 9, 9, 9])]).await;
-        insert_batches(&row_group, 2, &[(0, &[5, 6, 7, 8])]).await;
-
-        let selection_batches = vec![
-            BatchID::from_raw(0),
-            BatchID::from_raw(1),
-            BatchID::from_raw(2),
-        ];
-
-        let missing_for_col0 = compute_missing_batches(&row_group, &[0], &selection_batches);
-        assert_eq!(missing_for_col0, vec![BatchID::from_raw(1)]);
-
-        let missing_for_col2 = compute_missing_batches(&row_group, &[2], &selection_batches);
-        assert_eq!(
-            missing_for_col2,
-            vec![BatchID::from_raw(1), BatchID::from_raw(2),]
-        );
-
-        let missing_for_col1 = compute_missing_batches(&row_group, &[1], &selection_batches);
-        assert_eq!(
-            missing_for_col1,
-            vec![
-                BatchID::from_raw(0),
-                BatchID::from_raw(1),
-                BatchID::from_raw(2),
-            ]
-        );
-    }
-
-    #[test]
-    fn build_selection_for_batches_generates_sparse_selectors() {
-        let selection =
-            build_selection_for_batches(&[BatchID::from_raw(1), BatchID::from_raw(3)], 4, 20);
-        let selectors: Vec<RowSelector> = selection.into();
-        assert_eq!(
-            selectors,
-            vec![
-                RowSelector::skip(4),
-                RowSelector::select(4),
-                RowSelector::skip(4),
-                RowSelector::select(4),
-            ]
-        );
-    }
-
-    #[test]
-    fn build_selection_for_batches_handles_empty_batches() {
-        let selection = build_selection_for_batches(&[], 4, 20);
-        let selectors: Vec<RowSelector> = selection.into();
-        assert_eq!(selectors, vec![]);
-    }
-
-    #[test]
-    fn build_selection_for_batches_handles_batch_beyond_row_count() {
-        let selection =
-            build_selection_for_batches(&[BatchID::from_raw(5), BatchID::from_raw(6)], 4, 16);
-        let selectors: Vec<RowSelector> = selection.into();
-        // Total rows: 16, so valid batches are 0-3 (rows 0-15)
-        // Batch 5: start=20, end=min(24,16)=16, but 20 >= 16, so skipped
-        // Batch 6: start=24, end=min(28,16)=16, but 24 >= 16, so skipped
-        // Result should be empty selection
-        assert_eq!(selectors, vec![]);
-    }
-
-    #[test]
-    fn build_selection_for_batches_handles_single_batch() {
-        let selection = build_selection_for_batches(&[BatchID::from_raw(2)], 4, 20);
-        let selectors: Vec<RowSelector> = selection.into();
-        // Batch 2: rows 8-11
-        // Should skip 8 rows then select 4 rows
-        assert_eq!(
-            selectors,
-            vec![RowSelector::skip(8), RowSelector::select(4),]
-        );
-    }
-
-    #[test]
-    fn build_selection_for_batches_handles_partial_last_batch() {
-        let selection = build_selection_for_batches(&[BatchID::from_raw(4)], 4, 18);
-        let selectors: Vec<RowSelector> = selection.into();
-        // Batch 4: start=16, end=min(20,18)=18
-        // Should skip 16 rows then select 2 rows (18-16=2)
-        assert_eq!(
-            selectors,
-            vec![RowSelector::skip(16), RowSelector::select(2),]
-        );
-    }
-
-    #[tokio::test]
-    async fn cache_full_bypasses_row_group_and_keeps_inserted_batches() {
+    async fn cache_full_keeps_inserted_batches_and_skips_failed_inserts() {
         let one_array_memory = Arc::new(Int32Array::from(vec![0, 1, 2, 3])).get_array_memory_size();
-        let (stream, cache, cached_file, _tmp_dir) =
+        let (stream, _cache, cached_file, _tmp_dir) =
             make_liquid_stream(one_array_memory * 3, 0, None).await;
 
         let (a, b) = collect_liquid_values(stream).await;
 
         assert_eq!(a, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(b, vec![10, 11, 12, 13, 14, 15, 16, 17]);
-        assert_eq!(cache.storage().stats().runtime.cache_full_bypasses, 1);
 
         let row_group0 = cached_file.create_row_group(0, vec![]);
         let row_group1 = cached_file.create_row_group(1, vec![]);
-        assert!(
-            row_group0
-                .get_column(0)
-                .unwrap()
-                .get_arrow_array_test_only(BatchID::from_raw(0))
-                .await
-                .is_some()
-        );
-        assert!(
-            row_group0
-                .get_column(1)
-                .unwrap()
-                .get_arrow_array_test_only(BatchID::from_raw(0))
-                .await
-                .is_some()
-        );
-        assert!(
-            row_group1
-                .get_column(0)
-                .unwrap()
-                .get_arrow_array_test_only(BatchID::from_raw(0))
-                .await
-                .is_some()
-        );
+        assert!(is_cached(&row_group0, 0, 0).await);
+        assert!(is_cached(&row_group0, 1, 0).await);
+        assert!(is_cached(&row_group1, 0, 0).await);
+        assert!(!is_cached(&row_group1, 1, 0).await);
     }
 
     #[tokio::test]
-    async fn cache_full_bypass_applies_row_filter_in_memory() {
+    async fn cache_full_with_row_filter_keeps_lookaside_results_correct() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
         ]));
         let one_array_memory = Arc::new(Int32Array::from(vec![0, 1, 2, 3])).get_array_memory_size();
         let filter = gt_filter(schema, 2);
-        let (stream, cache, _cached_file, _tmp_dir) =
+        let (stream, _cache, cached_file, _tmp_dir) =
             make_liquid_stream(one_array_memory * 3, 0, Some(filter)).await;
 
         let (a, b) = collect_liquid_values(stream).await;
 
         assert_eq!(a, vec![3, 4, 5, 6, 7]);
         assert_eq!(b, vec![13, 14, 15, 16, 17]);
-        assert_eq!(cache.storage().stats().runtime.cache_full_bypasses, 1);
+
+        let row_group0 = cached_file.create_row_group(0, vec![]);
+        let row_group1 = cached_file.create_row_group(1, vec![]);
+        assert!(is_cached(&row_group0, 0, 0).await);
+        assert!(is_cached(&row_group0, 1, 0).await);
+        assert!(is_cached(&row_group1, 0, 0).await);
+        assert!(!is_cached(&row_group1, 1, 0).await);
     }
 
     #[tokio::test]
-    async fn cache_full_bypasses_immediately_when_already_at_cap() {
-        let (stream, cache, cached_file, _tmp_dir) = make_liquid_stream(0, 0, None).await;
+    async fn mid_scan_eviction_recovers() {
+        let (stream, _cache, cached_file, _tmp_dir) = make_liquid_stream(0, 0, None).await;
 
         let (a, b) = collect_liquid_values(stream).await;
 
         assert_eq!(a, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(b, vec![10, 11, 12, 13, 14, 15, 16, 17]);
-        assert_eq!(cache.storage().stats().runtime.cache_full_bypasses, 2);
 
         let row_group0 = cached_file.create_row_group(0, vec![]);
-        assert!(
-            row_group0
-                .get_column(0)
-                .unwrap()
-                .get_arrow_array_test_only(BatchID::from_raw(0))
-                .await
-                .is_none()
-        );
+        let row_group1 = cached_file.create_row_group(1, vec![]);
+        assert!(!is_cached(&row_group0, 0, 0).await);
+        assert!(!is_cached(&row_group0, 1, 0).await);
+        assert!(!is_cached(&row_group1, 0, 0).await);
+        assert!(!is_cached(&row_group1, 1, 0).await);
     }
 
-    /// Reproducer: predicate references a column that is NOT in the user
-    /// projection. On the bypass path the parquet stream is built with
-    /// `self.projection.clone()` only, so the decoded batch does not even
-    /// contain the predicate's column. `LiquidRowFilter::filter_batch` then
-    /// evaluates the predicate against whatever column happens to sit at
-    /// index 0 of the batch, producing wrong results.
-    ///
-    /// File data:  a = [0..7],  b = [10..17]
-    /// Query:      SELECT a WHERE b > 13
-    /// Correct:    a = [4, 5, 6, 7]
-    /// Buggy:      predicate is `b > 13` rebound to "column index 0 of
-    ///             filter_schema"; the bypass batch is `[a]`, so the predicate
-    ///             evaluates `a > 13` -> all false -> empty result.
     #[tokio::test]
-    async fn cache_full_bypass_evaluates_predicate_against_wrong_column() {
+    async fn predicate_fallback_uses_predicate_projection() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
         ]));
         let one_array_memory = Arc::new(Int32Array::from(vec![0, 1, 2, 3])).get_array_memory_size();
         let filter = gt_filter_on(schema, "b", 1, 13);
-        let (stream, cache, _cached_file, _tmp_dir) =
+        let (stream, _cache, cached_file, _tmp_dir) =
             make_liquid_stream_with_projection(one_array_memory * 3, 0, Some(filter), vec![0])
                 .await;
 
-        let batches = stream
-            .map(|batch| batch.expect("valid liquid stream batch"))
-            .collect::<Vec<_>>()
-            .await;
+        let a_values = collect_projected_a(stream).await;
 
-        let mut a_values = Vec::new();
-        for batch in batches {
-            let arr = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
-            a_values.extend(arr.iter().map(|value| value.unwrap()));
-        }
-
-        // The bypass path was actually exercised.
-        assert!(cache.storage().stats().runtime.cache_full_bypasses >= 1);
-
-        // SELECT a WHERE b > 13 -> a = [4, 5, 6, 7]
         assert_eq!(a_values, vec![4, 5, 6, 7]);
+
+        let row_group0 = cached_file.create_row_group(0, vec![]);
+        let row_group1 = cached_file.create_row_group(1, vec![]);
+        assert!(is_cached(&row_group0, 0, 0).await);
+        assert!(is_cached(&row_group0, 1, 0).await);
+        assert!(is_cached(&row_group1, 0, 0).await);
+        assert!(!is_cached(&row_group1, 1, 0).await);
+    }
+
+    #[tokio::test]
+    async fn missing_column_falls_back_to_parquet() {
+        let (stream, _cache, cached_file, _tmp_dir) =
+            make_liquid_stream(usize::MAX, usize::MAX, None).await;
+        let row_group0 = cached_file.create_row_group(0, vec![]);
+        let row_group1 = cached_file.create_row_group(1, vec![]);
+        insert_batches(&row_group0, 0, &[(0, &[0, 1, 2, 3])]).await;
+        insert_batches(&row_group1, 0, &[(0, &[4, 5, 6, 7])]).await;
+
+        let (a, b) = collect_liquid_values(stream).await;
+
+        assert_eq!(a, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(b, vec![10, 11, 12, 13, 14, 15, 16, 17]);
+        assert!(is_cached(&row_group0, 1, 0).await);
+        assert!(is_cached(&row_group1, 1, 0).await);
+    }
+
+    #[tokio::test]
+    async fn fallback_stream_advances_across_misses() {
+        let parquet_a = vec![
+            100, 101, 102, 103, 4, 5, 6, 7, 200, 201, 202, 203, 12, 13, 14, 15,
+        ];
+        let (stream, cached_file, _tmp_dir) =
+            make_single_row_group_stream(parquet_a, vec![0]).await;
+        let row_group = cached_file.create_row_group(0, vec![]);
+        insert_batches(&row_group, 0, &[(0, &[0, 1, 2, 3]), (2, &[8, 9, 10, 11])]).await;
+
+        let a_values = collect_projected_a(stream).await;
+
+        assert_eq!(a_values, (0..16).collect::<Vec<_>>());
+        assert!(is_cached(&row_group, 0, 0).await);
+        assert!(is_cached(&row_group, 0, 1).await);
+        assert!(is_cached(&row_group, 0, 2).await);
+        assert!(is_cached(&row_group, 0, 3).await);
     }
 }

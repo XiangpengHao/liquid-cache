@@ -35,13 +35,13 @@ values:
 stats:
 entries.total: 8
 entries.after_first_run: 8
-entries.memory.arrow: 2
-entries.memory.liquid: 6
+entries.memory.arrow: 0
+entries.memory.liquid: 8
 entries.memory.squeezed_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 885884
-usage.disk_bytes: 729144
+usage.memory_bytes: 884561
+usage.disk_bytes: 877216
 RuntimeStatsSnapshot:
   get: 2
   get_with_selection: 2
@@ -50,9 +50,8 @@ RuntimeStatsSnapshot:
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
-  read_io_count: 0
+  read_io_count: 5
   write_io_count: 0
-  cache_full_bypasses: 0
   disk_reservation_failures: 0
   eval_predicate_on_liquid_failed: 0
   squeezed_decompressed_count: 0

@@ -100,11 +100,6 @@ impl Observer {
     }
 
     #[inline]
-    pub(crate) fn on_cache_full_bypass(&self) {
-        self.runtime.incr_cache_full_bypasses();
-    }
-
-    #[inline]
     pub(crate) fn on_disk_reservation_failure(&self) {
         self.runtime.incr_disk_reservation_failures();
     }

@@ -51,9 +51,8 @@ RuntimeStatsSnapshot:
   get_squeezed_needs_io: 1
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
-  read_io_count: 1
+  read_io_count: 2
   write_io_count: 0
-  cache_full_bypasses: 0
   disk_reservation_failures: 0
   eval_predicate_on_liquid_failed: 0
   squeezed_decompressed_count: 2141
