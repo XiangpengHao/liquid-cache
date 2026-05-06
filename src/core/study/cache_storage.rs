@@ -14,8 +14,8 @@ use liquid_cache::cache::EntryID;
 use liquid_cache::cache::LiquidCache;
 use liquid_cache::cache::LiquidCacheBuilder;
 use liquid_cache::cache::LiquidExpr;
+use liquid_cache::cache::LiquidPolicy;
 use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
-use liquid_cache::cache_policies::FiloPolicy;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -51,7 +51,7 @@ fn main() {
         LiquidCacheBuilder::new()
             .with_max_memory_bytes(500 * 1024 * 1024)
             .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-            .with_cache_policy(Box::new(FiloPolicy::new()))
+            .with_cache_policy(Box::new(LiquidPolicy::new()))
             .with_store(store)
             .build()
             .await

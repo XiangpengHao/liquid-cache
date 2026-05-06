@@ -24,6 +24,10 @@ pub(crate) enum InternalEvent {
         kind: CachedBatchType,
         bytes: usize,
     },
+    DiskEvict {
+        entry: EntryID,
+        bytes: usize,
+    },
     IoReadSqueezedBacking {
         entry: EntryID,
         bytes: usize,
@@ -116,6 +120,14 @@ impl fmt::Display for InternalEvent {
                     "event=io_write entry={} kind={:?} bytes={}",
                     usize::from(*entry),
                     kind,
+                    bytes
+                )
+            }
+            InternalEvent::DiskEvict { entry, bytes } => {
+                write!(
+                    f,
+                    "event=disk_evict entry={} bytes={}",
+                    usize::from(*entry),
                     bytes
                 )
             }

@@ -17,9 +17,19 @@ pub enum CacheEntry {
     /// Cached batch in memory as squeezed liquid array.
     MemorySqueezedLiquid(LiquidSqueezedArrayRef),
     /// Cached batch on disk as liquid array.
-    DiskLiquid(DataType),
+    DiskLiquid {
+        /// Original Arrow data type.
+        data_type: DataType,
+        /// Byte length of the persisted backing data.
+        disk_bytes: usize,
+    },
     /// Cached batch on disk as Arrow array.
-    DiskArrow(DataType),
+    DiskArrow {
+        /// Original Arrow data type.
+        data_type: DataType,
+        /// Byte length of the persisted backing data.
+        disk_bytes: usize,
+    },
 }
 
 impl CacheEntry {
@@ -39,13 +49,19 @@ impl CacheEntry {
     }
 
     /// Construct a cached batch stored on disk as Liquid bytes.
-    pub fn disk_liquid(data_type: DataType) -> Self {
-        Self::DiskLiquid(data_type)
+    pub fn disk_liquid(data_type: DataType, disk_bytes: usize) -> Self {
+        Self::DiskLiquid {
+            data_type,
+            disk_bytes,
+        }
     }
 
     /// Construct a cached batch stored on disk as Arrow bytes.
-    pub fn disk_arrow(data_type: DataType) -> Self {
-        Self::DiskArrow(data_type)
+    pub fn disk_arrow(data_type: DataType, disk_bytes: usize) -> Self {
+        Self::DiskArrow {
+            data_type,
+            disk_bytes,
+        }
     }
 
     /// Memory usage reported by the underlying representation.
@@ -54,7 +70,7 @@ impl CacheEntry {
             Self::MemoryArrow(array) => array.get_array_memory_size(),
             Self::MemoryLiquid(array) => array.get_array_memory_size(),
             Self::MemorySqueezedLiquid(array) => array.get_array_memory_size(),
-            Self::DiskLiquid(_) | Self::DiskArrow(_) => 0,
+            Self::DiskLiquid { .. } | Self::DiskArrow { .. } => 0,
         }
     }
 
@@ -64,7 +80,7 @@ impl CacheEntry {
             Self::MemoryArrow(array) => Arc::strong_count(array),
             Self::MemoryLiquid(array) => Arc::strong_count(array),
             Self::MemorySqueezedLiquid(array) => Arc::strong_count(array),
-            Self::DiskLiquid(_) | Self::DiskArrow(_) => 0,
+            Self::DiskLiquid { .. } | Self::DiskArrow { .. } => 0,
         }
     }
 }
@@ -75,8 +91,8 @@ impl Display for CacheEntry {
             Self::MemoryArrow(_) => write!(f, "MemoryArrow"),
             Self::MemoryLiquid(_) => write!(f, "MemoryLiquid"),
             Self::MemorySqueezedLiquid(_) => write!(f, "MemorySqueezedLiquid"),
-            Self::DiskLiquid(_) => write!(f, "DiskLiquid"),
-            Self::DiskArrow(_) => write!(f, "DiskArrow"),
+            Self::DiskLiquid { .. } => write!(f, "DiskLiquid"),
+            Self::DiskArrow { .. } => write!(f, "DiskArrow"),
         }
     }
 }
@@ -102,8 +118,8 @@ impl From<&CacheEntry> for CachedBatchType {
             CacheEntry::MemoryArrow(_) => Self::MemoryArrow,
             CacheEntry::MemoryLiquid(_) => Self::MemoryLiquid,
             CacheEntry::MemorySqueezedLiquid(_) => Self::MemorySqueezedLiquid,
-            CacheEntry::DiskLiquid(_) => Self::DiskLiquid,
-            CacheEntry::DiskArrow(_) => Self::DiskArrow,
+            CacheEntry::DiskLiquid { .. } => Self::DiskLiquid,
+            CacheEntry::DiskArrow { .. } => Self::DiskArrow,
         }
     }
 }

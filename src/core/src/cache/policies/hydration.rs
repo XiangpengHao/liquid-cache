@@ -87,6 +87,7 @@ fn hydrate_variant_paths(
         combined_values,
         nulls,
         squeezed.original_arrow_data_type(),
+        squeezed.disk_backing().disk_bytes(),
     );
     Some(CacheEntry::memory_squeezed_liquid(
         Arc::new(merged) as LiquidSqueezedArrayRef
@@ -96,16 +97,27 @@ fn hydrate_variant_paths(
 impl HydrationPolicy for AlwaysHydrate {
     fn hydrate(&self, request: &HydrationRequest<'_>) -> Option<CacheEntry> {
         match (request.cached, &request.materialized) {
-            (CacheEntry::DiskArrow(_), MaterializedEntry::Arrow(arr)) => {
+            (CacheEntry::DiskArrow { disk_bytes, .. }, MaterializedEntry::Arrow(arr)) => {
                 if let Some(CacheExpression::VariantGet { requests }) = request.expression
                     && let Some((squeezed, _bytes)) =
                         try_variant_squeeze(arr, requests, request.compressor.as_ref())
                 {
-                    return Some(CacheEntry::memory_squeezed_liquid(squeezed));
+                    let variant = squeezed
+                        .as_any()
+                        .downcast_ref::<VariantStructSqueezedArray>()?;
+                    let squeezed = VariantStructSqueezedArray::new(
+                        variant.typed_values(),
+                        variant.nulls(),
+                        variant.original_arrow_data_type(),
+                        *disk_bytes,
+                    );
+                    return Some(CacheEntry::memory_squeezed_liquid(
+                        Arc::new(squeezed) as LiquidSqueezedArrayRef
+                    ));
                 }
                 Some(CacheEntry::memory_arrow((*arr).clone()))
             }
-            (CacheEntry::DiskLiquid(_), MaterializedEntry::Liquid(liq)) => {
+            (CacheEntry::DiskLiquid { .. }, MaterializedEntry::Liquid(liq)) => {
                 Some(CacheEntry::memory_liquid((*liq).clone()))
             }
             (CacheEntry::MemoryLiquid(_), _) => None,
@@ -169,7 +181,7 @@ mod tests {
         let expr = CacheExpression::variant_get("age", DataType::Int64);
         let policy = AlwaysHydrate::new();
         let compressor = Arc::new(LiquidCompressorStates::new());
-        let cached_entry = CacheEntry::disk_arrow(arr.data_type().clone());
+        let cached_entry = CacheEntry::disk_arrow(arr.data_type().clone(), 1);
 
         let hydrated = policy.hydrate(&HydrationRequest {
             entry_id: EntryID::from(0),

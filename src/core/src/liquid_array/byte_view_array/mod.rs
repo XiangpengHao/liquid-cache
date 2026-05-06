@@ -20,7 +20,7 @@ use crate::liquid_array::raw::FsstArray;
 use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
 use crate::liquid_array::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
-    eval_predicate_on_array,
+    SqueezedBacking, eval_predicate_on_array,
 };
 
 mod comparisons;
@@ -466,6 +466,10 @@ impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
 
     fn original_arrow_data_type(&self) -> DataType {
         self.original_arrow_type.to_arrow_type()
+    }
+
+    fn disk_backing(&self) -> SqueezedBacking {
+        SqueezedBacking::Liquid(self.fsst_buffer.disk_range_len())
     }
 
     /// Filter the Liquid array with a boolean array and return an **arrow array**.

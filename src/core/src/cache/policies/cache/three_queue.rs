@@ -97,6 +97,16 @@ impl LiquidQueueInternalState {
         }
         Some(entry_id)
     }
+
+    fn remove(&mut self, entry_id: &EntryID) -> Option<EntryID> {
+        let node_ptr = self.map.remove(entry_id)?;
+        let removed = unsafe { node_ptr.as_ref().data.entry_id };
+        unsafe {
+            self.detach(node_ptr);
+            drop_boxed_node(node_ptr);
+        }
+        Some(removed)
+    }
 }
 
 impl Drop for LiquidQueueInternalState {
@@ -155,7 +165,7 @@ impl CachePolicy for LiquidPolicy {
         inner.upsert_into_queue(*entry_id, target);
     }
 
-    fn find_victim(&self, cnt: usize) -> Vec<EntryID> {
+    fn find_memory_victim(&self, cnt: usize) -> Vec<EntryID> {
         if cnt == 0 {
             return vec![];
         }
@@ -185,7 +195,30 @@ impl CachePolicy for LiquidPolicy {
         victims
     }
 
+    fn find_disk_victim(&self, cnt: usize) -> Vec<EntryID> {
+        if cnt == 0 {
+            return vec![];
+        }
+
+        let mut inner = self.inner.lock().unwrap();
+        let mut victims = Vec::with_capacity(cnt);
+
+        while victims.len() < cnt {
+            let Some(entry) = inner.pop_front(QueueKind::Disk) else {
+                break;
+            };
+            victims.push(entry);
+        }
+
+        victims
+    }
+
     fn notify_access(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
+
+    fn notify_remove(&self, entry_id: &EntryID) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.remove(entry_id);
+    }
 }
 
 #[cfg(test)]
@@ -211,9 +244,9 @@ mod tests {
         policy.notify_insert(&liquid_a, CachedBatchType::MemoryLiquid);
         policy.notify_insert(&liquid_b, CachedBatchType::MemoryLiquid);
 
-        assert_eq!(policy.find_victim(1), vec![arrow_a]);
-        assert_eq!(policy.find_victim(2), vec![arrow_b, liquid_a]);
-        assert_eq!(policy.find_victim(1), vec![liquid_b]);
+        assert_eq!(policy.find_memory_victim(1), vec![arrow_a]);
+        assert_eq!(policy.find_memory_victim(2), vec![arrow_b, liquid_a]);
+        assert_eq!(policy.find_memory_victim(1), vec![liquid_b]);
     }
 
     #[test]
@@ -229,7 +262,7 @@ mod tests {
         policy.notify_insert(&arrow_entry, CachedBatchType::MemoryArrow);
 
         // Request more victims than available to ensure we only get what exists.
-        let victims = policy.find_victim(5);
+        let victims = policy.find_memory_victim(5);
         assert_eq!(victims, vec![arrow_entry, liquid_entry, hybrid_entry]);
     }
 
@@ -238,7 +271,7 @@ mod tests {
         let policy = LiquidPolicy::new();
 
         policy.notify_insert(&entry(1), CachedBatchType::MemoryArrow);
-        assert!(policy.find_victim(0).is_empty());
+        assert!(policy.find_memory_victim(0).is_empty());
     }
 
     #[test]
@@ -253,11 +286,25 @@ mod tests {
         policy.notify_insert(&arrow_entry, CachedBatchType::MemoryArrow);
         policy.notify_insert(&liquid_entry, CachedBatchType::MemoryLiquid);
 
-        let victims = policy.find_victim(5);
+        let victims = policy.find_memory_victim(5);
         assert_eq!(victims, vec![arrow_entry, liquid_entry]);
 
         // Only the disk entry remains and should still not be evicted.
-        assert!(policy.find_victim(1).is_empty());
+        assert!(policy.find_memory_victim(1).is_empty());
+    }
+
+    #[test]
+    fn test_disk_victims_and_remove() {
+        let policy = LiquidPolicy::new();
+        let disk_old = entry(1);
+        let disk_new = entry(2);
+
+        policy.notify_insert(&disk_old, CachedBatchType::DiskArrow);
+        policy.notify_insert(&disk_new, CachedBatchType::DiskLiquid);
+
+        assert_eq!(policy.find_disk_victim(1), vec![disk_old]);
+        policy.notify_remove(&disk_new);
+        assert!(policy.find_disk_victim(1).is_empty());
     }
 
     #[test]
@@ -273,8 +320,8 @@ mod tests {
         // Reinserting should refresh the entry as the newest arrow batch.
         policy.notify_insert(&first, CachedBatchType::MemoryArrow);
 
-        assert_eq!(policy.find_victim(1), vec![second]);
-        assert_eq!(policy.find_victim(1), vec![first]);
+        assert_eq!(policy.find_memory_victim(1), vec![second]);
+        assert_eq!(policy.find_memory_victim(1), vec![first]);
     }
 
     #[test]
@@ -286,7 +333,7 @@ mod tests {
         policy.notify_insert(&entry_id, CachedBatchType::MemoryArrow);
         policy.notify_insert(&entry_id, CachedBatchType::MemoryLiquid);
 
-        let victims = policy.find_victim(2);
+        let victims = policy.find_memory_victim(2);
         assert_eq!(victims, vec![entry_id]);
     }
 }

@@ -3,32 +3,29 @@
 use crate::cache::cached_batch::CachedBatchType;
 use crate::cache::utils::EntryID;
 
-mod clock;
 mod doubly_linked_list;
-mod filo;
-mod lru;
-mod s3_fifo;
-mod sieve;
 mod three_queue;
 
-pub use clock::ClockPolicy;
-pub use filo::FifoPolicy;
-pub use filo::FiloPolicy;
-pub use lru::LruPolicy;
-pub use s3_fifo::S3FifoPolicy;
-pub use sieve::SievePolicy;
 pub use three_queue::LiquidPolicy;
 
 /// The cache policy that guides the replacement of LiquidCache
 pub trait CachePolicy: std::fmt::Debug + Send + Sync {
     /// Give cnt amount of entries to evict when cache is full.
-    fn find_victim(&self, cnt: usize) -> Vec<EntryID>;
+    fn find_memory_victim(&self, cnt: usize) -> Vec<EntryID>;
+
+    /// Give cnt amount of disk entries to remove when disk is full.
+    fn find_disk_victim(&self, _cnt: usize) -> Vec<EntryID> {
+        vec![]
+    }
 
     /// Notify the cache policy that an entry was inserted.
     fn notify_insert(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
 
     /// Notify the cache policy that an entry was accessed.
     fn notify_access(&self, _entry_id: &EntryID, _batch_type: CachedBatchType) {}
+
+    /// Notify the cache policy that an entry was removed.
+    fn notify_remove(&self, _entry_id: &EntryID) {}
 }
 
 #[cfg(test)]
@@ -56,7 +53,7 @@ mod tests {
             let advised_entries_clone = advised_entries.clone();
 
             let handle = thread::spawn(move || {
-                let advice = policy_clone.find_victim(1);
+                let advice = policy_clone.find_memory_victim(1);
                 if let Some(entry_id) = advice.first() {
                     let mut entries = advised_entries_clone.lock().unwrap();
                     entries.push(*entry_id);
@@ -83,8 +80,7 @@ mod tests {
     }
 
     fn run_concurrent_invariant_tests() {
-        concurrent_invariant_advice_once(Arc::new(LruPolicy::new()));
-        concurrent_invariant_advice_once(Arc::new(FiloPolicy::new()));
+        concurrent_invariant_advice_once(Arc::new(LiquidPolicy::new()));
     }
 
     #[test]

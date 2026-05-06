@@ -43,6 +43,7 @@ impl<T> DoublyLinkedList<T> {
         self.head
     }
 
+    #[allow(dead_code)]
     pub(crate) fn tail(&self) -> Option<NonNull<DoublyLinkedNode<T>>> {
         self.tail
     }
@@ -78,6 +79,7 @@ impl<T> DoublyLinkedList<T> {
     }
 
     /// Moves an existing node to the front of the list.
+    #[allow(dead_code)]
     pub(crate) unsafe fn move_to_front(&mut self, node_ptr: NonNull<DoublyLinkedNode<T>>) {
         unsafe {
             self.unlink(node_ptr);

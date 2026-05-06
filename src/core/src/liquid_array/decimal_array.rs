@@ -20,7 +20,7 @@ use num_traits::ToPrimitive;
 
 use super::{
     LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking,
-    Operator, SqueezeIoHandler, SqueezeResult,
+    Operator, SqueezeIoHandler, SqueezeResult, SqueezedBacking,
 };
 use crate::cache::{CacheExpression, LiquidExpr};
 use crate::liquid_array::eval_predicate_on_array;
@@ -535,6 +535,10 @@ impl LiquidSqueezedArray for LiquidDecimalQuantizedArray {
 
     fn original_arrow_data_type(&self) -> DataType {
         self.meta.data_type()
+    }
+
+    fn disk_backing(&self) -> SqueezedBacking {
+        SqueezedBacking::Liquid((self.disk_range.end - self.disk_range.start) as usize)
     }
 
     async fn try_eval_predicate(

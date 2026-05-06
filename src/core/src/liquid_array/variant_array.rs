@@ -16,6 +16,7 @@ pub struct VariantStructSqueezedArray {
     len: usize,
     nulls: Option<NullBuffer>,
     original_arrow_type: DataType,
+    disk_backing_size: usize,
 }
 
 impl VariantStructSqueezedArray {
@@ -24,6 +25,7 @@ impl VariantStructSqueezedArray {
         values: Vec<(Arc<str>, LiquidArrayRef)>,
         nulls: Option<NullBuffer>,
         original_arrow_type: DataType,
+        disk_backing_size: usize,
     ) -> Self {
         let len = values.first().map(|(_, array)| array.len()).unwrap_or(0);
         let mut map = AHashMap::with_capacity(values.len());
@@ -36,6 +38,7 @@ impl VariantStructSqueezedArray {
             len,
             nulls,
             original_arrow_type,
+            disk_backing_size,
         }
     }
 
@@ -100,6 +103,7 @@ impl VariantStructSqueezedArray {
             filtered,
             self.nulls.clone(),
             self.original_arrow_type.clone(),
+            self.disk_backing_size,
         );
         Ok(Arc::new(filtered.build_root_struct()) as ArrayRef)
     }
@@ -148,7 +152,7 @@ impl LiquidSqueezedArray for VariantStructSqueezedArray {
     }
 
     fn disk_backing(&self) -> SqueezedBacking {
-        SqueezedBacking::Arrow
+        SqueezedBacking::Arrow(self.disk_backing_size)
     }
 }
 
@@ -248,6 +252,7 @@ mod tests {
             ],
             None,
             DataType::Struct(Fields::from(Vec::<Arc<Field>>::new())),
+            0,
         );
 
         // Request only time_us; did should be pruned from typed_value.
