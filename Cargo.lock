@@ -2107,7 +2107,7 @@ dependencies = [
 
 [[package]]
 name = "dev-tools"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dioxus",
 ]
@@ -4111,7 +4111,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "liquid-cache"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "ahash",
  "arrow",
@@ -4192,7 +4192,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-common"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -4210,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-datafusion"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "ahash",
  "arrow",
@@ -4237,7 +4237,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-datafusion-client"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -4258,7 +4258,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-datafusion-local"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -4276,7 +4276,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-datafusion-server"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4309,7 +4309,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-cache-fuzz"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "arbitrary",
  "arrow",
