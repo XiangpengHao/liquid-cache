@@ -2896,9 +2896,11 @@ dependencies = [
 name = "examples"
 version = "0.0.0"
 dependencies = [
+ "arrow",
  "arrow-flight",
  "clap",
  "datafusion",
+ "liquid-cache",
  "liquid-cache-datafusion-client",
  "liquid-cache-datafusion-local",
  "liquid-cache-datafusion-server",
