@@ -88,15 +88,15 @@ tokio_test::block_on(async {
 });
 ```
 
-## Development
-
-See [dev/README.md](./dev/README.md)
-
-## Benchmark
-
-See [benchmark/README.md](./benchmark/README.md)
 
 ## Performance troubleshooting
+
+### LiquidCache uses DIRECT I/O
+
+By default, LiquidCache uses [DIRECT I/O](https://man7.org/linux/man-pages/man2/open.2.html#:~:text=O_DIRECT). This means that it bypasses the OS page cache, this avoids double-caching and bound memory usage. 
+
+This also means LiquidCache can *appear slower* than other caches when most data fits in OS page cache, which is common in dev environments but unrealistic in production.
+
 
 ### Use LiquidCache with DataFusion
 
@@ -136,6 +136,14 @@ let (ctx, _) = LiquidCacheLocalBuilder::new()
 
 LiquidCache is optimized for x86-64 with specific [instructions](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). On ARM (e.g., Apple Silicon), fallback implementations are used. Contributions are welcome.
 
+
+## Development
+
+See [dev/README.md](./dev/README.md)
+
+## Benchmark
+
+See [benchmark/README.md](./benchmark/README.md)
 
 ## FAQ
 

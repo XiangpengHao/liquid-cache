@@ -4145,6 +4145,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shuttle",
+ "sysinfo",
  "t4",
  "tempfile",
  "tokio",
