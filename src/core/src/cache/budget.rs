@@ -6,8 +6,8 @@ use crate::sync::{
 
 #[derive(Debug)]
 pub struct BudgetAccounting {
-    max_memory_bytes: usize,
-    max_disk_bytes: usize,
+    max_memory_bytes: AtomicUsize,
+    max_disk_bytes: AtomicUsize,
     used_memory_bytes: AtomicUsize,
     used_disk_bytes: AtomicUsize,
     observer: Arc<Observer>,
@@ -20,8 +20,8 @@ impl BudgetAccounting {
         observer: Arc<Observer>,
     ) -> Self {
         Self {
-            max_memory_bytes,
-            max_disk_bytes,
+            max_memory_bytes: AtomicUsize::new(max_memory_bytes),
+            max_disk_bytes: AtomicUsize::new(max_disk_bytes),
             used_memory_bytes: AtomicUsize::new(0),
             used_disk_bytes: AtomicUsize::new(0),
             observer,
@@ -33,11 +33,29 @@ impl BudgetAccounting {
         self.used_disk_bytes.store(0, Ordering::Relaxed);
     }
 
+    /// Dynamically update the max memory limit. Takes effect for new reservations.
+    pub fn set_max_memory_bytes(&self, new_limit: usize) {
+        self.max_memory_bytes.store(new_limit, Ordering::Relaxed);
+    }
+
+    /// Dynamically update the max disk limit. Takes effect for new reservations.
+    pub fn set_max_disk_bytes(&self, new_limit: usize) {
+        self.max_disk_bytes.store(new_limit, Ordering::Relaxed);
+    }
+
+    pub fn max_memory_bytes(&self) -> usize {
+        self.max_memory_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn max_disk_bytes(&self) -> usize {
+        self.max_disk_bytes.load(Ordering::Relaxed)
+    }
+
     /// Try to reserve memory in the cache.
     /// Returns ok if the memory was reserved, err if the memory budget is full.
     pub(super) fn try_reserve_memory(&self, request_bytes: usize) -> Result<(), ()> {
         let used = self.used_memory_bytes.load(Ordering::Relaxed);
-        if used + request_bytes > self.max_memory_bytes {
+        if used + request_bytes > self.max_memory_bytes.load(Ordering::Relaxed) {
             return Err(());
         }
 
@@ -80,7 +98,7 @@ impl BudgetAccounting {
 
     pub(super) fn try_reserve_disk(&self, request_bytes: usize) -> Result<(), ()> {
         let used = self.used_disk_bytes.load(Ordering::Relaxed);
-        if used + request_bytes > self.max_disk_bytes {
+        if used + request_bytes > self.max_disk_bytes.load(Ordering::Relaxed) {
             self.observer.on_disk_reservation_failure();
             return Err(());
         }
