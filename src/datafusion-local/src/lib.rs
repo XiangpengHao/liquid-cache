@@ -20,6 +20,8 @@ use liquid_cache_datafusion::{
 
 pub use liquid_cache as storage;
 pub use liquid_cache_common as common;
+pub use liquid_cache_datafusion::LiquidParquetSource;
+pub use liquid_cache_datafusion::LiquidCacheParquetRef;
 
 /// Builder for in-process liquid cache session context
 ///
