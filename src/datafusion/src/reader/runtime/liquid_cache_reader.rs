@@ -406,28 +406,21 @@ impl LiquidCacheReaderInner {
             .await
             .map_err(|e| ArrowError::ComputeError(format!("parquet fallback read failed: {e}")))?;
 
-        for (col_idx, file_column_id) in self
-            .parquet_fallback
-            .cache_column_ids
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            let column = self
-                .cached_row_group
-                .get_column(file_column_id as u64)
-                .ok_or_else(|| {
-                    ArrowError::ComputeError(format!(
-                        "column {file_column_id} not present in liquid cache"
-                    ))
-                })?;
-            let array = Arc::clone(record_batch.column(col_idx));
-
-            match column.insert(batch_id, array).await {
-                Ok(()) | Err(InsertArrowArrayError::AlreadyCached) => {}
-                Err(InsertArrowArrayError::CacheFull) => {}
+        // Spawn cache fill asynchronously — transcoding Arrow→Liquid should not
+        // block the query hot path. The batch is returned immediately; cache
+        // population happens in the background.
+        let cached_row_group = self.cached_row_group.clone();
+        let cache_column_ids = self.parquet_fallback.cache_column_ids.clone();
+        let batch_for_cache = record_batch.clone();
+        tokio::spawn(async move {
+            for (col_idx, file_column_id) in cache_column_ids.iter().copied().enumerate() {
+                let Some(column) = cached_row_group.get_column(file_column_id as u64) else {
+                    continue;
+                };
+                let array = Arc::clone(batch_for_cache.column(col_idx));
+                let _ = column.insert(batch_id, array).await;
             }
-        }
+        });
 
         self.last_pull = Some((batch_id, record_batch.clone()));
         Ok(record_batch)
