@@ -1,4 +1,4 @@
-mod plantime;
+pub mod plantime;
 mod runtime;
 mod utils;
 pub(crate) mod variant_udf;

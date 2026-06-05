@@ -40,6 +40,15 @@ use tokio::sync::RwLock;
 
 static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
 
+/// Pre-seed the metadata cache with already-loaded metadata.
+/// Callers that have pre-loaded parquet metadata (e.g., from a custom
+/// ParquetFileReaderFactory) can inject it here so that LC's opener
+/// skips the expensive `ArrowReaderMetadata::load_async()` call.
+pub async fn pre_seed_metadata_cache(path: &Path, metadata: Arc<ParquetMetaData>) {
+    let mut cache = META_CACHE.val.write().await;
+    cache.entry(path.clone()).or_insert(metadata);
+}
+
 #[derive(Debug)]
 pub(crate) struct CachedMetaReaderFactory {
     store: Arc<dyn ObjectStore>,
@@ -138,6 +147,7 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             {
                 let cache = META_CACHE.val.read().await;
                 if let Some(meta) = cache.get(&path) {
+                    log::info!("[LC-Meta] HIT path={}", path);
                     return Ok(meta.clone());
                 }
             }
@@ -145,8 +155,12 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             // Upgrade to write lock and double-check
             let mut cache = META_CACHE.val.write().await;
             match cache.entry(path.clone()) {
-                std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    log::info!("[LC-Meta] HIT (race) path={}", path);
+                    Ok(entry.get().clone())
+                }
                 std::collections::hash_map::Entry::Vacant(entry) => {
+                    log::info!("[LC-Meta] MISS (loading from store) path={}", path);
                     let meta = self.inner.get_metadata(options.as_ref()).await?;
                     let meta = Arc::try_unwrap(meta).unwrap_or_else(|e| e.as_ref().clone());
                     let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())
@@ -175,6 +189,10 @@ pub struct LiquidParquetSource {
     projection: ProjectionExprs,
     table_schema: TableSchema,
     span: Option<Arc<fastrace::Span>>,
+    /// Optional caller-provided reader factory with pre-loaded metadata.
+    /// When set, LC's opener uses this to get metadata instantly instead of
+    /// fetching from the object store.
+    parquet_file_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
 }
 
 impl LiquidParquetSource {
@@ -235,6 +253,7 @@ impl LiquidParquetSource {
     /// Create a new LiquidParquetSource from a ParquetSource
     pub fn from_parquet_source(source: ParquetSource, liquid_cache: LiquidCacheParquetRef) -> Self {
         let predicate = source.filter();
+        let reader_factory = source.parquet_file_reader_factory().cloned();
 
         let table_schema = source.table_schema().clone();
         let file_schema = table_schema.file_schema().clone();
@@ -256,6 +275,7 @@ impl LiquidParquetSource {
             pruning_predicate: None,
             page_pruning_predicate: None,
             span: None,
+            parquet_file_reader_factory: reader_factory,
         };
 
         if let Some(predicate) = predicate {
@@ -289,6 +309,14 @@ impl FileSource for LiquidParquetSource {
 
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
 
+        // If the caller provided a ParquetFileReaderFactory (with pre-loaded
+        // metadata), pre-seed LC's metadata cache for all files in this partition.
+        // This avoids expensive ArrowReaderMetadata::load_async() calls in the
+        // opener for files whose metadata we already have.
+        // Pass caller's reader factory to the opener so it can use pre-loaded
+        // metadata (avoids re-fetching from object store).
+        let caller_reader_factory = self.parquet_file_reader_factory.clone();
+
         let execution_span = self
             .span
             .clone()
@@ -307,6 +335,7 @@ impl FileSource for LiquidParquetSource {
             self.reorder_filters(),
             expr_adapter_factory,
             execution_span.map(Arc::new),
+            caller_reader_factory,
         );
 
         Ok(Arc::new(opener))

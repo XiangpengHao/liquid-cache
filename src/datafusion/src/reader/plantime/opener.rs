@@ -15,7 +15,7 @@ use datafusion::{
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
-            FileOpenFuture, FileOpener, ParquetFileMetrics,
+            FileOpenFuture, FileOpener, ParquetFileMetrics, ParquetFileReaderFactory,
             parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
         },
         table_schema::TableSchema,
@@ -56,6 +56,8 @@ pub struct LiquidParquetOpener {
     liquid_cache: LiquidCacheParquetRef,
     expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     span: Option<Arc<fastrace::Span>>,
+    /// Optional caller-provided reader factory with pre-loaded metadata.
+    caller_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
 }
 
 impl LiquidParquetOpener {
@@ -73,6 +75,7 @@ impl LiquidParquetOpener {
         reorder_filters: bool,
         expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
         span: Option<Arc<fastrace::Span>>,
+        caller_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
     ) -> Self {
         Self {
             partition_index,
@@ -87,6 +90,7 @@ impl LiquidParquetOpener {
             reorder_filters,
             expr_adapter_factory,
             span,
+            caller_reader_factory,
         }
     }
 }
@@ -125,9 +129,25 @@ impl FileOpener for LiquidParquetOpener {
         let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
 
         let metadata_size_hint = partitioned_file.metadata_size_hint;
+        let has_predicate = self.predicate.is_some();
+        log::info!(
+            "[LC-Opener] open file={}, predicate={}, batch_size={}, limit={:?}",
+            file_name, has_predicate, self.batch_size, self.limit
+        );
 
         let lc = self.liquid_cache.clone();
         let file_loc = partitioned_file.object_meta.location.to_string();
+
+        // If caller provided a reader factory with pre-loaded metadata, create
+        // a reader from it. We'll use this for get_metadata() to avoid refetching.
+        let caller_metadata_reader = self.caller_reader_factory.as_ref().and_then(|factory| {
+            factory.create_reader(
+                self.partition_index,
+                partitioned_file.clone(),
+                metadata_size_hint,
+                &self.metrics,
+            ).ok()
+        });
 
         let mut async_file_reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
@@ -203,12 +223,22 @@ impl FileOpener for LiquidParquetOpener {
                 .with_page_index_policy(parquet::file::metadata::PageIndexPolicy::Required);
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
 
-            // Begin by loading the metadata from the underlying reader (note
-            // the returned metadata may actually include page indexes as some
-            // readers may return page indexes even when not requested -- for
-            // example when they are cached)
-            let mut reader_metadata =
-                ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?;
+            // Try to get metadata from caller's pre-loaded reader first (instant).
+            // Fall back to loading from the object store if not available.
+            let mut reader_metadata = if let Some(mut caller_reader) = caller_metadata_reader {
+                match caller_reader.get_metadata(Some(&options)).await {
+                    Ok(meta) => {
+                        log::info!("[LC-Meta] REUSE from caller factory: {}", file_name);
+                        ArrowReaderMetadata::try_new(meta, options.clone())?
+                    }
+                    Err(_) => {
+                        log::info!("[LC-Meta] caller factory failed, loading from store: {}", file_name);
+                        ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?
+                    }
+                }
+            } else {
+                ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?
+            };
 
             // Note about schemas: we are actually dealing with **3 different schemas** here:
             // - The table schema as defined by the TableProvider.
@@ -327,7 +357,69 @@ impl FileOpener for LiquidParquetOpener {
             }
 
             let row_group_indexes = access_plan.row_group_indexes();
+
+            // Early exit: if all row groups were pruned, return empty stream
+            if row_group_indexes.is_empty() {
+                log::info!("[LC-Opener] EMPTY: all RGs pruned, file={}", file_name);
+                return Ok(futures::stream::empty().boxed());
+            }
+
             let row_selection = access_plan.into_overall_row_selection(rg_metadata)?;
+
+            // Estimate selectivity from row_selection: how many rows survived
+            // RG pruning + page index pruning vs total rows in selected RGs.
+            let total_rows: usize = row_group_indexes
+                .iter()
+                .map(|&idx| rg_metadata[idx].num_rows() as usize)
+                .sum();
+            let selected_rows = row_selection.as_ref()
+                .map(|sel| sel.row_count())
+                .unwrap_or(total_rows);
+            let estimated_selectivity = if total_rows > 0 {
+                selected_rows as f64 / total_rows as f64
+            } else {
+                1.0
+            };
+
+            // If selectivity is low (few rows match), the decode cost is already
+            // minimal — LC cache overhead would dominate for negligible savings.
+            // Delegate to plain parquet for fast pass-through.
+            // For high selectivity (most rows match = lots of decode), LC cache
+            // saves significant decode work on warm iterations.
+            if estimated_selectivity < 0.5 && predicate.is_some() {
+                log::info!(
+                    "[LC-Opener] DELEGATE to plain parquet: selectivity={:.3} (low, fast already), file={}",
+                    estimated_selectivity, file_name
+                );
+                // Low selectivity: few rows match, decode cost minimal.
+                // Plain parquet is faster than LC's per-batch cache overhead.
+                let mut plain_builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                    async_file_reader,
+                    reader_metadata,
+                )
+                .with_batch_size(batch_size)
+                .with_projection(mask)
+                .with_row_groups(row_group_indexes);
+
+                if let Some(sel) = row_selection {
+                    plain_builder = plain_builder.with_row_selection(sel);
+                }
+                if let Some(lim) = limit {
+                    plain_builder = plain_builder.with_limit(lim);
+                }
+
+                let stream = plain_builder.build()?;
+                let adapted = stream
+                    .map_err(|e| DataFusionError::External(Box::new(e)));
+                return Ok(adapted.boxed());
+            }
+
+            // High selectivity (many rows to decode) or no predicate → use LC
+            // Warm cache avoids repeated parquet decompress+decode.
+            log::info!(
+                "[LC-Opener] LC STREAM: selectivity={:.3}, predicate={}, file={}",
+                estimated_selectivity, predicate.is_some(), file_name
+            );
 
             let mut liquid_builder =
                 LiquidStreamBuilder::new(async_file_reader, Arc::clone(reader_metadata.metadata()))
