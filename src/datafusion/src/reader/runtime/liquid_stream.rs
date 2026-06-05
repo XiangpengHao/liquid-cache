@@ -106,14 +106,27 @@ impl ReaderFactory {
 
         let schema_descr = self.metadata.file_metadata().schema_descr();
         let cache_column_ids = get_root_column_ids(schema_descr, &cache_projection);
-        let predicate_column_ids = if let Some(ref predicate_projection) = predicate_projection {
-            get_root_column_ids(schema_descr, predicate_projection)
-        } else {
-            Vec::new()
-        };
+        // All projected columns are cacheable regardless of whether a predicate
+        // exists. Without this, only predicate-referenced columns get
+        // is_predicate_column=true, and non-predicate projected columns are
+        // rejected by get/insert (returns None/CacheFull).
+        let predicate_column_ids = cache_column_ids.clone();
+
+        if row_group_idx == 0 {
+            log::info!(
+                "[LC-Stream] plan_row_group: rg={}, cache_cols={:?}, predicate_cols={:?}, \
+                 has_filter={}, rows={}",
+                row_group_idx,
+                &cache_column_ids,
+                &predicate_column_ids,
+                self.filter.is_some(),
+                self.metadata.row_group(row_group_idx).num_rows(),
+            );
+        }
+
         let cached_row_group = self
             .cached_file
-            .create_row_group(row_group_idx as u64, predicate_column_ids);
+            .create_row_group(row_group_idx as u64, predicate_column_ids.clone());
 
         let projection_column_ids = get_root_column_ids(schema_descr, &projection);
 

@@ -80,6 +80,20 @@ pub fn rewrite_data_source_plan(
     rewritten.data
 }
 
+/// Returns true if a data type is uncacheable by LC (string/binary).
+fn is_uncacheable_type(dt: &arrow_schema::DataType) -> bool {
+    use arrow_schema::DataType;
+    matches!(
+        dt,
+        DataType::Utf8
+            | DataType::Utf8View
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::BinaryView
+            | DataType::LargeBinary
+    ) || matches!(dt, DataType::Dictionary(_, v) if is_uncacheable_type(v))
+}
+
 fn try_optimize_parquet_source(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
@@ -89,6 +103,59 @@ fn try_optimize_parquet_source(
         && let Some((file_scan_config, parquet_source)) =
             data_source_exec.downcast_to_file_source::<ParquetSource>()
     {
+        // Skip LC wrapping if:
+        //   - Output has zero columns (COUNT(*) — just needs row count from metadata)
+        //   - ANY output column is string/binary (LC can't cache, fallback negates hits)
+        //   - Predicate references a string column
+        let output_schema = plan.schema();
+        if output_schema.fields().is_empty() {
+            log::info!("[LC-Optimizer] SKIP: empty projection (COUNT(*))");
+            return Ok(Transformed::no(plan));
+        }
+
+        // Skip LC when too many output columns — per-column cache overhead
+        // exceeds decode savings for wide projections.
+        const MAX_LC_COLUMNS: usize = 10;
+        if output_schema.fields().len() > MAX_LC_COLUMNS {
+            log::info!(
+                "[LC-Optimizer] SKIP: too many columns ({} > {})",
+                output_schema.fields().len(), MAX_LC_COLUMNS
+            );
+            return Ok(Transformed::no(plan));
+        }
+
+        let has_string_output = output_schema
+            .fields()
+            .iter()
+            .any(|f| is_uncacheable_type(f.data_type()));
+
+        let predicate_has_string = parquet_source.filter().map_or(false, |pred| {
+            use datafusion::physical_expr::utils::collect_columns;
+            let file_schema = file_scan_config.file_schema();
+            let cols = collect_columns(&pred);
+            cols.iter().any(|col| {
+                file_schema
+                    .fields()
+                    .get(col.index())
+                    .map_or(false, |f| is_uncacheable_type(f.data_type()))
+            })
+        });
+
+        if has_string_output || predicate_has_string {
+            log::info!(
+                "[LC-Optimizer] SKIP: string_in_output={}, string_in_predicate={}, output_cols={}",
+                has_string_output, predicate_has_string, output_schema.fields().len()
+            );
+            return Ok(Transformed::no(plan));
+        }
+
+        let num_fields = output_schema.fields().len();
+        let has_predicate = parquet_source.filter().is_some();
+        log::info!(
+            "[LC-Optimizer] WRAP: all {} output columns cacheable, predicate={}",
+            num_fields, has_predicate
+        );
+
         let mut new_config = file_scan_config.clone();
 
         let mut new_source =

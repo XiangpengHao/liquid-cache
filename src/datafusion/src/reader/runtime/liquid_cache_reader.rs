@@ -356,8 +356,14 @@ impl LiquidCacheReaderInner {
             return Ok(Some(batch));
         }
 
-        let mut arrays = Vec::with_capacity(self.projection_columns.len());
-        for column_idx in self.projection_columns.clone() {
+        // Phase 1: Try cache for all columns, collect hits and track misses.
+        let mut arrays: Vec<Option<ArrayRef>> =
+            vec![None; self.projection_columns.len()];
+        let mut has_miss = false;
+        let mut hit_count = 0usize;
+        let mut miss_count = 0usize;
+
+        for (i, &column_idx) in self.projection_columns.iter().enumerate() {
             let column = self
                 .cached_row_group
                 .get_column(column_idx as u64)
@@ -371,22 +377,44 @@ impl LiquidCacheReaderInner {
                 .get_arrow_array_with_filter(self.current_batch_id, selection)
                 .await;
 
-            let array = match array {
-                Some(array) => array,
-                None => {
-                    let record_batch = self
-                        .read_parquet_batch_and_fill_cache(self.current_batch_id)
-                        .await?;
-                    let array = self.parquet_array(&record_batch, column_idx)?;
-                    filter_array(array, selection)?
-                }
-            };
-
-            arrays.push(array);
+            if let Some(arr) = array {
+                arrays[i] = Some(arr);
+                hit_count += 1;
+            } else {
+                has_miss = true;
+                miss_count += 1;
+            }
         }
 
+        if *self.current_batch_id == 0 {
+            log::info!(
+                "[LC-Reader] batch_id={}, selected_rows={}, cols={:?}, hits={}, misses={}, fallback={}",
+                *self.current_batch_id,
+                selected_rows,
+                &self.projection_columns,
+                hit_count,
+                miss_count,
+                has_miss,
+            );
+        }
+
+        // Phase 2: If any columns missed, read from parquet ONCE for all misses.
+        if has_miss {
+            let record_batch = self
+                .read_parquet_batch_and_fill_cache(self.current_batch_id)
+                .await?;
+
+            for (i, &column_idx) in self.projection_columns.iter().enumerate() {
+                if arrays[i].is_none() {
+                    let array = self.parquet_array(&record_batch, column_idx)?;
+                    arrays[i] = Some(filter_array(array, selection)?);
+                }
+            }
+        }
+
+        let final_arrays: Vec<ArrayRef> = arrays.into_iter().map(|a| a.unwrap()).collect();
         Ok(Some(
-            RecordBatch::try_new(self.schema.clone(), arrays).unwrap(),
+            RecordBatch::try_new(self.schema.clone(), final_arrays).unwrap(),
         ))
     }
 
@@ -406,28 +434,36 @@ impl LiquidCacheReaderInner {
             .await
             .map_err(|e| ArrowError::ComputeError(format!("parquet fallback read failed: {e}")))?;
 
-        for (col_idx, file_column_id) in self
-            .parquet_fallback
-            .cache_column_ids
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            let column = self
-                .cached_row_group
-                .get_column(file_column_id as u64)
-                .ok_or_else(|| {
-                    ArrowError::ComputeError(format!(
-                        "column {file_column_id} not present in liquid cache"
-                    ))
-                })?;
-            let array = Arc::clone(record_batch.column(col_idx));
-
-            match column.insert(batch_id, array).await {
-                Ok(()) | Err(InsertArrowArrayError::AlreadyCached) => {}
-                Err(InsertArrowArrayError::CacheFull) => {}
+        // Spawn cache fill asynchronously — transcoding Arrow→Liquid should not
+        // block the query hot path. The batch is returned immediately; cache
+        // population happens in the background.
+        let cached_row_group = self.cached_row_group.clone();
+        let cache_column_ids = self.parquet_fallback.cache_column_ids.clone();
+        let batch_for_cache = record_batch.clone();
+        let log_batch_id = *batch_id as usize;
+        tokio::spawn(async move {
+            for (col_idx, file_column_id) in cache_column_ids.iter().copied().enumerate() {
+                let Some(column) = cached_row_group.get_column(file_column_id as u64) else {
+                    if log_batch_id == 0 {
+                        log::info!("[LC-Insert] col {} not found in cached_row_group", file_column_id);
+                    }
+                    continue;
+                };
+                let array = Arc::clone(batch_for_cache.column(col_idx));
+                match column.insert(batch_id, array).await {
+                    Ok(()) => {
+                        if log_batch_id == 0 {
+                            log::info!("[LC-Insert] OK batch={} col={}", log_batch_id, file_column_id);
+                        }
+                    }
+                    Err(e) => {
+                        if log_batch_id == 0 {
+                            log::info!("[LC-Insert] FAIL batch={} col={} err={:?}", log_batch_id, file_column_id, e);
+                        }
+                    }
+                }
             }
-        }
+        });
 
         self.last_pull = Some((batch_id, record_batch.clone()));
         Ok(record_batch)
