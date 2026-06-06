@@ -356,8 +356,14 @@ impl LiquidCacheReaderInner {
             return Ok(Some(batch));
         }
 
-        let mut arrays = Vec::with_capacity(self.projection_columns.len());
-        for column_idx in self.projection_columns.clone() {
+        // Phase 1: Try cache for all columns, collect hits and track misses.
+        let mut arrays: Vec<Option<ArrayRef>> =
+            vec![None; self.projection_columns.len()];
+        let mut has_miss = false;
+        let mut hit_count = 0usize;
+        let mut miss_count = 0usize;
+
+        for (i, &column_idx) in self.projection_columns.iter().enumerate() {
             let column = self
                 .cached_row_group
                 .get_column(column_idx as u64)
@@ -371,22 +377,44 @@ impl LiquidCacheReaderInner {
                 .get_arrow_array_with_filter(self.current_batch_id, selection)
                 .await;
 
-            let array = match array {
-                Some(array) => array,
-                None => {
-                    let record_batch = self
-                        .read_parquet_batch_and_fill_cache(self.current_batch_id)
-                        .await?;
-                    let array = self.parquet_array(&record_batch, column_idx)?;
-                    filter_array(array, selection)?
-                }
-            };
-
-            arrays.push(array);
+            if let Some(arr) = array {
+                arrays[i] = Some(arr);
+                hit_count += 1;
+            } else {
+                has_miss = true;
+                miss_count += 1;
+            }
         }
 
+        if *self.current_batch_id == 0 {
+            log::info!(
+                "[LC-Reader] batch_id={}, selected_rows={}, cols={}, hits={}, misses={}, fallback={}",
+                *self.current_batch_id,
+                selected_rows,
+                self.projection_columns.len(),
+                hit_count,
+                miss_count,
+                has_miss,
+            );
+        }
+
+        // Phase 2: If any columns missed, read from parquet ONCE for all misses.
+        if has_miss {
+            let record_batch = self
+                .read_parquet_batch_and_fill_cache(self.current_batch_id)
+                .await?;
+
+            for (i, &column_idx) in self.projection_columns.iter().enumerate() {
+                if arrays[i].is_none() {
+                    let array = self.parquet_array(&record_batch, column_idx)?;
+                    arrays[i] = Some(filter_array(array, selection)?);
+                }
+            }
+        }
+
+        let final_arrays: Vec<ArrayRef> = arrays.into_iter().map(|a| a.unwrap()).collect();
         Ok(Some(
-            RecordBatch::try_new(self.schema.clone(), arrays).unwrap(),
+            RecordBatch::try_new(self.schema.clone(), final_arrays).unwrap(),
         ))
     }
 
