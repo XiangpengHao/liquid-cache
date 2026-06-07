@@ -106,11 +106,14 @@ impl ReaderFactory {
 
         let schema_descr = self.metadata.file_metadata().schema_descr();
         let cache_column_ids = get_root_column_ids(schema_descr, &cache_projection);
-        // All projected columns are cacheable regardless of whether a predicate
-        // exists. Without this, only predicate-referenced columns get
-        // is_predicate_column=true, and non-predicate projected columns are
-        // rejected by get/insert (returns None/CacheFull).
-        let predicate_column_ids = cache_column_ids.clone();
+        // When no predicate is present, all projected columns are cacheable.
+        // Without this, `is_predicate_column` is false for every column and
+        // the cache is effectively disabled (get returns None, insert rejects).
+        let predicate_column_ids = if let Some(ref predicate_projection) = predicate_projection {
+            get_root_column_ids(schema_descr, predicate_projection)
+        } else {
+            cache_column_ids.clone()
+        };
 
         if row_group_idx == 0 {
             log::info!(

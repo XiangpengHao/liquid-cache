@@ -388,10 +388,10 @@ impl LiquidCacheReaderInner {
 
         if *self.current_batch_id == 0 {
             log::info!(
-                "[LC-Reader] batch_id={}, selected_rows={}, cols={:?}, hits={}, misses={}, fallback={}",
+                "[LC-Reader] batch_id={}, selected_rows={}, cols={}, hits={}, misses={}, fallback={}",
                 *self.current_batch_id,
                 selected_rows,
-                &self.projection_columns,
+                self.projection_columns.len(),
                 hit_count,
                 miss_count,
                 has_miss,
@@ -440,28 +440,13 @@ impl LiquidCacheReaderInner {
         let cached_row_group = self.cached_row_group.clone();
         let cache_column_ids = self.parquet_fallback.cache_column_ids.clone();
         let batch_for_cache = record_batch.clone();
-        let log_batch_id = *batch_id as usize;
         tokio::spawn(async move {
             for (col_idx, file_column_id) in cache_column_ids.iter().copied().enumerate() {
                 let Some(column) = cached_row_group.get_column(file_column_id as u64) else {
-                    if log_batch_id == 0 {
-                        log::info!("[LC-Insert] col {} not found in cached_row_group", file_column_id);
-                    }
                     continue;
                 };
                 let array = Arc::clone(batch_for_cache.column(col_idx));
-                match column.insert(batch_id, array).await {
-                    Ok(()) => {
-                        if log_batch_id == 0 {
-                            log::info!("[LC-Insert] OK batch={} col={}", log_batch_id, file_column_id);
-                        }
-                    }
-                    Err(e) => {
-                        if log_batch_id == 0 {
-                            log::info!("[LC-Insert] FAIL batch={} col={} err={:?}", log_batch_id, file_column_id, e);
-                        }
-                    }
-                }
+                let _ = column.insert(batch_id, array).await;
             }
         });
 

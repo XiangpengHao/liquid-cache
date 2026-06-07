@@ -115,7 +115,7 @@ fn try_optimize_parquet_source(
 
         // Skip LC when too many output columns — per-column cache overhead
         // exceeds decode savings for wide projections.
-        const MAX_LC_COLUMNS: usize = 10;
+        const MAX_LC_COLUMNS: usize = 4;
         if output_schema.fields().len() > MAX_LC_COLUMNS {
             log::info!(
                 "[LC-Optimizer] SKIP: too many columns ({} > {})",

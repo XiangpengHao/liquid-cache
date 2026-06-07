@@ -381,17 +381,18 @@ impl FileOpener for LiquidParquetOpener {
                 1.0
             };
 
-            // Only use LC STREAM when selectivity is high (>80% rows match) OR
-            // no predicate (pure cache for full scans). High selectivity means
-            // lots of decode work that LC cache can save on warm iterations.
-            // Low selectivity (<80%) means most rows already skipped by pruning,
-            // so decode cost is minimal and LC overhead isn't worth it.
-            const LC_STREAM_THRESHOLD: f64 = 0.8;
-            if predicate.is_some() && estimated_selectivity < LC_STREAM_THRESHOLD {
+            // If selectivity is low (few rows match), the decode cost is already
+            // minimal — LC cache overhead would dominate for negligible savings.
+            // Delegate to plain parquet for fast pass-through.
+            // For high selectivity (most rows match = lots of decode), LC cache
+            // saves significant decode work on warm iterations.
+            if estimated_selectivity < 0.5 && predicate.is_some() {
                 log::info!(
-                    "[LC-Opener] DELEGATE: selectivity={:.3} (<{:.1}), rows={}/{}, file={}",
-                    estimated_selectivity, LC_STREAM_THRESHOLD, selected_rows, total_rows, file_name
+                    "[LC-Opener] DELEGATE to plain parquet: selectivity={:.3} (low, fast already), file={}",
+                    estimated_selectivity, file_name
                 );
+                // Low selectivity: few rows match, decode cost minimal.
+                // Plain parquet is faster than LC's per-batch cache overhead.
                 let mut plain_builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
                     async_file_reader,
                     reader_metadata,
@@ -413,10 +414,11 @@ impl FileOpener for LiquidParquetOpener {
                 return Ok(adapted.boxed());
             }
 
+            // High selectivity (many rows to decode) or no predicate → use LC
+            // Warm cache avoids repeated parquet decompress+decode.
             log::info!(
-                "[LC-Opener] LC STREAM: selectivity={:.3}, predicate={}, rows={}/{}, rgs={}, file={}",
-                estimated_selectivity, predicate.is_some(), selected_rows, total_rows,
-                row_group_indexes.len(), file_name
+                "[LC-Opener] LC STREAM: selectivity={:.3}, predicate={}, file={}",
+                estimated_selectivity, predicate.is_some(), file_name
             );
 
             let mut liquid_builder =
