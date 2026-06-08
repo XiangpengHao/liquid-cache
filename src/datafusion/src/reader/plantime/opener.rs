@@ -141,7 +141,7 @@ impl FileOpener for LiquidParquetOpener {
 
         let metadata_size_hint = partitioned_file.metadata_size_hint;
         let has_predicate = self.predicate.is_some();
-        log::info!(
+        log::debug!(
             "[LC-Opener] open file={}, predicate={}, batch_size={}, limit={:?}",
             file_name, has_predicate, self.batch_size, self.limit
         );
@@ -240,11 +240,11 @@ impl FileOpener for LiquidParquetOpener {
             let mut reader_metadata = if let Some(mut caller_reader) = caller_metadata_reader {
                 match caller_reader.get_metadata(Some(&options)).await {
                     Ok(meta) => {
-                        log::info!("[LC-Meta] REUSE from caller factory: {}", file_name);
+                        log::debug!("[LC-Meta] REUSE from caller factory: {}", file_name);
                         ArrowReaderMetadata::try_new(meta, options.clone())?
                     }
                     Err(_) => {
-                        log::info!("[LC-Meta] caller factory failed, loading from store: {}", file_name);
+                        log::debug!("[LC-Meta] caller factory failed, loading from store: {}", file_name);
                         ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?
                     }
                 }
@@ -372,7 +372,7 @@ impl FileOpener for LiquidParquetOpener {
 
             // Early exit: if all row groups were pruned, return empty stream
             if row_group_indexes.is_empty() {
-                log::info!("[LC-Opener] EMPTY: all RGs pruned, file={}", file_name);
+                log::debug!("[LC-Opener] EMPTY: all RGs pruned, file={}", file_name);
                 return Ok(futures::stream::empty().boxed());
             }
 
@@ -408,7 +408,7 @@ impl FileOpener for LiquidParquetOpener {
 
             match engagement_policy.decide(&engagement_ctx) {
                 EngagementDecision::DelegateToParquet => {
-                    log::info!(
+                    log::debug!(
                         "[LC-Opener] DELEGATE to plain parquet: selectivity={:.3}, file={}",
                         estimated_selectivity, file_name
                     );
@@ -433,7 +433,7 @@ impl FileOpener for LiquidParquetOpener {
                     return Ok(adapted.boxed());
                 }
                 EngagementDecision::UseLiquidCache => {
-                    log::info!(
+                    log::debug!(
                         "[LC-Opener] LC STREAM: selectivity={:.3}, predicate={}, file={}",
                         estimated_selectivity, predicate.is_some(), file_name
                     );

@@ -148,7 +148,7 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             {
                 let cache = META_CACHE.val.read().await;
                 if let Some(meta) = cache.get(&path) {
-                    log::info!("[LC-Meta] HIT path={}", path);
+                    log::debug!("[LC-Meta] HIT path={}", path);
                     return Ok(meta.clone());
                 }
             }
@@ -157,11 +157,11 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             let mut cache = META_CACHE.val.write().await;
             match cache.entry(path.clone()) {
                 std::collections::hash_map::Entry::Occupied(entry) => {
-                    log::info!("[LC-Meta] HIT (race) path={}", path);
+                    log::debug!("[LC-Meta] HIT (race) path={}", path);
                     Ok(entry.get().clone())
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    log::info!("[LC-Meta] MISS (loading from store) path={}", path);
+                    log::debug!("[LC-Meta] MISS (loading from store) path={}", path);
                     let meta = self.inner.get_metadata(options.as_ref()).await?;
                     let meta = Arc::try_unwrap(meta).unwrap_or_else(|e| e.as_ref().clone());
                     let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())

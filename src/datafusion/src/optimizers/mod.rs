@@ -109,7 +109,7 @@ fn try_optimize_parquet_source(
         //   - Predicate references a string column
         let output_schema = plan.schema();
         if output_schema.fields().is_empty() {
-            log::info!("[LC-Optimizer] SKIP: empty projection (COUNT(*))");
+            log::debug!("[LC-Optimizer] SKIP: empty projection (COUNT(*))");
             return Ok(Transformed::no(plan));
         }
 
@@ -117,7 +117,7 @@ fn try_optimize_parquet_source(
         // exceeds decode savings for wide projections.
         const MAX_LC_COLUMNS: usize = 4;
         if output_schema.fields().len() > MAX_LC_COLUMNS {
-            log::info!(
+            log::debug!(
                 "[LC-Optimizer] SKIP: too many columns ({} > {})",
                 output_schema.fields().len(), MAX_LC_COLUMNS
             );
@@ -142,7 +142,7 @@ fn try_optimize_parquet_source(
         });
 
         if has_string_output || predicate_has_string {
-            log::info!(
+            log::debug!(
                 "[LC-Optimizer] SKIP: string_in_output={}, string_in_predicate={}, output_cols={}",
                 has_string_output, predicate_has_string, output_schema.fields().len()
             );
@@ -151,7 +151,7 @@ fn try_optimize_parquet_source(
 
         let num_fields = output_schema.fields().len();
         let has_predicate = parquet_source.filter().is_some();
-        log::info!(
+        log::debug!(
             "[LC-Optimizer] WRAP: all {} output columns cacheable, predicate={}",
             num_fields, has_predicate
         );

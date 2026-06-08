@@ -387,7 +387,7 @@ impl LiquidCacheReaderInner {
         }
 
         if *self.current_batch_id == 0 {
-            log::info!(
+            log::debug!(
                 "[LC-Reader] batch_id={}, selected_rows={}, cols={}, hits={}, misses={}, fallback={}",
                 *self.current_batch_id,
                 selected_rows,

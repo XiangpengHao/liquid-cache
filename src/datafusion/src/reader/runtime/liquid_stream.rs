@@ -116,7 +116,7 @@ impl ReaderFactory {
         };
 
         if row_group_idx == 0 {
-            log::info!(
+            log::debug!(
                 "[LC-Stream] plan_row_group: rg={}, cache_cols={:?}, predicate_cols={:?}, \
                  has_filter={}, rows={}",
                 row_group_idx,
