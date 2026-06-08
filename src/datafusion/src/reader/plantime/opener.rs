@@ -3,7 +3,14 @@ use std::sync::Arc;
 use crate::{
     cache::LiquidCacheParquetRef,
     reader::{
-        plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
+        plantime::{
+            engagement_policy::{
+                CacheEngagementPolicy, EngagementContext, EngagementDecision,
+                default_engagement_policy,
+            },
+            row_filter::build_row_filter,
+            row_group_filter::RowGroupAccessPlanFilter,
+        },
         runtime::LiquidStreamBuilder,
     },
 };
@@ -58,6 +65,8 @@ pub struct LiquidParquetOpener {
     span: Option<Arc<fastrace::Span>>,
     /// Optional caller-provided reader factory with pre-loaded metadata.
     caller_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
+    /// Policy that decides whether to use LC stream or delegate to parquet.
+    engagement_policy: Arc<dyn CacheEngagementPolicy>,
 }
 
 impl LiquidParquetOpener {
@@ -76,6 +85,7 @@ impl LiquidParquetOpener {
         expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
         span: Option<Arc<fastrace::Span>>,
         caller_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
+        engagement_policy: Arc<dyn CacheEngagementPolicy>,
     ) -> Self {
         Self {
             partition_index,
@@ -91,6 +101,7 @@ impl LiquidParquetOpener {
             expr_adapter_factory,
             span,
             caller_reader_factory,
+            engagement_policy,
         }
     }
 }
@@ -189,6 +200,7 @@ impl FileOpener for LiquidParquetOpener {
 
         let expr_adapter_factory = Arc::clone(&self.expr_adapter_factory);
         let span = self.span.clone();
+        let engagement_policy = Arc::clone(&self.engagement_policy);
         Ok(Box::pin(async move {
             // Prune this file using the file level statistics and partition values.
             // Since dynamic filters may have been updated since planning it is possible that we are able
@@ -386,40 +398,47 @@ impl FileOpener for LiquidParquetOpener {
             // Delegate to plain parquet for fast pass-through.
             // For high selectivity (most rows match = lots of decode), LC cache
             // saves significant decode work on warm iterations.
-            if estimated_selectivity < 0.5 && predicate.is_some() {
-                log::info!(
-                    "[LC-Opener] DELEGATE to plain parquet: selectivity={:.3} (low, fast already), file={}",
-                    estimated_selectivity, file_name
-                );
-                // Low selectivity: few rows match, decode cost minimal.
-                // Plain parquet is faster than LC's per-batch cache overhead.
-                let mut plain_builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
-                    async_file_reader,
-                    reader_metadata,
-                )
-                .with_batch_size(batch_size)
-                .with_projection(mask)
-                .with_row_groups(row_group_indexes);
+            let engagement_ctx = EngagementContext {
+                estimated_selectivity,
+                has_predicate: predicate.is_some(),
+                total_rows,
+                selected_rows,
+                file_path: file_name.clone(),
+            };
 
-                if let Some(sel) = row_selection {
-                    plain_builder = plain_builder.with_row_selection(sel);
-                }
-                if let Some(lim) = limit {
-                    plain_builder = plain_builder.with_limit(lim);
-                }
+            match engagement_policy.decide(&engagement_ctx) {
+                EngagementDecision::DelegateToParquet => {
+                    log::info!(
+                        "[LC-Opener] DELEGATE to plain parquet: selectivity={:.3}, file={}",
+                        estimated_selectivity, file_name
+                    );
+                    let mut plain_builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                        async_file_reader,
+                        reader_metadata,
+                    )
+                    .with_batch_size(batch_size)
+                    .with_projection(mask)
+                    .with_row_groups(row_group_indexes);
 
-                let stream = plain_builder.build()?;
-                let adapted = stream
-                    .map_err(|e| DataFusionError::External(Box::new(e)));
-                return Ok(adapted.boxed());
+                    if let Some(sel) = row_selection {
+                        plain_builder = plain_builder.with_row_selection(sel);
+                    }
+                    if let Some(lim) = limit {
+                        plain_builder = plain_builder.with_limit(lim);
+                    }
+
+                    let stream = plain_builder.build()?;
+                    let adapted = stream
+                        .map_err(|e| DataFusionError::External(Box::new(e)));
+                    return Ok(adapted.boxed());
+                }
+                EngagementDecision::UseLiquidCache => {
+                    log::info!(
+                        "[LC-Opener] LC STREAM: selectivity={:.3}, predicate={}, file={}",
+                        estimated_selectivity, predicate.is_some(), file_name
+                    );
+                }
             }
-
-            // High selectivity (many rows to decode) or no predicate → use LC
-            // Warm cache avoids repeated parquet decompress+decode.
-            log::info!(
-                "[LC-Opener] LC STREAM: selectivity={:.3}, predicate={}, file={}",
-                estimated_selectivity, predicate.is_some(), file_name
-            );
 
             let mut liquid_builder =
                 LiquidStreamBuilder::new(async_file_reader, Arc::clone(reader_metadata.metadata()))

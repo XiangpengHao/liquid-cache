@@ -1,5 +1,6 @@
 use super::opener::LiquidParquetOpener;
 use crate::cache::LiquidCacheParquetRef;
+use crate::reader::plantime::engagement_policy::{CacheEngagementPolicy, default_engagement_policy};
 use ahash::{HashMap, HashMapExt};
 use arrow_schema::Schema;
 use bytes::Bytes;
@@ -193,6 +194,8 @@ pub struct LiquidParquetSource {
     /// When set, LC's opener uses this to get metadata instantly instead of
     /// fetching from the object store.
     parquet_file_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
+    /// Policy that decides per-file whether to use LC stream or delegate to parquet.
+    engagement_policy: Arc<dyn CacheEngagementPolicy>,
 }
 
 impl LiquidParquetSource {
@@ -276,6 +279,7 @@ impl LiquidParquetSource {
             page_pruning_predicate: None,
             span: None,
             parquet_file_reader_factory: reader_factory,
+            engagement_policy: default_engagement_policy(),
         };
 
         if let Some(predicate) = predicate {
@@ -283,6 +287,12 @@ impl LiquidParquetSource {
         }
 
         v
+    }
+
+    /// Set a custom cache engagement policy.
+    pub fn with_engagement_policy(mut self, policy: Arc<dyn CacheEngagementPolicy>) -> Self {
+        self.engagement_policy = policy;
+        self
     }
 
     /// Get the predicate for the LiquidParquetSource
@@ -336,6 +346,7 @@ impl FileSource for LiquidParquetSource {
             expr_adapter_factory,
             execution_span.map(Arc::new),
             caller_reader_factory,
+            Arc::clone(&self.engagement_policy),
         );
 
         Ok(Arc::new(opener))
