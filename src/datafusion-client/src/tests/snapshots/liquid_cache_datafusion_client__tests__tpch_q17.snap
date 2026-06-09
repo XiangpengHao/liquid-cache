@@ -85,11 +85,9 @@ expression: displayable.tree_render().to_string()
 │ partition_count(in->out): ││          files: 1         ││          files: 1         │
 │           1 -> 8          ││      format: parquet      ││      format: parquet      │
 │                           ││                           ││                           │
-│    partitioning_scheme:   ││         predicate:        ││         predicate:        │
-│   Hash([l_partkey@0], 8)  ││   p_brand = Brand#23 AND  ││  DynamicFilter [ empty ]  │
-│                           ││      p_container = MED    ││                           │
-│                           ││    BOX AND DynamicFilter  ││                           │
-│                           ││          [ empty ]        ││                           │
+│    partitioning_scheme:   ││         predicate:        ││                           │
+│   Hash([l_partkey@0], 8)  ││   p_brand = Brand#23 AND  ││                           │
+│                           ││    p_container = MED BOX  ││                           │
 └─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │

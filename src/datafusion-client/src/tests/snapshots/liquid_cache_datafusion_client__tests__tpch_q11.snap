@@ -91,8 +91,8 @@ expression: displayable.tree_render().to_string()
 │          server:          ││ partition_count(in->out): │                                                          │          files: 1         ││          files: 1         │
 │  http://localhost:50051,  ││           1 -> 8          │                                                          │      format: parquet      ││      format: parquet      │
 │      object_stores=[]     ││                           │                                                          │                           ││                           │
-│                           ││    partitioning_scheme:   │                                                          │         predicate:        ││         predicate:        │
-│                           ││     RoundRobinBatch(8)    │                                                          │  DynamicFilter [ empty ]  ││  DynamicFilter [ empty ]  │
+│                           ││    partitioning_scheme:   │                                                          │                           ││                           │
+│                           ││     RoundRobinBatch(8)    │                                                          │                           ││                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘                                                          └───────────────────────────┘└───────────────────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │       DataSourceExec      ││        HashJoinExec       │
@@ -115,7 +115,4 @@ expression: displayable.tree_render().to_string()
                              │    --------------------   ││    --------------------   │
                              │          files: 1         ││          files: 1         │
                              │      format: parquet      ││      format: parquet      │
-                             │                           ││                           │
-                             │         predicate:        ││         predicate:        │
-                             │  DynamicFilter [ empty ]  ││  DynamicFilter [ empty ]  │
                              └───────────────────────────┘└───────────────────────────┘

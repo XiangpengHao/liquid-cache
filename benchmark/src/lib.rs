@@ -229,8 +229,16 @@ impl ClientBenchmarkArgs {
                 .send()
                 .await
                 .unwrap();
-            let v = response.json::<ExecutionMetricsResponse>().await.unwrap();
-            metrics.push(v);
+            // The endpoint returns `null` when a registered plan recorded no
+            // metrics (e.g. a sub-plan that scanned no data), so decode as an
+            // Option and skip the empty ones rather than failing to deserialize.
+            let v = response
+                .json::<Option<ExecutionMetricsResponse>>()
+                .await
+                .unwrap();
+            if let Some(v) = v {
+                metrics.push(v);
+            }
         }
         let metric = metrics
             .iter()

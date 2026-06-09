@@ -94,17 +94,14 @@ expression: displayable.tree_render().to_string()
                              │          files: 1         ││          server:          ││ partition_count(in->out): │
                              │      format: parquet      ││  http://localhost:50051,  ││           1 -> 8          │
                              │                           ││      object_stores=[]     ││                           │
-                             │         predicate:        ││                           ││    partitioning_scheme:   │
-                             │  DynamicFilter [ empty ]  ││                           ││     RoundRobinBatch(8)    │
+                             │                           ││                           ││    partitioning_scheme:   │
+                             │                           ││                           ││     RoundRobinBatch(8)    │
                              └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                           │       DataSourceExec      ││        HashJoinExec       │
                                                           │    --------------------   ││    --------------------   │
-                                                          │          files: 1         ││            on:            │
-                                                          │      format: parquet      ││ (o_orderkey = l_orderkey) ├───────────────────────────────────────────┐
-                                                          │                           ││                           │                                           │
-                                                          │         predicate:        ││                           │                                           │
-                                                          │  DynamicFilter [ empty ]  ││                           │                                           │
+                                                          │          files: 1         ││            on:            ├───────────────────────────────────────────┐
+                                                          │      format: parquet      ││ (o_orderkey = l_orderkey) │                                           │
                                                           └───────────────────────────┘└─────────────┬─────────────┘                                           │
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
                                                                                        │   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
@@ -116,11 +113,8 @@ expression: displayable.tree_render().to_string()
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │                             │       DataSourceExec      │
                                                                                        │    --------------------   │                             │    --------------------   │
-                                                                                       │            on:            │                             │          files: 1         │
-                                                                                       │  (c_custkey = o_custkey)  ├──────────────┐              │      format: parquet      │
-                                                                                       │                           │              │              │                           │
-                                                                                       │                           │              │              │         predicate:        │
-                                                                                       │                           │              │              │  DynamicFilter [ empty ]  │
+                                                                                       │            on:            ├──────────────┐              │          files: 1         │
+                                                                                       │  (c_custkey = o_custkey)  │              │              │      format: parquet      │
                                                                                        └─────────────┬─────────────┘              │              └───────────────────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                        │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -147,6 +141,5 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │         predicate:        │
                                                                                                                     │ o_orderdate >= 1994-01-01 │
                                                                                                                     │   AND o_orderdate < 1995  │
-                                                                                                                    │  -01-01 AND DynamicFilter │
-                                                                                                                    │          [ empty ]        │
+                                                                                                                    │           -01-01          │
                                                                                                                     └───────────────────────────┘

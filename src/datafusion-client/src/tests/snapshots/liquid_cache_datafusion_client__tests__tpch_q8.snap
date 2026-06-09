@@ -123,20 +123,16 @@ expression: displayable.tree_render().to_string()
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                           │       DataSourceExec      ││   LiquidCacheClientExec   ││        HashJoinExec       │
                                                           │    --------------------   ││    --------------------   ││    --------------------   │
-                                                          │          files: 1         ││          server:          ││            on:            │
-                                                          │      format: parquet      ││  http://localhost:50051,  ││ (o_orderkey = l_orderkey) ├──────────────┐
+                                                          │          files: 1         ││          server:          ││            on:            ├──────────────┐
+                                                          │      format: parquet      ││  http://localhost:50051,  ││ (o_orderkey = l_orderkey) │              │
                                                           │                           ││      object_stores=[]     ││                           │              │
-                                                          │         predicate:        ││                           ││                           │              │
-                                                          │  DynamicFilter [ empty ]  ││                           ││                           │              │
                                                           └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                        │       DataSourceExec      ││   LiquidCacheClientExec   ││        HashJoinExec       │
                                                                                        │    --------------------   ││    --------------------   ││    --------------------   │
-                                                                                       │          files: 1         ││          server:          ││            on:            │
-                                                                                       │      format: parquet      ││  http://localhost:50051,  ││  (s_suppkey = l_suppkey)  ├──────────────┐
+                                                                                       │          files: 1         ││          server:          ││            on:            ├──────────────┐
+                                                                                       │      format: parquet      ││  http://localhost:50051,  ││  (s_suppkey = l_suppkey)  │              │
                                                                                        │                           ││      object_stores=[]     ││                           │              │
-                                                                                       │         predicate:        ││                           ││                           │              │
-                                                                                       │  DynamicFilter [ empty ]  ││                           ││                           │              │
                                                                                        └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │
                                                                                                                     ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                                                     │       DataSourceExec      ││   LiquidCacheClientExec   ││      RepartitionExec      │
@@ -147,17 +143,13 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │         predicate:        ││                           ││    partitioning_scheme:   │
                                                                                                                     │ o_orderdate >= 1995-01-01 ││                           ││     RoundRobinBatch(8)    │
                                                                                                                     │   AND o_orderdate <= 1996 ││                           ││                           │
-                                                                                                                    │ -12-31 AND DynamicFilter  ││                           ││                           │
-                                                                                                                    │         [ empty ]         ││                           ││                           │
+                                                                                                                    │           -12-31          ││                           ││                           │
                                                                                                                     └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                                                                                  ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                                                                                  │       DataSourceExec      ││        HashJoinExec       │
                                                                                                                                                  │    --------------------   ││    --------------------   │
-                                                                                                                                                 │          files: 1         ││            on:            │
-                                                                                                                                                 │      format: parquet      ││  (p_partkey = l_partkey)  ├──────────────┐
-                                                                                                                                                 │                           ││                           │              │
-                                                                                                                                                 │         predicate:        ││                           │              │
-                                                                                                                                                 │  DynamicFilter [ empty ]  ││                           │              │
+                                                                                                                                                 │          files: 1         ││            on:            ├──────────────┐
+                                                                                                                                                 │      format: parquet      ││  (p_partkey = l_partkey)  │              │
                                                                                                                                                  └───────────────────────────┘└─────────────┬─────────────┘              │
                                                                                                                                                                               ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                                                                                                               │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -172,10 +164,7 @@ expression: displayable.tree_render().to_string()
                                                                                                                                                                               │          files: 1         ││          files: 1         │
                                                                                                                                                                               │      format: parquet      ││      format: parquet      │
                                                                                                                                                                               │                           ││                           │
-                                                                                                                                                                              │         predicate:        ││         predicate:        │
-                                                                                                                                                                              │ p_type = ECONOMY ANODIZED ││  DynamicFilter [ empty ]  │
-                                                                                                                                                                              │            STEEL          ││     AND DynamicFilter [   │
-                                                                                                                                                                              │                           ││         empty ] AND       │
-                                                                                                                                                                              │                           ││        DynamicFilter      │
-                                                                                                                                                                              │                           ││          [ empty ]        │
+                                                                                                                                                                              │         predicate:        ││                           │
+                                                                                                                                                                              │ p_type = ECONOMY ANODIZED ││                           │
+                                                                                                                                                                              │            STEEL          ││                           │
                                                                                                                                                                               └───────────────────────────┘└───────────────────────────┘

@@ -89,6 +89,4 @@ expression: displayable.tree_render().to_string()
                              │         predicate:        │
                              │      l_receiptdate >      │
                              │        l_commitdate       │
-                             │     AND DynamicFilter [   │
-                             │           empty ]         │
                              └───────────────────────────┘

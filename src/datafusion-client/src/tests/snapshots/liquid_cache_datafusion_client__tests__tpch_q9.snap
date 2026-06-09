@@ -110,11 +110,8 @@ expression: displayable.tree_render().to_string()
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                        │       DataSourceExec      ││        HashJoinExec       │
                                                                                        │    --------------------   ││    --------------------   │
-                                                                                       │          files: 1         ││            on:            │
-                                                                                       │      format: parquet      ││  (p_partkey = l_partkey)  ├──────────────┐
-                                                                                       │                           ││                           │              │
-                                                                                       │         predicate:        ││                           │              │
-                                                                                       │  DynamicFilter [ empty ]  ││                           │              │
+                                                                                       │          files: 1         ││            on:            ├──────────────┐
+                                                                                       │      format: parquet      ││  (p_partkey = l_partkey)  │              │
                                                                                        └───────────────────────────┘└─────────────┬─────────────┘              │
                                                                                                                     ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                                                     │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -129,12 +126,6 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │          files: 1         ││          files: 1         │
                                                                                                                     │      format: parquet      ││      format: parquet      │
                                                                                                                     │                           ││                           │
-                                                                                                                    │         predicate:        ││         predicate:        │
-                                                                                                                    │    p_name LIKE %green%    ││  DynamicFilter [ empty ]  │
-                                                                                                                    │                           ││     AND DynamicFilter [   │
-                                                                                                                    │                           ││         empty ] AND       │
-                                                                                                                    │                           ││        DynamicFilter      │
-                                                                                                                    │                           ││        [ empty ] AND      │
-                                                                                                                    │                           ││        DynamicFilter      │
-                                                                                                                    │                           ││          [ empty ]        │
+                                                                                                                    │         predicate:        ││                           │
+                                                                                                                    │    p_name LIKE %green%    ││                           │
                                                                                                                     └───────────────────────────┘└───────────────────────────┘

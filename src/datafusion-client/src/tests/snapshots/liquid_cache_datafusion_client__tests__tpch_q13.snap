@@ -114,6 +114,4 @@ expression: displayable.tree_render().to_string()
                              │         predicate:        │
                              │    o_comment NOT LIKE     │
                              │     %special%requests%    │
-                             │     AND DynamicFilter [   │
-                             │           empty ]         │
                              └───────────────────────────┘

@@ -120,10 +120,10 @@ expression: displayable.tree_render().to_string()
 │          files: 1         ││          files: 1         ││          files: 1         │
 │      format: parquet      ││      format: parquet      ││      format: parquet      │
 │                           ││                           ││                           │
-│         predicate:        ││         predicate:        ││         predicate:        │
-│  p_brand != Brand#45 AND  ││  DynamicFilter [ empty ]  ││  s_comment LIKE %Customer │
-│       p_type NOT LIKE     ││                           ││      %Complaints% AND     │
-│      MEDIUM POLISHED%     ││                           ││       DynamicFilter [     │
-│   AND p_size IN (49, 14,  ││                           ││           empty ]         │
+│         predicate:        ││                           ││         predicate:        │
+│  p_brand != Brand#45 AND  ││                           ││  s_comment LIKE %Customer │
+│       p_type NOT LIKE     ││                           ││        %Complaints%       │
+│      MEDIUM POLISHED%     ││                           ││                           │
+│   AND p_size IN (49, 14,  ││                           ││                           │
 │    23, 45, 19, 3, 36, 9)  ││                           ││                           │
 └───────────────────────────┘└───────────────────────────┘└───────────────────────────┘

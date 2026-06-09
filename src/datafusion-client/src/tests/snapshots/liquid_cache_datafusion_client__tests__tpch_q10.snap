@@ -123,8 +123,8 @@ expression: displayable.tree_render().to_string()
                              │          files: 1         ││          files: 1         ││          files: 1         │
                              │      format: parquet      ││      format: parquet      ││      format: parquet      │
                              │                           ││                           ││                           │
-                             │         predicate:        ││         predicate:        ││         predicate:        │
-                             │ o_orderdate >= 1993-10-01 ││  DynamicFilter [ empty ]  ││    l_returnflag = R AND   │
-                             │   AND o_orderdate < 1994  ││     AND DynamicFilter [   ││       DynamicFilter [     │
-                             │           -01-01          ││           empty ]         ││           empty ]         │
+                             │         predicate:        ││                           ││         predicate:        │
+                             │ o_orderdate >= 1993-10-01 ││                           ││      l_returnflag = R     │
+                             │   AND o_orderdate < 1994  ││                           ││                           │
+                             │           -01-01          ││                           ││                           │
                              └───────────────────────────┘└───────────────────────────┘└───────────────────────────┘

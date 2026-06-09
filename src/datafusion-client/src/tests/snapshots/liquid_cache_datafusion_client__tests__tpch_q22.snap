@@ -100,8 +100,8 @@ expression: displayable.tree_render().to_string()
 │          files: 1         ││          files: 1         │
 │      format: parquet      ││      format: parquet      │
 │                           ││                           │
-│         predicate:        ││         predicate:        │
-│ substr(c_phone, 1, 2) IN  ││  DynamicFilter [ empty ]  │
+│         predicate:        ││                           │
+│ substr(c_phone, 1, 2) IN  ││                           │
 │  (13, 31, 23, 29, 30, 18, ││                           │
 │   17) AND CAST(c_acctbal  ││                           │
 │   AS Decimal128(19, 6))   ││                           │

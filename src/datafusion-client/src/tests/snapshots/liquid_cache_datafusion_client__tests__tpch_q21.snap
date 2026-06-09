@@ -83,12 +83,10 @@ expression: displayable.tree_render().to_string()
 │    --------------------   │                                                                                       │    --------------------   ││    --------------------   │
 │            on:            │                                                                                       │          files: 1         ││          files: 1         │
 │(n_nationkey = s_nationkey)│                                                                                       │      format: parquet      ││      format: parquet      │
-│                           │                                                                                       │                           ││                           │
-│                           ├──────────────┐                                                                        │         predicate:        ││         predicate:        │
-│                           │              │                                                                        │  DynamicFilter [ empty ]  ││      l_receiptdate >      │
+│                           ├──────────────┐                                                                        │                           ││                           │
+│                           │              │                                                                        │                           ││         predicate:        │
+│                           │              │                                                                        │                           ││      l_receiptdate >      │
 │                           │              │                                                                        │                           ││        l_commitdate       │
-│                           │              │                                                                        │                           ││     AND DynamicFilter [   │
-│                           │              │                                                                        │                           ││           empty ]         │
 └─────────────┬─────────────┘              │                                                                        └───────────────────────────┘└───────────────────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││        HashJoinExec       │
@@ -121,8 +119,8 @@ expression: displayable.tree_render().to_string()
                                                           │          files: 1         ││ partition_count(in->out): │
                                                           │      format: parquet      ││           1 -> 8          │
                                                           │                           ││                           │
-                                                          │         predicate:        ││    partitioning_scheme:   │
-                                                          │  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
+                                                          │                           ││    partitioning_scheme:   │
+                                                          │                           ││     RoundRobinBatch(8)    │
                                                           └───────────────────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐
                                                                                        │       DataSourceExec      │
@@ -133,8 +131,4 @@ expression: displayable.tree_render().to_string()
                                                                                        │         predicate:        │
                                                                                        │      l_receiptdate >      │
                                                                                        │        l_commitdate       │
-                                                                                       │     AND DynamicFilter [   │
-                                                                                       │         empty ] AND       │
-                                                                                       │       DynamicFilter [     │
-                                                                                       │           empty ]         │
                                                                                        └───────────────────────────┘

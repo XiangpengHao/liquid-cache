@@ -129,6 +129,5 @@ expression: displayable.tree_render().to_string()
                              │        l_quantity >=      │
                              │     Some(2000),15,2 AND   │
                              │   l_quantity <= Some(3000 │
-                             │ ),15,2) AND DynamicFilter │
-                             │          [ empty ]        │
+                             │          ),15,2)          │
                              └───────────────────────────┘
