@@ -133,10 +133,6 @@ impl Default for VariantGetUdf {
 }
 
 impl ScalarUDFImpl for VariantGetUdf {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "variant_get"
     }
@@ -299,10 +295,6 @@ impl Default for VariantPretty {
 }
 
 impl ScalarUDFImpl for VariantPretty {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "variant_pretty"
     }
@@ -382,10 +374,6 @@ impl Default for VariantToJsonUdf {
 }
 
 impl ScalarUDFImpl for VariantToJsonUdf {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "variant_to_json"
     }

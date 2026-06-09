@@ -3,7 +3,7 @@ use std::sync::Arc;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{
-    BinaryExpr, CastColumnExpr, CastExpr, Column, LikeExpr, Literal, TryCastExpr,
+    BinaryExpr, CastExpr, Column, LikeExpr, Literal, TryCastExpr,
 };
 
 /// Extract multiple column-literal expressions from a nested OR structure.
@@ -18,7 +18,7 @@ pub(crate) fn extract_multi_column_or(
         expr: &'a Arc<dyn PhysicalExpr>,
         result: &mut Vec<(&'a str, Arc<dyn PhysicalExpr>)>,
     ) -> bool {
-        if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>()
+        if let Some(binary) = expr.downcast_ref::<BinaryExpr>()
             && binary.op() == &Operator::Or
         {
             // Recursively collect from left and right
@@ -43,25 +43,19 @@ pub(crate) fn extract_multi_column_or(
 }
 
 fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(&str, Arc<dyn PhysicalExpr>)> {
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>()
-        && binary.right().as_any().downcast_ref::<Literal>().is_some()
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>()
+        && binary.right().is::<Literal>()
     {
         return extract_column_literal(binary.left());
-    } else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
-        && like_expr
-            .pattern()
-            .as_any()
-            .downcast_ref::<Literal>()
-            .is_some()
+    } else if let Some(like_expr) = expr.downcast_ref::<LikeExpr>()
+        && like_expr.pattern().is::<Literal>()
     {
         return extract_column_literal(like_expr.expr());
-    } else if let Some(cast_expr) = expr.as_any().downcast_ref::<CastExpr>() {
+    } else if let Some(cast_expr) = expr.downcast_ref::<CastExpr>() {
         return extract_column_literal(cast_expr.expr());
-    } else if let Some(cast_column_expr) = expr.as_any().downcast_ref::<CastColumnExpr>() {
-        return extract_column_literal(cast_column_expr.expr());
-    } else if let Some(try_cast_expr) = expr.as_any().downcast_ref::<TryCastExpr>() {
+    } else if let Some(try_cast_expr) = expr.downcast_ref::<TryCastExpr>() {
         return extract_column_literal(try_cast_expr.expr());
-    } else if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    } else if let Some(column) = expr.downcast_ref::<Column>() {
         return Some((column.name(), Arc::clone(expr)));
     }
     None

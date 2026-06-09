@@ -361,7 +361,7 @@ impl TreeNodeVisitor<'_> for PushdownChecker<'_> {
     type Node = Arc<dyn PhysicalExpr>;
 
     fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion> {
-        if let Some(column) = node.as_any().downcast_ref::<Column>()
+        if let Some(column) = node.downcast_ref::<Column>()
             && let Some(recursion) = self.check_single_column(column.name())
         {
             return Ok(recursion);
@@ -499,7 +499,7 @@ pub fn build_row_filter(
 }
 
 fn get_priority(expr: &Arc<dyn PhysicalExpr>) -> u8 {
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         match binary.op() {
             Operator::Eq | Operator::NotEq => 0, // Highest priority
             Operator::LikeMatch | Operator::ILikeMatch => 1,
@@ -507,7 +507,7 @@ fn get_priority(expr: &Arc<dyn PhysicalExpr>) -> u8 {
             Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq => 3,
             _ => 4,
         }
-    } else if expr.as_any().downcast_ref::<LikeExpr>().is_some() {
+    } else if expr.is::<LikeExpr>() {
         1 // LIKE expressions
     } else {
         5 // All other expression types

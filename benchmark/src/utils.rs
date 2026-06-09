@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub(crate) fn get_plan_uuids(plan: &Arc<dyn ExecutionPlan>) -> Vec<Uuid> {
     let mut uuids = Vec::new();
     plan.apply(|plan| {
-        if let Some(plan) = plan.as_any().downcast_ref::<LiquidCacheClientExec>() {
+        if let Some(plan) = plan.downcast_ref::<LiquidCacheClientExec>() {
             uuids.push(plan.get_uuid());
         }
         Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)

@@ -256,6 +256,9 @@ struct LineageAnalyzer {
 
 impl LineageAnalyzer {
     fn analyze_plan(&mut self, plan: &LogicalPlan) -> Result<LineageMap> {
+        // Subqueries live inside expressions, not in `inputs()`, so the match
+        // below never reaches them. Analyze their plans explicitly.
+        self.analyze_subquery_plans(plan)?;
         match plan {
             LogicalPlan::TableScan(scan) => self.analyze_table_scan(scan),
             LogicalPlan::Projection(projection) => self.analyze_projection(projection),
@@ -278,6 +281,40 @@ impl LineageAnalyzer {
                 Ok(merged)
             }
         }
+    }
+
+    /// Analyze the plans of any subqueries embedded in this node's expressions.
+    ///
+    /// DataFusion 54 keeps scalar subqueries as dedicated operators rather than
+    /// decorrelating them into joins before our optimizer runs, so the columns
+    /// they use (e.g. via `EXTRACT` or `variant_get`) are no longer part of the
+    /// main plan tree. Recurse into each subquery plan so those usages are still
+    /// recorded; `analyze_plan` calls this for every node, so nested subqueries
+    /// are covered too.
+    fn analyze_subquery_plans(&mut self, plan: &LogicalPlan) -> Result<()> {
+        let mut subqueries: Vec<Arc<LogicalPlan>> = Vec::new();
+        plan.apply_expressions(|expr| {
+            expr.apply(|nested| {
+                match nested {
+                    Expr::ScalarSubquery(subquery) => {
+                        subqueries.push(Arc::clone(&subquery.subquery));
+                    }
+                    Expr::Exists(exists) => {
+                        subqueries.push(Arc::clone(&exists.subquery.subquery));
+                    }
+                    Expr::InSubquery(in_subquery) => {
+                        subqueries.push(Arc::clone(&in_subquery.subquery.subquery));
+                    }
+                    _ => {}
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+        })?;
+
+        for subquery in subqueries {
+            self.analyze_plan(&subquery)?;
+        }
+        Ok(())
     }
 
     fn analyze_table_scan(&mut self, scan: &TableScan) -> Result<LineageMap> {
@@ -723,7 +760,10 @@ fn annotate_plan_with_extractions(
         return Ok(Transformed::no(plan));
     }
 
-    plan.transform_up(|logical_plan| match logical_plan {
+    // `transform_up` alone skips subqueries (they live in expressions, not in
+    // `inputs()`); use the subquery-aware variant so scans inside scalar/IN/
+    // EXISTS subqueries get annotated too.
+    plan.transform_up_with_subqueries(|logical_plan| match logical_plan {
         LogicalPlan::TableScan(mut scan) => {
             let table_annotations = annotations_for_table_scan(&scan, annotations);
             let mut changed = false;
@@ -781,7 +821,7 @@ fn annotate_listing_table_source(
         Err(_) => return Ok(None),
     };
 
-    let Some(listing) = provider.as_any().downcast_ref::<ListingTable>() else {
+    let Some(listing) = provider.downcast_ref::<ListingTable>() else {
         return Ok(None);
     };
 
@@ -1285,13 +1325,10 @@ mod tests {
         let mut field_metadata_map = HashMap::new();
 
         plan.apply(|node| {
-            let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+            let Some(data_source) = node.downcast_ref::<DataSourceExec>() else {
                 return Ok(TreeNodeRecursion::Continue);
             };
-            let Some(file_scan_config) = data_source
-                .data_source()
-                .as_any()
-                .downcast_ref::<FileScanConfig>()
+            let Some(file_scan_config) = data_source.data_source().downcast_ref::<FileScanConfig>()
             else {
                 return Ok(TreeNodeRecursion::Continue);
             };

@@ -109,6 +109,8 @@ expression: displayable.tree_render().to_string()
 │                           ││                           ││                           │
 │    group_by: l_orderkey   ││                           ││         predicate:        │
 │       mode: Partial       ││                           ││  DynamicFilter [ empty ]  │
+│                           ││                           ││     AND DynamicFilter [   │
+│                           ││                           ││           empty ]         │
 └─────────────┬─────────────┘└───────────────────────────┘└───────────────────────────┘
 ┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   │

@@ -84,8 +84,7 @@ fn try_optimize_parquet_source(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
 ) -> Result<Transformed<Arc<dyn ExecutionPlan>>, datafusion::error::DataFusionError> {
-    let any_plan = plan.as_any();
-    if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
+    if let Some(data_source_exec) = plan.downcast_ref::<DataSourceExec>()
         && let Some((file_scan_config, parquet_source)) =
             data_source_exec.downcast_to_file_source::<ParquetSource>()
     {
@@ -184,15 +183,12 @@ mod tests {
 
         rewritten
             .apply(|node| {
-                if let Some(plan) = node.as_any().downcast_ref::<DataSourceExec>() {
+                if let Some(plan) = node.downcast_ref::<DataSourceExec>() {
                     let data_source = plan.data_source();
-                    let any_source = data_source.as_any();
-                    let source = any_source.downcast_ref::<FileScanConfig>().unwrap();
+                    let source = data_source.downcast_ref::<FileScanConfig>().unwrap();
                     let file_source = source.file_source();
-                    let any_file_source = file_source.as_any();
-                    let _parquet_source = any_file_source
-                        .downcast_ref::<LiquidParquetSource>()
-                        .unwrap();
+                    let _parquet_source =
+                        file_source.downcast_ref::<LiquidParquetSource>().unwrap();
                     let schema = source.file_schema().as_ref();
                     assert_eq!(schema, expected_schema.as_ref());
                 }

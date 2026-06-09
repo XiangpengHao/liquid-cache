@@ -2,8 +2,7 @@ use arrow_schema::DataType;
 use datafusion_common::ScalarValue;
 use datafusion_expr_common::operator::Operator;
 use datafusion_physical_expr::expressions::{
-    BinaryExpr, CastColumnExpr, CastExpr, Column, DynamicFilterPhysicalExpr, LikeExpr, Literal,
-    TryCastExpr,
+    BinaryExpr, CastExpr, Column, DynamicFilterPhysicalExpr, LikeExpr, Literal, TryCastExpr,
 };
 use datafusion_physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 
@@ -55,7 +54,7 @@ impl LiquidExpr {
 }
 
 fn unwrap_dynamic_filter(expr: &Arc<dyn PhysicalExpr>) -> Option<Arc<dyn PhysicalExpr>> {
-    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+    if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         dynamic_filter.current().ok()
     } else {
         Some(expr.clone())
@@ -67,15 +66,15 @@ fn supports_expr(
     data_type: &DataType,
     expression_hint: Option<&CacheExpression>,
 ) -> bool {
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         return supports_binary_expr(binary, data_type, expression_hint);
     }
 
-    if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>() {
+    if let Some(like_expr) = expr.downcast_ref::<LikeExpr>() {
         return supports_like_expr(like_expr, data_type, expression_hint);
     }
 
-    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+    if let Some(literal) = expr.downcast_ref::<Literal>() {
         return matches!(literal.value(), ScalarValue::Boolean(Some(_))) && is_byte_like(data_type);
     }
 
@@ -87,7 +86,7 @@ fn supports_binary_expr(
     data_type: &DataType,
     expression_hint: Option<&CacheExpression>,
 ) -> bool {
-    let Some(literal) = binary.right().as_any().downcast_ref::<Literal>() else {
+    let Some(literal) = binary.right().downcast_ref::<Literal>() else {
         return false;
     };
     let op = binary.op();
@@ -137,7 +136,6 @@ fn supports_like_expr(
     }
     like_expr
         .pattern()
-        .as_any()
         .downcast_ref::<Literal>()
         .and_then(|literal| get_bytes_needle(literal.value()))
         .is_some()
@@ -148,23 +146,20 @@ fn is_substring_hint_enabled(expression_hint: Option<&CacheExpression>) -> bool 
 }
 
 fn is_column_like(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    if expr.as_any().downcast_ref::<Column>().is_some() {
+    if expr.downcast_ref::<Column>().is_some() {
         return true;
     }
-    if let Some(cast_expr) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast_expr) = expr.downcast_ref::<CastExpr>() {
         return is_column_like(cast_expr.expr());
     }
-    if let Some(cast_column_expr) = expr.as_any().downcast_ref::<CastColumnExpr>() {
-        return is_column_like(cast_column_expr.expr());
-    }
-    if let Some(try_cast_expr) = expr.as_any().downcast_ref::<TryCastExpr>() {
+    if let Some(try_cast_expr) = expr.downcast_ref::<TryCastExpr>() {
         return is_column_like(try_cast_expr.expr());
     }
     false
 }
 
 fn is_to_timestamp_seconds_column(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    if let Some(func) = expr.as_any().downcast_ref::<ScalarFunctionExpr>()
+    if let Some(func) = expr.downcast_ref::<ScalarFunctionExpr>()
         && func.name() == "to_timestamp_seconds"
         && let [arg] = func.args()
     {

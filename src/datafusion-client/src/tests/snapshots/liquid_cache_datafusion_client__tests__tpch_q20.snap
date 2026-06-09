@@ -65,9 +65,10 @@ expression: displayable.tree_render().to_string()
                                                           │          files: 1         ││          files: 1         ││ partition_count(in->out): │
                                                           │      format: parquet      ││      format: parquet      ││           8 -> 8          │
                                                           │                           ││                           ││                           │
-                                                          │         predicate:        ││                           ││    partitioning_scheme:   │
-                                                          │    p_name LIKE forest%    ││                           ││     Hash([l_partkey@0,    │
-                                                          │                           ││                           ││      l_suppkey@1], 8)     │
+                                                          │         predicate:        ││         predicate:        ││    partitioning_scheme:   │
+                                                          │    p_name LIKE forest%    ││  DynamicFilter [ empty ]  ││     Hash([l_partkey@0,    │
+                                                          │                           ││     AND DynamicFilter [   ││      l_suppkey@1], 8)     │
+                                                          │                           ││           empty ]         ││                           │
                                                           └───────────────────────────┘└───────────────────────────┘└─────────────┬─────────────┘
                                                                                                                     ┌─────────────┴─────────────┐
                                                                                                                     │       AggregateExec       │

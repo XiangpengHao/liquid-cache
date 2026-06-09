@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
-use std::{any::Any, fmt::Formatter, sync::Arc};
+use std::{fmt::Formatter, sync::Arc};
 
 use arrow::array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
@@ -114,10 +114,6 @@ impl DisplayAs for LiquidCacheClientExec {
 }
 
 impl ExecutionPlan for LiquidCacheClientExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "LiquidCacheClientExec"
     }

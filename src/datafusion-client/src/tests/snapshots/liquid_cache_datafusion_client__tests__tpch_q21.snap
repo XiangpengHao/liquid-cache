@@ -83,10 +83,12 @@ expression: displayable.tree_render().to_string()
 │    --------------------   │                                                                                       │    --------------------   ││    --------------------   │
 │            on:            │                                                                                       │          files: 1         ││          files: 1         │
 │(n_nationkey = s_nationkey)│                                                                                       │      format: parquet      ││      format: parquet      │
-│                           ├──────────────┐                                                                        │                           ││                           │
-│                           │              │                                                                        │                           ││         predicate:        │
-│                           │              │                                                                        │                           ││      l_receiptdate >      │
+│                           │                                                                                       │                           ││                           │
+│                           ├──────────────┐                                                                        │         predicate:        ││         predicate:        │
+│                           │              │                                                                        │  DynamicFilter [ empty ]  ││      l_receiptdate >      │
 │                           │              │                                                                        │                           ││        l_commitdate       │
+│                           │              │                                                                        │                           ││     AND DynamicFilter [   │
+│                           │              │                                                                        │                           ││           empty ]         │
 └─────────────┬─────────────┘              │                                                                        └───────────────────────────┘└───────────────────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││        HashJoinExec       │

@@ -403,17 +403,15 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
 fn get_liquid_exec_info(plan: &Arc<dyn ExecutionPlan>) -> Option<String> {
     let mut rv = None;
     plan.apply(|node| {
-        let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+        let Some(data_source) = node.downcast_ref::<DataSourceExec>() else {
             return Ok(TreeNodeRecursion::Continue);
         };
         let file_scan_config = data_source
             .data_source()
-            .as_any()
             .downcast_ref::<FileScanConfig>()
             .expect("FileScanConfig not found");
         let Some(liquid_source) = file_scan_config
             .file_source()
-            .as_any()
             .downcast_ref::<LiquidParquetSource>()
         else {
             return Ok(TreeNodeRecursion::Continue);

@@ -434,8 +434,8 @@ fn eval_on_arrow(
     use datafusion::physical_expr_common::datum::apply_cmp;
     use datafusion::physical_plan::expressions::{BinaryExpr, Literal};
 
-    if let Some(be) = expr.as_any().downcast_ref::<BinaryExpr>()
-        && let Some(lit) = be.right().as_any().downcast_ref::<Literal>()
+    if let Some(be) = expr.downcast_ref::<BinaryExpr>()
+        && let Some(lit) = be.right().downcast_ref::<Literal>()
     {
         let target_dt = scalar_data_type(lit.value()).unwrap_or_else(|| array.data_type().clone());
         let lhs_arr = if &target_dt == array.data_type() {

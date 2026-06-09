@@ -134,22 +134,20 @@ impl ByteViewExpression {
 impl TryFrom<&Arc<dyn PhysicalExpr>> for ByteViewExpression {
     type Error = UnsupportedExpression;
     fn try_from(expr: &Arc<dyn PhysicalExpr>) -> Result<Self, UnsupportedExpression> {
-        let expr = if let Some(dynamic_filter) =
-            expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>()
-        {
+        let expr = if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
             dynamic_filter.current().unwrap()
         } else {
             expr.clone()
         };
 
-        if let Some(literal) = expr.as_any().downcast_ref::<Literal>()
+        if let Some(literal) = expr.downcast_ref::<Literal>()
             && let ScalarValue::Boolean(Some(v)) = literal.value()
         {
             return Err(UnsupportedExpression::Constant(*v));
         }
 
-        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>() {
-            if let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>() {
+        if let Some(binary_expr) = expr.downcast_ref::<BinaryExpr>() {
+            if let Some(literal) = binary_expr.right().downcast_ref::<Literal>() {
                 let op = binary_expr.op();
                 let byte_view_operator = ByteViewOperator::try_from(op)?;
                 let literal =
@@ -161,8 +159,8 @@ impl TryFrom<&Arc<dyn PhysicalExpr>> for ByteViewExpression {
             }
         }
         // Handle like expressions
-        else if let Some(like_expr) = expr.as_any().downcast_ref::<LikeExpr>()
-            && let Some(literal) = like_expr.pattern().as_any().downcast_ref::<Literal>()
+        else if let Some(like_expr) = expr.downcast_ref::<LikeExpr>()
+            && let Some(literal) = like_expr.pattern().downcast_ref::<Literal>()
         {
             let byte_view_operator = ByteViewOperator::from_like_expr(like_expr)?;
             let literal = get_bytes_needle(literal.value()).ok_or(UnsupportedExpression::Expr)?;
