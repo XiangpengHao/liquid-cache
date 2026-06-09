@@ -95,101 +95,45 @@ expression: displayable.tree_render().to_string()
 │(n_nationkey = c_nationkey)│              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││       ProjectionExec      │
+│   LiquidCacheClientExec   ││        HashJoinExec       │
 │    --------------------   ││    --------------------   │
-│          server:          ││        c_nationkey:       │
-│  http://localhost:50051,  ││        c_nationkey        │
-│      object_stores=[]     ││                           │
-│                           ││        l_discount:        │
-│                           ││         l_discount        │
-│                           ││                           │
-│                           ││      l_extendedprice:     │
-│                           ││      l_extendedprice      │
-│                           ││                           │
-│                           ││        l_shipdate:        │
-│                           ││         l_shipdate        │
-│                           ││                           │
-│                           ││       n_name: n_name      │
-└─────────────┬─────────────┘└─────────────┬─────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││        HashJoinExec       │
-│    --------------------   ││    --------------------   │
-│          files: 1         ││            on:            │
-│      format: parquet      ││(n_nationkey = s_nationkey)│
-│                           ││                           ├──────────────┐
-│         predicate:        ││                           │              │
-│ n_name = GERMANY OR n_name││                           │              │
-│          = FRANCE         ││                           │              │
-└───────────────────────────┘└─────────────┬─────────────┘              │
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │   LiquidCacheClientExec   ││       ProjectionExec      │
-                             │    --------------------   ││    --------------------   │
-                             │          server:          ││        c_nationkey:       │
-                             │  http://localhost:50051,  ││        c_nationkey        │
-                             │      object_stores=[]     ││                           │
-                             │                           ││        l_discount:        │
-                             │                           ││         l_discount        │
-                             │                           ││                           │
-                             │                           ││      l_extendedprice:     │
-                             │                           ││      l_extendedprice      │
-                             │                           ││                           │
-                             │                           ││        l_shipdate:        │
-                             │                           ││         l_shipdate        │
-                             │                           ││                           │
-                             │                           ││        s_nationkey:       │
-                             │                           ││        s_nationkey        │
-                             └─────────────┬─────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │       DataSourceExec      ││        HashJoinExec       │
-                             │    --------------------   ││    --------------------   │
-                             │          files: 1         ││            on:            │
-                             │      format: parquet      ││  (c_custkey = o_custkey)  │
-                             │                           ││                           ├──────────────┐
-                             │         predicate:        ││                           │              │
-                             │ n_name = FRANCE OR n_name ││                           │              │
-                             │         = GERMANY         ││                           │              │
-                             └───────────────────────────┘└─────────────┬─────────────┘              │
-                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │   LiquidCacheClientExec   ││       ProjectionExec      │
-                                                          │    --------------------   ││    --------------------   │
-                                                          │          server:          ││        l_discount:        │
-                                                          │  http://localhost:50051,  ││         l_discount        │
-                                                          │      object_stores=[]     ││                           │
-                                                          │                           ││      l_extendedprice:     │
-                                                          │                           ││      l_extendedprice      │
-                                                          │                           ││                           │
-                                                          │                           ││        l_shipdate:        │
-                                                          │                           ││         l_shipdate        │
-                                                          │                           ││                           │
-                                                          │                           ││    o_custkey: o_custkey   │
-                                                          │                           ││                           │
-                                                          │                           ││        s_nationkey:       │
-                                                          │                           ││        s_nationkey        │
-                                                          └─────────────┬─────────────┘└─────────────┬─────────────┘
-                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │       DataSourceExec      ││        HashJoinExec       │
-                                                          │    --------------------   ││    --------------------   │
-                                                          │          files: 1         ││            on:            │
-                                                          │      format: parquet      ││ (o_orderkey = l_orderkey) ├──────────────┐
-                                                          │                           ││                           │              │
-                                                          │         predicate:        ││                           │              │
-                                                          │  DynamicFilter [ empty ]  ││                           │              │
-                                                          └───────────────────────────┘└─────────────┬─────────────┘              │
-                                                                                       ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │   LiquidCacheClientExec   ││        HashJoinExec       │
-                                                                                       │    --------------------   ││    --------------------   │
-                                                                                       │          server:          ││            on:            ├──────────────┐
-                                                                                       │  http://localhost:50051,  ││  (s_suppkey = l_suppkey)  │              │
-                                                                                       │      object_stores=[]     ││                           │              │
-                                                                                       └─────────────┬─────────────┘└─────────────┬─────────────┘              │
+│          server:          ││            on:            ├──────────────┐
+│  http://localhost:50051,  ││(n_nationkey = s_nationkey)│              │
+│      object_stores=[]     ││                           │              │
+└─────────────┬─────────────┘└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││   LiquidCacheClientExec   ││        HashJoinExec       │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          files: 1         ││          server:          ││            on:            │
+│      format: parquet      ││  http://localhost:50051,  ││  (c_custkey = o_custkey)  │
+│                           ││      object_stores=[]     ││                           ├──────────────┐
+│         predicate:        ││                           ││                           │              │
+│ n_name = GERMANY OR n_name││                           ││                           │              │
+│          = FRANCE         ││                           ││                           │              │
+└───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                             │       DataSourceExec      ││   LiquidCacheClientExec   ││        HashJoinExec       │
+                             │    --------------------   ││    --------------------   ││    --------------------   │
+                             │          files: 1         ││          server:          ││            on:            │
+                             │      format: parquet      ││  http://localhost:50051,  ││ (o_orderkey = l_orderkey) │
+                             │                           ││      object_stores=[]     ││                           ├──────────────┐
+                             │         predicate:        ││                           ││                           │              │
+                             │ n_name = FRANCE OR n_name ││                           ││                           │              │
+                             │         = GERMANY         ││                           ││                           │              │
+                             └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │
+                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                                                          │       DataSourceExec      ││   LiquidCacheClientExec   ││        HashJoinExec       │
+                                                          │    --------------------   ││    --------------------   ││    --------------------   │
+                                                          │          files: 1         ││          server:          ││            on:            ├──────────────┐
+                                                          │      format: parquet      ││  http://localhost:50051,  ││  (s_suppkey = l_suppkey)  │              │
+                                                          │                           ││      object_stores=[]     ││                           │              │
+                                                          └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                        │       DataSourceExec      ││   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
                                                                                        │    --------------------   ││    --------------------   ││    --------------------   │
                                                                                        │          files: 1         ││          server:          ││          server:          │
                                                                                        │      format: parquet      ││  http://localhost:50051,  ││  http://localhost:50051,  │
                                                                                        │                           ││      object_stores=[]     ││      object_stores=[]     │
-                                                                                       │         predicate:        ││                           ││                           │
-                                                                                       │  DynamicFilter [ empty ]  ││                           ││                           │
                                                                                        └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                                                     ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                                                     │       DataSourceExec      ││      RepartitionExec      │
@@ -197,8 +141,8 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │          files: 1         ││ partition_count(in->out): │
                                                                                                                     │      format: parquet      ││           1 -> 8          │
                                                                                                                     │                           ││                           │
-                                                                                                                    │         predicate:        ││    partitioning_scheme:   │
-                                                                                                                    │  DynamicFilter [ empty ]  ││     RoundRobinBatch(8)    │
+                                                                                                                    │                           ││    partitioning_scheme:   │
+                                                                                                                    │                           ││     RoundRobinBatch(8)    │
                                                                                                                     └───────────────────────────┘└─────────────┬─────────────┘
                                                                                                                                                  ┌─────────────┴─────────────┐
                                                                                                                                                  │       DataSourceExec      │
@@ -209,8 +153,5 @@ expression: displayable.tree_render().to_string()
                                                                                                                                                  │         predicate:        │
                                                                                                                                                  │  l_shipdate >= 1995-01-01 │
                                                                                                                                                  │   AND l_shipdate <= 1996  │
-                                                                                                                                                 │ -12-31 AND DynamicFilter  │
-                                                                                                                                                 │       [ empty ] AND       │
-                                                                                                                                                 │        DynamicFilter      │
-                                                                                                                                                 │          [ empty ]        │
+                                                                                                                                                 │           -12-31          │
                                                                                                                                                  └───────────────────────────┘

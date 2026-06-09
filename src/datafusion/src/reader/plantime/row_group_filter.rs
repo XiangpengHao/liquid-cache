@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{array::ArrayRef, array::BooleanArray, datatypes::Schema};
+use arrow::{array::ArrayRef, array::BooleanArray, array::UInt64Array, datatypes::Schema};
 use datafusion::common::{Column, Result, ScalarValue};
 use datafusion::datasource::listing::FileRange;
 use datafusion::datasource::physical_plan::ParquetFileMetrics;
@@ -329,7 +329,7 @@ impl PruningStatistics for BloomFilterStatistics {
         None
     }
 
-    fn row_counts(&self, _column: &Column) -> Option<ArrayRef> {
+    fn row_counts(&self) -> Option<ArrayRef> {
         None
     }
 
@@ -412,13 +412,13 @@ impl PruningStatistics for RowGroupPruningStatistics<'_> {
             .map(|counts| Arc::new(counts) as ArrayRef)
     }
 
-    fn row_counts(&self, column: &Column) -> Option<ArrayRef> {
-        // row counts are the same for all columns in a row group
-        self.statistics_converter(column)
-            .and_then(|c| Ok(c.row_group_row_counts(self.metadata_iter())?))
-            .ok()
-            .flatten()
-            .map(|counts| Arc::new(counts) as ArrayRef)
+    fn row_counts(&self) -> Option<ArrayRef> {
+        // Row counts are container-level — read directly from row group metadata.
+        let counts: UInt64Array = self
+            .metadata_iter()
+            .map(|rg| Some(rg.num_rows() as u64))
+            .collect();
+        Some(Arc::new(counts) as ArrayRef)
     }
 
     fn contained(&self, _column: &Column, _values: &HashSet<ScalarValue>) -> Option<BooleanArray> {

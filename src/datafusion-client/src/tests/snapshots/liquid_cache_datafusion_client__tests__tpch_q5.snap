@@ -29,7 +29,11 @@ expression: displayable.tree_render().to_string()
 │           aggr:           │
 │        sum(lineitem       │
 │        .l_extendedp       │
-│ rice * Int64(1) - lineitem│
+│   rice * Some(1),20,0 -   │
+│     lineitem.l_discount   │
+│     ) as sum(lineitem     │
+│     .l_extendedprice      │
+│   * Int64(1) - lineitem   │
 │        .l_discount)       │
 │                           │
 │      group_by: n_name     │
@@ -52,7 +56,11 @@ expression: displayable.tree_render().to_string()
 │           aggr:           │
 │        sum(lineitem       │
 │        .l_extendedp       │
-│ rice * Int64(1) - lineitem│
+│   rice * Some(1),20,0 -   │
+│     lineitem.l_discount   │
+│     ) as sum(lineitem     │
+│     .l_extendedprice      │
+│   * Int64(1) - lineitem   │
 │        .l_discount)       │
 │                           │
 │      group_by: n_name     │
@@ -65,66 +73,35 @@ expression: displayable.tree_render().to_string()
 │(r_regionkey = n_regionkey)│              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││       ProjectionExec      │
+│   LiquidCacheClientExec   ││        HashJoinExec       │
 │    --------------------   ││    --------------------   │
-│          server:          ││        l_discount:        │
-│  http://localhost:50051,  ││         l_discount        │
-│      object_stores=[]     ││                           │
-│                           ││      l_extendedprice:     │
-│                           ││      l_extendedprice      │
-│                           ││                           │
-│                           ││       n_name: n_name      │
-│                           ││                           │
-│                           ││        n_regionkey:       │
-│                           ││        n_regionkey        │
-└─────────────┬─────────────┘└─────────────┬─────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││        HashJoinExec       │
-│    --------------------   ││    --------------------   │
-│          files: 1         ││            on:            │
-│      format: parquet      ││(n_nationkey = s_nationkey)├──────────────┐
-│                           ││                           │              │
-│         predicate:        ││                           │              │
-│       r_name = ASIA       ││                           │              │
-└───────────────────────────┘└─────────────┬─────────────┘              │
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │   LiquidCacheClientExec   ││       ProjectionExec      │
-                             │    --------------------   ││    --------------------   │
-                             │          server:          ││        l_discount:        │
-                             │  http://localhost:50051,  ││         l_discount        │
-                             │      object_stores=[]     ││                           │
-                             │                           ││      l_extendedprice:     │
-                             │                           ││      l_extendedprice      │
-                             │                           ││                           │
-                             │                           ││        s_nationkey:       │
-                             │                           ││        s_nationkey        │
-                             └─────────────┬─────────────┘└─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │       DataSourceExec      ││        HashJoinExec       │
-                             │    --------------------   ││    --------------------   │
-                             │          files: 1         ││            on:            │
-                             │      format: parquet      ││ (s_suppkey = l_suppkey),  ├──────────────┐
-                             │                           ││       (s_nationkey =      │              │
-                             │         predicate:        ││        c_nationkey)       │              │
-                             │  DynamicFilter [ empty ]  ││                           │              │
-                             └───────────────────────────┘└─────────────┬─────────────┘              │
-                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │   LiquidCacheClientExec   ││      RepartitionExec      │
-                                                          │    --------------------   ││    --------------------   │
-                                                          │          server:          ││ partition_count(in->out): │
-                                                          │  http://localhost:50051,  ││           1 -> 8          │
-                                                          │      object_stores=[]     ││                           │
-                                                          │                           ││    partitioning_scheme:   │
-                                                          │                           ││     RoundRobinBatch(8)    │
-                                                          └─────────────┬─────────────┘└─────────────┬─────────────┘
+│          server:          ││            on:            ├──────────────┐
+│  http://localhost:50051,  ││(n_nationkey = s_nationkey)│              │
+│      object_stores=[]     ││                           │              │
+└─────────────┬─────────────┘└─────────────┬─────────────┘              │
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││   LiquidCacheClientExec   ││        HashJoinExec       │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          files: 1         ││          server:          ││            on:            │
+│      format: parquet      ││  http://localhost:50051,  ││ (s_suppkey = l_suppkey),  ├──────────────┐
+│                           ││      object_stores=[]     ││       (s_nationkey =      │              │
+│         predicate:        ││                           ││        c_nationkey)       │              │
+│       r_name = ASIA       ││                           ││                           │              │
+└───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                             │       DataSourceExec      ││   LiquidCacheClientExec   ││      RepartitionExec      │
+                             │    --------------------   ││    --------------------   ││    --------------------   │
+                             │          files: 1         ││          server:          ││ partition_count(in->out): │
+                             │      format: parquet      ││  http://localhost:50051,  ││           1 -> 8          │
+                             │                           ││      object_stores=[]     ││                           │
+                             │                           ││                           ││    partitioning_scheme:   │
+                             │                           ││                           ││     RoundRobinBatch(8)    │
+                             └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                           │       DataSourceExec      ││        HashJoinExec       │
                                                           │    --------------------   ││    --------------------   │
-                                                          │          files: 1         ││            on:            │
-                                                          │      format: parquet      ││ (o_orderkey = l_orderkey) ├───────────────────────────────────────────┐
-                                                          │                           ││                           │                                           │
-                                                          │         predicate:        ││                           │                                           │
-                                                          │  DynamicFilter [ empty ]  ││                           │                                           │
+                                                          │          files: 1         ││            on:            ├───────────────────────────────────────────┐
+                                                          │      format: parquet      ││ (o_orderkey = l_orderkey) │                                           │
                                                           └───────────────────────────┘└─────────────┬─────────────┘                                           │
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
                                                                                        │   CoalescePartitionsExec  │                             │   LiquidCacheClientExec   │
@@ -136,11 +113,8 @@ expression: displayable.tree_render().to_string()
                                                                                        ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
                                                                                        │        HashJoinExec       │                             │       DataSourceExec      │
                                                                                        │    --------------------   │                             │    --------------------   │
-                                                                                       │            on:            │                             │          files: 1         │
-                                                                                       │  (c_custkey = o_custkey)  ├──────────────┐              │      format: parquet      │
-                                                                                       │                           │              │              │                           │
-                                                                                       │                           │              │              │         predicate:        │
-                                                                                       │                           │              │              │  DynamicFilter [ empty ]  │
+                                                                                       │            on:            ├──────────────┐              │          files: 1         │
+                                                                                       │  (c_custkey = o_custkey)  │              │              │      format: parquet      │
                                                                                        └─────────────┬─────────────┘              │              └───────────────────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                        │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -167,6 +141,5 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │         predicate:        │
                                                                                                                     │ o_orderdate >= 1994-01-01 │
                                                                                                                     │   AND o_orderdate < 1995  │
-                                                                                                                    │  -01-01 AND DynamicFilter │
-                                                                                                                    │          [ empty ]        │
+                                                                                                                    │           -01-01          │
                                                                                                                     └───────────────────────────┘

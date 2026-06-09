@@ -11,7 +11,7 @@ use datafusion::error::Result;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
-use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy};
+use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy, default_max_memory_bytes};
 use liquid_cache::cache_policies::{CachePolicy, LiquidPolicy};
 use liquid_cache_datafusion::optimizers::{LineageOptimizer, LocalModeOptimizer};
 use liquid_cache_datafusion::{
@@ -59,6 +59,8 @@ pub struct LiquidCacheLocalBuilder {
     batch_size: usize,
     /// Maximum memory size in bytes
     max_memory_bytes: usize,
+    /// Maximum disk size in bytes
+    max_disk_bytes: usize,
     /// Directory for disk cache
     cache_dir: PathBuf,
     /// Cache policy
@@ -72,9 +74,12 @@ pub struct LiquidCacheLocalBuilder {
 
 impl Default for LiquidCacheLocalBuilder {
     fn default() -> Self {
+        let max_memory_bytes = default_max_memory_bytes();
+        let max_disk_bytes = max_memory_bytes.saturating_mul(10);
         Self {
             batch_size: 8192,
-            max_memory_bytes: 1024 * 1024 * 1024, // 1GB
+            max_memory_bytes,
+            max_disk_bytes,
             cache_dir: std::env::temp_dir(),
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
@@ -96,9 +101,17 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set maximum memory size in bytes
+    /// Set maximum memory size in bytes.
+    /// Default is half of available system memory.
     pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
         self.max_memory_bytes = max_memory_bytes;
+        self
+    }
+
+    /// Set maximum disk size in bytes.
+    /// Default is 10x the default memory size.
+    pub fn with_max_disk_bytes(mut self, max_disk_bytes: usize) -> Self {
+        self.max_disk_bytes = max_disk_bytes;
         self
     }
 
@@ -155,7 +168,7 @@ impl LiquidCacheLocalBuilder {
         let cache = LiquidCacheParquet::new(
             self.batch_size,
             self.max_memory_bytes,
-            usize::MAX,
+            self.max_disk_bytes,
             store,
             self.cache_policy,
             self.squeeze_policy,
@@ -167,7 +180,7 @@ impl LiquidCacheLocalBuilder {
         let cache = LiquidCacheParquet::new_with_squeeze_victim_concurrency(
             self.batch_size,
             self.max_memory_bytes,
-            usize::MAX,
+            self.max_disk_bytes,
             store,
             self.cache_policy,
             self.squeeze_policy,

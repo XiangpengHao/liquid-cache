@@ -120,7 +120,7 @@ fn transfer_lineage_metadata_to_file_schema(
 impl FileOpener for LiquidParquetOpener {
     fn open(&self, partitioned_file: PartitionedFile) -> Result<FileOpenFuture, DataFusionError> {
         let file_range = partitioned_file.range.clone();
-        let extensions = partitioned_file.extensions.clone();
+        let access_plan_ext = partitioned_file.extensions.get_arc::<ParquetAccessPlan>();
         let file_name = partitioned_file.object_meta.location.to_string();
         let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
 
@@ -281,7 +281,7 @@ impl FileOpener for LiquidParquetOpener {
             let predicate = pruning_predicate.as_ref().map(|p| p.as_ref());
             let rg_metadata = file_metadata.row_groups();
             // track which row groups to actually read
-            let access_plan = create_initial_plan(&file_name, extensions, rg_metadata.len())?;
+            let access_plan = create_initial_plan(&file_name, access_plan_ext, rg_metadata.len())?;
             let mut row_groups = RowGroupAccessPlanFilter::new(access_plan);
             // if there is a range restricting what parts of the file to read
             if let Some(range) = file_range.as_ref() {
@@ -383,23 +383,19 @@ impl FileOpener for LiquidParquetOpener {
 
 fn create_initial_plan(
     file_name: &str,
-    extensions: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    access_plan: Option<Arc<ParquetAccessPlan>>,
     row_group_count: usize,
 ) -> Result<ParquetAccessPlan, DataFusionError> {
-    if let Some(extensions) = extensions {
-        if let Some(access_plan) = extensions.downcast_ref::<ParquetAccessPlan>() {
-            let plan_len = access_plan.len();
-            if plan_len != row_group_count {
-                return exec_err!(
-                    "Invalid ParquetAccessPlan for {file_name}. Specified {plan_len} row groups, but file has {row_group_count}"
-                );
-            }
-
-            // check row group count matches the plan
-            return Ok(access_plan.clone());
-        } else {
-            debug!("ParquetExec Ignoring unknown extension specified for {file_name}");
+    if let Some(access_plan) = access_plan {
+        let plan_len = access_plan.len();
+        if plan_len != row_group_count {
+            return exec_err!(
+                "Invalid ParquetAccessPlan for {file_name}. Specified {plan_len} row groups, but file has {row_group_count}"
+            );
         }
+
+        // check row group count matches the plan
+        return Ok(access_plan.as_ref().clone());
     }
 
     // default to scanning all row groups

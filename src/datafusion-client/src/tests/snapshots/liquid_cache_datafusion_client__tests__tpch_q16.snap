@@ -99,44 +99,31 @@ expression: displayable.tree_render().to_string()
 │  (ps_suppkey = s_suppkey) │                                           │
 └─────────────┬─────────────┘                                           │
 ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│       ProjectionExec      │                             │   LiquidCacheClientExec   │
+│        HashJoinExec       │                             │   LiquidCacheClientExec   │
 │    --------------------   │                             │    --------------------   │
-│      p_brand: p_brand     │                             │          server:          │
-│       p_size: p_size      │                             │  http://localhost:50051,  │
-│       p_type: p_type      │                             │      object_stores=[]     │
-│                           │                             │                           │
-│        ps_suppkey:        │                             │                           │
-│         ps_suppkey        │                             │                           │
-└─────────────┬─────────────┘                             └─────────────┬─────────────┘
-┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│        HashJoinExec       │                             │      RepartitionExec      │
-│    --------------------   │                             │    --------------------   │
-│            on:            │                             │ partition_count(in->out): │
-│  (p_partkey = ps_partkey) ├──────────────┐              │           1 -> 8          │
-│                           │              │              │                           │
-│                           │              │              │    partitioning_scheme:   │
-│                           │              │              │     RoundRobinBatch(8)    │
+│            on:            ├──────────────┐              │          server:          │
+│  (p_partkey = ps_partkey) │              │              │  http://localhost:50051,  │
+│                           │              │              │      object_stores=[]     │
 └─────────────┬─────────────┘              │              └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││       DataSourceExec      │
+│   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││      RepartitionExec      │
 │    --------------------   ││    --------------------   ││    --------------------   │
-│          server:          ││          server:          ││          files: 1         │
-│  http://localhost:50051,  ││  http://localhost:50051,  ││      format: parquet      │
+│          server:          ││          server:          ││ partition_count(in->out): │
+│  http://localhost:50051,  ││  http://localhost:50051,  ││           1 -> 8          │
 │      object_stores=[]     ││      object_stores=[]     ││                           │
-│                           ││                           ││         predicate:        │
-│                           ││                           ││  s_comment LIKE %Customer │
-│                           ││                           ││        %Complaints%       │
-└─────────────┬─────────────┘└─────────────┬─────────────┘└───────────────────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││       DataSourceExec      │
-│    --------------------   ││    --------------------   │
-│          files: 1         ││          files: 1         │
-│      format: parquet      ││      format: parquet      │
-│                           ││                           │
-│         predicate:        ││         predicate:        │
-│  p_brand != Brand#45 AND  ││  DynamicFilter [ empty ]  │
-│       p_type NOT LIKE     ││                           │
-│      MEDIUM POLISHED%     ││                           │
-│   AND p_size IN (49, 14,  ││                           │
-│    23, 45, 19, 3, 36, 9)  ││                           │
-└───────────────────────────┘└───────────────────────────┘
+│                           ││                           ││    partitioning_scheme:   │
+│                           ││                           ││     RoundRobinBatch(8)    │
+└─────────────┬─────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+│       DataSourceExec      ││       DataSourceExec      ││       DataSourceExec      │
+│    --------------------   ││    --------------------   ││    --------------------   │
+│          files: 1         ││          files: 1         ││          files: 1         │
+│      format: parquet      ││      format: parquet      ││      format: parquet      │
+│                           ││                           ││                           │
+│         predicate:        ││                           ││         predicate:        │
+│  p_brand != Brand#45 AND  ││                           ││  s_comment LIKE %Customer │
+│       p_type NOT LIKE     ││                           ││        %Complaints%       │
+│      MEDIUM POLISHED%     ││                           ││                           │
+│   AND p_size IN (49, 14,  ││                           ││                           │
+│    23, 45, 19, 3, 36, 9)  ││                           ││                           │
+└───────────────────────────┘└───────────────────────────┘└───────────────────────────┘

@@ -20,18 +20,6 @@ expression: displayable.tree_render().to_string()
 │         NULLS LAST        │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│       ProjectionExec      │
-│    --------------------   │
-│       n_name: n_name      │
-│       p_mfgr: p_mfgr      │
-│    p_partkey: p_partkey   │
-│    s_acctbal: s_acctbal   │
-│    s_address: s_address   │
-│    s_comment: s_comment   │
-│       s_name: s_name      │
-│      s_phone: s_phone     │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
 │            on:            │
@@ -63,106 +51,58 @@ expression: displayable.tree_render().to_string()
 │                           │              │                                                                                                     │      FinalPartitioned     │
 └─────────────┬─────────────┘              │                                                                                                     └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                                                       ┌─────────────┴─────────────┐
-│   LiquidCacheClientExec   ││       ProjectionExec      │                                                                                       │      RepartitionExec      │
+│   LiquidCacheClientExec   ││        HashJoinExec       │                                                                                       │      RepartitionExec      │
 │    --------------------   ││    --------------------   │                                                                                       │    --------------------   │
-│          server:          ││       n_name: n_name      │                                                                                       │ partition_count(in->out): │
-│  http://localhost:50051,  ││                           │                                                                                       │           8 -> 8          │
-│      object_stores=[]     ││        n_regionkey:       │                                                                                       │                           │
-│                           ││        n_regionkey        │                                                                                       │    partitioning_scheme:   │
-│                           ││                           │                                                                                       │  Hash([ps_partkey@0], 8)  │
-│                           ││       p_mfgr: p_mfgr      │                                                                                       │                           │
-│                           ││    p_partkey: p_partkey   │                                                                                       │                           │
-│                           ││                           │                                                                                       │                           │
-│                           ││       ps_supplycost:      │                                                                                       │                           │
-│                           ││       ps_supplycost       │                                                                                       │                           │
-│                           ││                           │                                                                                       │                           │
-│                           ││    s_acctbal: s_acctbal   │                                                                                       │                           │
-│                           ││    s_address: s_address   │                                                                                       │                           │
-│                           ││    s_comment: s_comment   │                                                                                       │                           │
-│                           ││       s_name: s_name      │                                                                                       │                           │
-│                           ││      s_phone: s_phone     │                                                                                       │                           │
-└─────────────┬─────────────┘└─────────────┬─────────────┘                                                                                       └─────────────┬─────────────┘
-┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                                                       ┌─────────────┴─────────────┐
-│       DataSourceExec      ││        HashJoinExec       │                                                                                       │       AggregateExec       │
-│    --------------------   ││    --------------------   │                                                                                       │    --------------------   │
-│          files: 1         ││            on:            │                                                                                       │           aggr:           │
-│      format: parquet      ││(n_nationkey = s_nationkey)├──────────────┐                                                                        │min(partsupp.ps_supplycost)│
-│                           ││                           │              │                                                                        │                           │
-│         predicate:        ││                           │              │                                                                        │    group_by: ps_partkey   │
-│      r_name = EUROPE      ││                           │              │                                                                        │       mode: Partial       │
-└───────────────────────────┘└─────────────┬─────────────┘              │                                                                        └─────────────┬─────────────┘
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
-                             │   LiquidCacheClientExec   ││       ProjectionExec      │                                                          │        HashJoinExec       │
-                             │    --------------------   ││    --------------------   │                                                          │    --------------------   │
-                             │          server:          ││       p_mfgr: p_mfgr      │                                                          │            on:            │
-                             │  http://localhost:50051,  ││    p_partkey: p_partkey   │                                                          │(r_regionkey = n_regionkey)│
-                             │      object_stores=[]     ││                           │                                                          │                           │
-                             │                           ││       ps_supplycost:      │                                                          │                           │
-                             │                           ││       ps_supplycost       │                                                          │                           │
-                             │                           ││                           │                                                          │                           │
-                             │                           ││    s_acctbal: s_acctbal   │                                                          │                           ├──────────────┐
-                             │                           ││    s_address: s_address   │                                                          │                           │              │
-                             │                           ││    s_comment: s_comment   │                                                          │                           │              │
-                             │                           ││       s_name: s_name      │                                                          │                           │              │
-                             │                           ││                           │                                                          │                           │              │
-                             │                           ││        s_nationkey:       │                                                          │                           │              │
-                             │                           ││        s_nationkey        │                                                          │                           │              │
-                             │                           ││                           │                                                          │                           │              │
-                             │                           ││      s_phone: s_phone     │                                                          │                           │              │
-                             └─────────────┬─────────────┘└─────────────┬─────────────┘                                                          └─────────────┬─────────────┘              │
-                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                             │       DataSourceExec      ││        HashJoinExec       │                                                          │   LiquidCacheClientExec   ││       ProjectionExec      │
-                             │    --------------------   ││    --------------------   │                                                          │    --------------------   ││    --------------------   │
-                             │          files: 1         ││            on:            │                                                          │          server:          ││        n_regionkey:       │
-                             │      format: parquet      ││  (s_suppkey = ps_suppkey) │                                                          │  http://localhost:50051,  ││        n_regionkey        │
-                             │                           ││                           │                                                          │      object_stores=[]     ││                           │
-                             │         predicate:        ││                           ├──────────────┐                                           │                           ││        ps_partkey:        │
-                             │  DynamicFilter [ empty ]  ││                           │              │                                           │                           ││         ps_partkey        │
-                             │                           ││                           │              │                                           │                           ││                           │
-                             │                           ││                           │              │                                           │                           ││       ps_supplycost:      │
-                             │                           ││                           │              │                                           │                           ││       ps_supplycost       │
-                             └───────────────────────────┘└─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
+│          server:          ││            on:            │                                                                                       │ partition_count(in->out): │
+│  http://localhost:50051,  ││(n_nationkey = s_nationkey)├──────────────┐                                                                        │           8 -> 8          │
+│      object_stores=[]     ││                           │              │                                                                        │                           │
+│                           ││                           │              │                                                                        │    partitioning_scheme:   │
+│                           ││                           │              │                                                                        │  Hash([ps_partkey@0], 8)  │
+└─────────────┬─────────────┘└─────────────┬─────────────┘              │                                                                        └─────────────┬─────────────┘
+┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
+│       DataSourceExec      ││   LiquidCacheClientExec   ││        HashJoinExec       │                                                          │       AggregateExec       │
+│    --------------------   ││    --------------------   ││    --------------------   │                                                          │    --------------------   │
+│          files: 1         ││          server:          ││            on:            │                                                          │           aggr:           │
+│      format: parquet      ││  http://localhost:50051,  ││  (s_suppkey = ps_suppkey) ├──────────────┐                                           │min(partsupp.ps_supplycost)│
+│                           ││      object_stores=[]     ││                           │              │                                           │                           │
+│         predicate:        ││                           ││                           │              │                                           │    group_by: ps_partkey   │
+│      r_name = EUROPE      ││                           ││                           │              │                                           │       mode: Partial       │
+└───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+                             │       DataSourceExec      ││   LiquidCacheClientExec   ││      RepartitionExec      │                             │        HashJoinExec       │
+                             │    --------------------   ││    --------------------   ││    --------------------   │                             │    --------------------   │
+                             │          files: 1         ││          server:          ││ partition_count(in->out): │                             │            on:            │
+                             │      format: parquet      ││  http://localhost:50051,  ││           1 -> 8          │                             │(r_regionkey = n_regionkey)├──────────────┐
+                             │                           ││      object_stores=[]     ││                           │                             │                           │              │
+                             │                           ││                           ││    partitioning_scheme:   │                             │                           │              │
+                             │                           ││                           ││     RoundRobinBatch(8)    │                             │                           │              │
+                             └───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘                             └─────────────┬─────────────┘              │
                                                           ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │   LiquidCacheClientExec   ││      RepartitionExec      │                             │       DataSourceExec      ││        HashJoinExec       │
+                                                          │       DataSourceExec      ││        HashJoinExec       │                             │   LiquidCacheClientExec   ││        HashJoinExec       │
                                                           │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
-                                                          │          server:          ││ partition_count(in->out): │                             │          files: 1         ││            on:            │
-                                                          │  http://localhost:50051,  ││           1 -> 8          │                             │      format: parquet      ││(n_nationkey = s_nationkey)├──────────────┐
-                                                          │      object_stores=[]     ││                           │                             │                           ││                           │              │
-                                                          │                           ││    partitioning_scheme:   │                             │         predicate:        ││                           │              │
-                                                          │                           ││     RoundRobinBatch(8)    │                             │      r_name = EUROPE      ││                           │              │
-                                                          └─────────────┬─────────────┘└─────────────┬─────────────┘                             └───────────────────────────┘└─────────────┬─────────────┘              │
-                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                          │       DataSourceExec      ││        HashJoinExec       │                                                          │   LiquidCacheClientExec   ││      RepartitionExec      │
-                                                          │    --------------------   ││    --------------------   │                                                          │    --------------------   ││    --------------------   │
-                                                          │          files: 1         ││            on:            │                                                          │          server:          ││ partition_count(in->out): │
-                                                          │      format: parquet      ││  (p_partkey = ps_partkey) ├──────────────┐                                           │  http://localhost:50051,  ││           1 -> 8          │
-                                                          │                           ││                           │              │                                           │      object_stores=[]     ││                           │
-                                                          │         predicate:        ││                           │              │                                           │                           ││    partitioning_scheme:   │
-                                                          │  DynamicFilter [ empty ]  ││                           │              │                                           │                           ││     RoundRobinBatch(8)    │
-                                                          └───────────────────────────┘└─────────────┬─────────────┘              │                                           └─────────────┬─────────────┘└─────────────┬─────────────┘
+                                                          │          files: 1         ││            on:            ├──────────────┐              │          server:          ││            on:            ├──────────────┐
+                                                          │      format: parquet      ││  (p_partkey = ps_partkey) │              │              │  http://localhost:50051,  ││(n_nationkey = s_nationkey)│              │
+                                                          │                           ││                           │              │              │      object_stores=[]     ││                           │              │
+                                                          └───────────────────────────┘└─────────────┬─────────────┘              │              └─────────────┬─────────────┘└─────────────┬─────────────┘              │
+                                                                                       ┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐┌─────────────┴─────────────┐
+                                                                                       │   LiquidCacheClientExec   ││   LiquidCacheClientExec   ││       DataSourceExec      ││   LiquidCacheClientExec   ││      RepartitionExec      │
+                                                                                       │    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   ││    --------------------   │
+                                                                                       │          server:          ││          server:          ││          files: 1         ││          server:          ││ partition_count(in->out): │
+                                                                                       │  http://localhost:50051,  ││  http://localhost:50051,  ││      format: parquet      ││  http://localhost:50051,  ││           1 -> 8          │
+                                                                                       │      object_stores=[]     ││      object_stores=[]     ││                           ││      object_stores=[]     ││                           │
+                                                                                       │                           ││                           ││         predicate:        ││                           ││    partitioning_scheme:   │
+                                                                                       │                           ││                           ││      r_name = EUROPE      ││                           ││     RoundRobinBatch(8)    │
+                                                                                       └─────────────┬─────────────┘└─────────────┬─────────────┘└───────────────────────────┘└─────────────┬─────────────┘└─────────────┬─────────────┘
                                                                                        ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-                                                                                       │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │                             │       DataSourceExec      ││       ProjectionExec      │
+                                                                                       │       DataSourceExec      ││       DataSourceExec      │                             │       DataSourceExec      ││        HashJoinExec       │
                                                                                        │    --------------------   ││    --------------------   │                             │    --------------------   ││    --------------------   │
-                                                                                       │          server:          ││          server:          │                             │          files: 1         ││        ps_partkey:        │
-                                                                                       │  http://localhost:50051,  ││  http://localhost:50051,  │                             │      format: parquet      ││         ps_partkey        │
-                                                                                       │      object_stores=[]     ││      object_stores=[]     │                             │                           ││                           │
-                                                                                       │                           ││                           │                             │         predicate:        ││       ps_supplycost:      │
-                                                                                       │                           ││                           │                             │  DynamicFilter [ empty ]  ││       ps_supplycost       │
-                                                                                       │                           ││                           │                             │                           ││                           │
-                                                                                       │                           ││                           │                             │                           ││        s_nationkey:       │
-                                                                                       │                           ││                           │                             │                           ││        s_nationkey        │
-                                                                                       └─────────────┬─────────────┘└─────────────┬─────────────┘                             └───────────────────────────┘└─────────────┬─────────────┘
-                                                                                       ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
-                                                                                       │       DataSourceExec      ││       DataSourceExec      │                                                          │        HashJoinExec       │
-                                                                                       │    --------------------   ││    --------------------   │                                                          │    --------------------   │
-                                                                                       │          files: 1         ││          files: 1         │                                                          │            on:            │
-                                                                                       │      format: parquet      ││      format: parquet      │                                                          │  (s_suppkey = ps_suppkey) │
-                                                                                       │                           ││                           │                                                          │                           ├──────────────┐
-                                                                                       │         predicate:        ││         predicate:        │                                                          │                           │              │
-                                                                                       │   p_size = 15 AND p_type  ││  DynamicFilter [ empty ]  │                                                          │                           │              │
-                                                                                       │         LIKE %BRASS       ││     AND DynamicFilter [   │                                                          │                           │              │
-                                                                                       │                           ││           empty ]         │                                                          │                           │              │
-                                                                                       └───────────────────────────┘└───────────────────────────┘                                                          └─────────────┬─────────────┘              │
+                                                                                       │          files: 1         ││          files: 1         │                             │          files: 1         ││            on:            │
+                                                                                       │      format: parquet      ││      format: parquet      │                             │      format: parquet      ││  (s_suppkey = ps_suppkey) │
+                                                                                       │                           ││                           │                             │                           ││                           ├──────────────┐
+                                                                                       │         predicate:        ││                           │                             │                           ││                           │              │
+                                                                                       │   p_size = 15 AND p_type  ││                           │                             │                           ││                           │              │
+                                                                                       │         LIKE %BRASS       ││                           │                             │                           ││                           │              │
+                                                                                       └───────────────────────────┘└───────────────────────────┘                             └───────────────────────────┘└─────────────┬─────────────┘              │
                                                                                                                                                                                                            ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
                                                                                                                                                                                                            │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
                                                                                                                                                                                                            │    --------------------   ││    --------------------   │
@@ -175,7 +115,4 @@ expression: displayable.tree_render().to_string()
                                                                                                                                                                                                            │    --------------------   ││    --------------------   │
                                                                                                                                                                                                            │          files: 1         ││          files: 1         │
                                                                                                                                                                                                            │      format: parquet      ││      format: parquet      │
-                                                                                                                                                                                                           │                           ││                           │
-                                                                                                                                                                                                           │         predicate:        ││         predicate:        │
-                                                                                                                                                                                                           │  DynamicFilter [ empty ]  ││  DynamicFilter [ empty ]  │
                                                                                                                                                                                                            └───────────────────────────┘└───────────────────────────┘

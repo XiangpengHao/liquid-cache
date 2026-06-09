@@ -53,8 +53,8 @@ expression: displayable.tree_render().to_string()
 │          files: 1         ││          files: 1         ││          server:          ││          server:          ││           aggr:           │
 │      format: parquet      ││      format: parquet      ││  http://localhost:50051,  ││  http://localhost:50051,  ││  sum(lineitem.l_quantity) │
 │                           ││                           ││      object_stores=[]     ││      object_stores=[]     ││                           │
-│         predicate:        ││         predicate:        ││                           ││                           ││         group_by:         │
-│      n_name = CANADA      ││  DynamicFilter [ empty ]  ││                           ││                           ││    l_partkey, l_suppkey   │
+│         predicate:        ││                           ││                           ││                           ││         group_by:         │
+│      n_name = CANADA      ││                           ││                           ││                           ││    l_partkey, l_suppkey   │
 │                           ││                           ││                           ││                           ││                           │
 │                           ││                           ││                           ││                           ││           mode:           │
 │                           ││                           ││                           ││                           ││      FinalPartitioned     │
@@ -105,6 +105,5 @@ expression: displayable.tree_render().to_string()
                                                                                                                     │         predicate:        │
                                                                                                                     │  l_shipdate >= 1994-01-01 │
                                                                                                                     │    AND l_shipdate < 1995  │
-                                                                                                                    │  -01-01 AND DynamicFilter │
-                                                                                                                    │          [ empty ]        │
+                                                                                                                    │           -01-01          │
                                                                                                                     └───────────────────────────┘

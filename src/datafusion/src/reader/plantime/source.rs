@@ -32,7 +32,6 @@ use parquet::{
     file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
-    any::Any,
     ops::Range,
     sync::{Arc, LazyLock},
 };
@@ -273,10 +272,6 @@ impl LiquidParquetSource {
 }
 
 impl FileSource for LiquidParquetSource {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn create_file_opener(
         &self,
         object_store: Arc<dyn ObjectStore>,

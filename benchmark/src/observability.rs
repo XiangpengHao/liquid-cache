@@ -22,18 +22,16 @@ pub fn instrument_liquid_source_with_span(
 ) -> Arc<dyn ExecutionPlan> {
     let rewritten = plan
         .transform_up(|node| {
-            let Some(data_source) = node.as_any().downcast_ref::<DataSourceExec>() else {
+            let Some(data_source) = node.downcast_ref::<DataSourceExec>() else {
                 return Ok(Transformed::no(node));
             };
             let file_scan_config = data_source
                 .data_source()
-                .as_any()
                 .downcast_ref::<FileScanConfig>()
                 .expect("FileScanConfig not found");
             let mut new_config = file_scan_config.clone();
             let Some(liquid_source) = file_scan_config
                 .file_source()
-                .as_any()
                 .downcast_ref::<LiquidParquetSource>()
             else {
                 return Ok(Transformed::no(node));

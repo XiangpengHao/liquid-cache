@@ -92,6 +92,19 @@ impl LiquidCacheClientBuilder {
             .parquet
             .binary_as_string = true;
         session_config.options_mut().execution.batch_size = 8192 * 2;
+        // Dynamic filters (e.g. a hash join's runtime build-side filter) are pushed
+        // into scan predicates by DataFusion. In distributed mode those scans are
+        // serialized and executed on a remote server that can never receive the
+        // join's runtime updates, and the serialized `DynamicFilterPhysicalExpr`
+        // carries column indices relative to the join schema rather than the scan,
+        // so the server fails to decode it. Disable the optimization on the client.
+        // The master `enable_dynamic_filter_pushdown` only cascades to the
+        // sub-options when set via the string API, so set each one explicitly.
+        let optimizer_opts = &mut session_config.options_mut().optimizer;
+        optimizer_opts.enable_dynamic_filter_pushdown = false;
+        optimizer_opts.enable_join_dynamic_filter_pushdown = false;
+        optimizer_opts.enable_topk_dynamic_filter_pushdown = false;
+        optimizer_opts.enable_aggregate_dynamic_filter_pushdown = false;
 
         let runtime_env = Arc::new(RuntimeEnv::default());
 
