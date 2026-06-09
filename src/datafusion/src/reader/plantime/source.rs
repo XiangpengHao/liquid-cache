@@ -59,7 +59,8 @@ impl CachedMetaReaderFactory {
     ) -> ParquetMetadataCacheReader {
         let path = partitioned_file.object_meta.location.clone();
         let store = Arc::clone(&self.store);
-        let mut inner = ParquetObjectReader::new(store, path.clone());
+        let mut inner = ParquetObjectReader::new(store, path.clone())
+            .with_file_size(partitioned_file.object_meta.size);
 
         if let Some(hint) = metadata_size_hint {
             inner = inner.with_footer_size_hint(hint);
