@@ -253,6 +253,37 @@ impl LiquidParquetSource {
         self
     }
 
+    /// Set predicate for row_filter only — no page-index pruning.
+    /// Used by the indexed path where the BoolNode's RowSelection is authoritative
+    /// and page-level statistics must not override it.
+    pub fn with_predicate_no_page_pruning(
+        mut self,
+        file_schema: Arc<Schema>,
+        predicate: Arc<dyn PhysicalExpr>,
+    ) -> Self {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let predicate_creation_errors =
+            MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
+        self.metrics = metrics;
+        self.predicate = Some(Arc::clone(&predicate));
+
+        match PruningPredicate::try_new(Arc::clone(&predicate), Arc::clone(&file_schema)) {
+            Ok(pruning_predicate) => {
+                if !pruning_predicate.always_true() {
+                    self.pruning_predicate = Some(Arc::new(pruning_predicate));
+                }
+            }
+            Err(e) => {
+                log::debug!("Could not create pruning predicate for: {e}");
+                predicate_creation_errors.add(1);
+            }
+        };
+
+        // Deliberately skip page_pruning_predicate — page-index stats must not
+        // prune pages that the caller's RowSelection already validated.
+        self
+    }
+
     /// Create a new LiquidParquetSource from a ParquetSource
     pub fn from_parquet_source(source: ParquetSource, liquid_cache: LiquidCacheParquetRef) -> Self {
         let predicate = source.filter();
