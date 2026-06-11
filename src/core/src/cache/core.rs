@@ -112,8 +112,8 @@ impl LiquidCache {
             memory_squeezed_liquid_bytes,
             memory_usage_bytes,
             disk_usage_bytes,
-            max_memory_bytes: self.config.max_memory_bytes(),
-            max_disk_bytes: self.config.max_disk_bytes(),
+            max_memory_bytes: self.budget.max_memory_bytes(),
+            max_disk_bytes: self.budget.max_disk_bytes(),
             runtime,
         }
     }

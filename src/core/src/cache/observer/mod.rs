@@ -131,7 +131,7 @@ impl Observer {
         }
     }
 
-    pub(crate) fn runtime_stats(&self) -> &RuntimeStats {
+    pub fn runtime_stats(&self) -> &RuntimeStats {
         &self.runtime
     }
 }

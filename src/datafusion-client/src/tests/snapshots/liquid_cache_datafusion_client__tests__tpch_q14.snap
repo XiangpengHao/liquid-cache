@@ -24,21 +24,15 @@ expression: displayable.tree_render().to_string()
 │    --------------------   │
 │           aggr:           │
 │ sum(CASE WHEN part.p_type │
-│      LIKE PROMO% THEN     │
-│       __common_expr_1     │
-│   ELSE Some(0),38,4 END)  │
-│    as sum(CASE WHEN part  │
-│     .p_type LIKE Utf8(    │
-│       "PROMO%") THEN      │
-│          lineitem         │
-│      .l_extendedprice     │
-│    * Int64(1) - lineitem  │
-│   .l_discount ELSE Int64  │
-│       (0) END), sum       │
-│       (__common_expr      │
-│    _1) as sum(lineitem    │
+│     LIKE Utf8("PROMO%")   │
+│        THEN lineitem      │
 │     .l_extendedprice *    │
 │     Int64(1) - lineitem   │
+│      .l_discount ELSE     │
+│     Int64(0) END), sum    │
+│         (lineitem         │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
 │        .l_discount)       │
 │                           │
 │        mode: Final        │
@@ -51,21 +45,15 @@ expression: displayable.tree_render().to_string()
 │    --------------------   │
 │           aggr:           │
 │ sum(CASE WHEN part.p_type │
-│      LIKE PROMO% THEN     │
-│       __common_expr_1     │
-│   ELSE Some(0),38,4 END)  │
-│    as sum(CASE WHEN part  │
-│     .p_type LIKE Utf8(    │
-│       "PROMO%") THEN      │
-│          lineitem         │
-│      .l_extendedprice     │
-│    * Int64(1) - lineitem  │
-│   .l_discount ELSE Int64  │
-│       (0) END), sum       │
-│       (__common_expr      │
-│    _1) as sum(lineitem    │
+│     LIKE Utf8("PROMO%")   │
+│        THEN lineitem      │
 │     .l_extendedprice *    │
 │     Int64(1) - lineitem   │
+│      .l_discount ELSE     │
+│     Int64(0) END), sum    │
+│         (lineitem         │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
 │        .l_discount)       │
 │                           │
 │       mode: Partial       │
@@ -80,19 +68,10 @@ expression: displayable.tree_render().to_string()
 │       p_type: p_type      │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│      RepartitionExec      │
-│    --------------------   │
-│ partition_count(in->out): │
-│           1 -> 8          │
-│                           │
-│    partitioning_scheme:   │
-│     RoundRobinBatch(8)    │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │        HashJoinExec       │
 │    --------------------   │
 │            on:            ├──────────────┐
-│  (l_partkey = p_partkey)  │              │
+│  (p_partkey = l_partkey)  │              │
 └─────────────┬─────────────┘              │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
 │   LiquidCacheClientExec   ││   LiquidCacheClientExec   │
@@ -102,13 +81,23 @@ expression: displayable.tree_render().to_string()
 │      object_stores=[]     ││      object_stores=[]     │
 └─────────────┬─────────────┘└─────────────┬─────────────┘
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐
-│       DataSourceExec      ││       DataSourceExec      │
+│       DataSourceExec      ││      RepartitionExec      │
 │    --------------------   ││    --------------------   │
-│          files: 1         ││          files: 1         │
-│      format: parquet      ││      format: parquet      │
+│          files: 1         ││ partition_count(in->out): │
+│      format: parquet      ││           1 -> 8          │
 │                           ││                           │
-│         predicate:        ││                           │
-│  l_shipdate >= 1995-09-01 ││                           │
-│    AND l_shipdate < 1995  ││                           │
-│           -10-01          ││                           │
-└───────────────────────────┘└───────────────────────────┘
+│                           ││    partitioning_scheme:   │
+│                           ││     RoundRobinBatch(8)    │
+└───────────────────────────┘└─────────────┬─────────────┘
+                             ┌─────────────┴─────────────┐
+                             │       DataSourceExec      │
+                             │    --------------------   │
+                             │          files: 1         │
+                             │      format: parquet      │
+                             │                           │
+                             │         predicate:        │
+                             │  l_shipdate >= 1995-09-01 │
+                             │    AND l_shipdate < 1995  │
+                             │  -10-01 AND DynamicFilter │
+                             │          [ empty ]        │
+                             └───────────────────────────┘

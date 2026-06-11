@@ -998,8 +998,8 @@ where
         let filtered = self.filter_inner(filter);
         let expr = liquid_expr.physical_expr();
 
-        if let Some(binary_expr) = expr.downcast_ref::<BinaryExpr>()
-            && let Some(literal) = binary_expr.right().downcast_ref::<Literal>()
+        if let Some(binary_expr) = expr.as_any().downcast_ref::<BinaryExpr>()
+            && let Some(literal) = binary_expr.right().as_any().downcast_ref::<Literal>()
         {
             let op = binary_expr.op();
             let supported_op = Operator::from_datafusion(op);

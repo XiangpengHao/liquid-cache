@@ -22,6 +22,9 @@ pub struct CachedColumn {
     field: Arc<Field>,
     column_path: ColumnAccessPath,
     expression: Option<Arc<CacheExpression>>,
+    /// Whether this column is used in a predicate (WHERE clause).
+    /// In predicate-only mode, only predicate columns are cached.
+    is_predicate_column: bool,
 }
 
 /// A reference to a cached column.
@@ -83,6 +86,7 @@ impl CachedColumn {
             cache_store,
             column_path: column_access_path,
             expression,
+            is_predicate_column,
         }
     }
 
@@ -103,6 +107,11 @@ impl CachedColumn {
     /// Returns the expression metadata associated with this column, if any.
     pub fn expression(&self) -> Option<Arc<CacheExpression>> {
         self.expression.clone()
+    }
+
+    /// Returns whether this column is a predicate column (used in WHERE clause).
+    pub fn is_predicate_column(&self) -> bool {
+        self.is_predicate_column
     }
 
     fn array_to_record_batch(&self, array: ArrayRef) -> RecordBatch {
@@ -166,18 +175,30 @@ impl CachedColumn {
     }
 
     /// Get an arrow array with a filter applied.
+    /// Returns None for non-predicate columns or string predicate columns
+    /// (only numeric predicate columns are cached and served from cache).
     pub async fn get_arrow_array_with_filter(
         &self,
         batch_id: BatchID,
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
+        if !self.is_predicate_column || is_string_type(self.field.data_type()) {
+            return None;
+        }
         let entry_id = self.entry_id(batch_id).into();
-        self.cache_store
+        let result = self
+            .cache_store
             .get(&entry_id)
             .with_selection(filter)
             .with_optional_expression_hint(self.expression())
             .read()
-            .await
+            .await;
+        if result.is_some() {
+            self.cache_store.observer().runtime_stats().incr_cache_hit();
+        } else {
+            self.cache_store.observer().runtime_stats().incr_cache_miss();
+        }
+        result
     }
 
     #[cfg(test)]
@@ -187,11 +208,17 @@ impl CachedColumn {
     }
 
     /// Insert an array into the cache.
+    /// Only numeric predicate columns are cached; string predicates and
+    /// non-predicate columns return CacheFull.
     pub async fn insert(
         self: &Arc<Self>,
         batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
+        if !self.is_predicate_column || is_string_type(self.field.data_type()) {
+            return Err(InsertArrowArrayError::CacheFull);
+        }
+
         if self.is_cached(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
@@ -206,6 +233,7 @@ impl CachedColumn {
 fn is_string_type(data_type: &DataType) -> bool {
     match data_type {
         DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => true,
+        DataType::Binary | DataType::BinaryView | DataType::LargeBinary => true,
         DataType::Dictionary(_, value_type) => is_string_type(value_type.as_ref()),
         _ => false,
     }

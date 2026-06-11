@@ -127,6 +127,7 @@ jobs:
             # Sanitizers can only run on nightly
             - uses: dtolnay/rust-toolchain@nightly
               with:
+                  toolchain: nightly-2025-08-01
                   components: rust-src
 
             # Address sanitizers can't be cached: https://github.com/Swatinem/rust-cache/issues/161
@@ -220,45 +221,46 @@ jobs:
                   files: codecov_tpch.json
                   fail_ci_if_error: true
 
-    tpcds:
-        name: TPC-DS
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-            - uses: ./.github/actions/free-disk-space
-            - uses: dtolnay/rust-toolchain@stable
-            - run: sudo apt-get update && sudo apt-get install -y wget
-            - name: Install cargo-llvm-cov
-              uses: taiki-e/install-action@cargo-llvm-cov
-            - uses: Swatinem/rust-cache@v2
-              with:
-                  shared-key: ci-${{ runner.os }}
-                  save-if: ${{ github.ref == 'refs/heads/main' }}
-            - name: Setup TPC-DS data
-              run: |
-                  curl -LsSf https://astral.sh/uv/install.sh | sh
-                  cd benchmark/tpcds
-                  uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers --data-dir data --queries-dir queries
-            - name: Run TPC-DS
-              run: |
-                  source <(cargo llvm-cov show-env --export-prefix)
-                  cargo llvm-cov clean --workspace
-                  cargo build --bin bench_server
-                  cargo build --bin tpcds_client
-                  env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
-                  sleep 2  # Wait for server to start up
-                  env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
-                  echo "=== Server logs ==="
-                  cat server.log || echo "No server log found"
-                  curl http://localhost:53703/shutdown
-                  env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-memory-mb 256
-                  cargo llvm-cov report --codecov --output-path codecov_tpcds.json
-            - name: Upload coverage to Codecov
-              uses: codecov/codecov-action@v5
-              with:
-                  token: ${{ secrets.CODECOV_TOKEN }}
-                  files: codecov_tpcds.json
-                  fail_ci_if_error: true
+    # Diable for now, because the upstream datafusion has a bug.
+    # tpcds:
+    #     name: TPC-DS
+    #     runs-on: ubuntu-latest
+    #     steps:
+    #         - uses: actions/checkout@v4
+    #         - uses: ./.github/actions/free-disk-space
+    #         - uses: dtolnay/rust-toolchain@stable
+    #         - run: sudo apt-get update && sudo apt-get install -y wget
+    #         - name: Install cargo-llvm-cov
+    #           uses: taiki-e/install-action@cargo-llvm-cov
+    #         - uses: Swatinem/rust-cache@v2
+    #           with:
+    #               shared-key: ci-${{ runner.os }}
+    #               save-if: ${{ github.ref == 'refs/heads/main' }}
+    #         - name: Setup TPC-DS data
+    #           run: |
+    #               curl -LsSf https://astral.sh/uv/install.sh | sh
+    #               cd benchmark/tpcds
+    #               uvx --from duckdb python tpcds_gen.py --scale 0.1 --answers-dir answers --data-dir data --queries-dir queries
+    #         - name: Run TPC-DS
+    #           run: |
+    #               source <(cargo llvm-cov show-env --export-prefix)
+    #               cargo llvm-cov clean --workspace
+    #               cargo build --bin bench_server
+    #               cargo build --bin tpcds_client
+    #               env RUST_LOG=info nohup cargo run --bin bench_server -- --abort-on-panic --cache-mode liquid --max-memory-mb 256 &> server.log &
+    #               sleep 2  # Wait for server to start up
+    #               env RUST_LOG=info cargo run --bin tpcds_client -- --manifest benchmark/tpcds/manifest.json --answer-dir benchmark/tpcds/answers/sf0.1
+    #               echo "=== Server logs ==="
+    #               cat server.log || echo "No server log found"
+    #               curl http://localhost:53703/shutdown
+    #               env RUST_LOG=info cargo run --bin in_process -- --manifest benchmark/tpcds/manifest.json --bench-mode liquid --max-memory-mb 256
+    #               cargo llvm-cov report --codecov --output-path codecov_tpcds.json
+    #         - name: Upload coverage to Codecov
+    #           uses: codecov/codecov-action@v5
+    #           with:
+    #               token: ${{ secrets.CODECOV_TOKEN }}
+    #               files: codecov_tpcds.json
+    #               fail_ci_if_error: true
 
     stackoverflow:
         name: StackOverflow
@@ -315,143 +317,143 @@ jobs:
                   files: codecov_stackoverflow.json
                   fail_ci_if_error: true
 
-    benchmark:
-        name: Performance Benchmark
-        runs-on: ubuntu-latest
-        permissions:
-            contents: write
-            pull-requests: write
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  fetch-depth: 0
-                  token: ${{ secrets.GITHUB_TOKEN }}
-            - uses: dtolnay/rust-toolchain@stable
-            - name: Setup ClickBench partitioned data download
-              run: |
-                  mkdir -p benchmark/clickbench/data
-                  for partition in 0 1 2 3; do
-                    echo "Downloading partition ${partition}..."
-                    wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
-                      -O "benchmark/clickbench/data/hits_${partition}.parquet"
-                  done
+    # benchmark:
+    #     name: Performance Benchmark
+    #     runs-on: pittsburgh
+    #     permissions:
+    #         contents: write
+    #         pull-requests: write
+    #     steps:
+    #         - uses: actions/checkout@v4
+    #           with:
+    #               fetch-depth: 0
+    #               token: ${{ secrets.GITHUB_TOKEN }}
+    #         - uses: dtolnay/rust-toolchain@stable
+    #         - name: Setup ClickBench partitioned data download
+    #           run: |
+    #               mkdir -p benchmark/clickbench/data
+    #               for partition in 0 1 2 3; do
+    #                 echo "Downloading partition ${partition}..."
+    #                 wget "https://datasets.clickhouse.com/hits_compatible/athena_partitioned/hits_${partition}.parquet" \
+    #                   -O "benchmark/clickbench/data/hits_${partition}.parquet"
+    #               done
 
-            - name: Update manifest for partitioned data
-              run: |
-                  # Update the manifest to point to the partitioned data directory
-                  sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
-                    benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
+    #         - name: Update manifest for partitioned data
+    #           run: |
+    #               # Update the manifest to point to the partitioned data directory
+    #               sed 's|"benchmark/clickbench/data/hits.parquet"|"benchmark/clickbench/data"|' \
+    #                 benchmark/clickbench/manifest.json > benchmark/clickbench/benchmark_manifest.json
 
-            - name: Build benchmark binary
-              run: cargo build --release --bin in_process
+    #         - name: Build benchmark binary
+    #           run: cargo build --release --bin in_process
 
-            - name: Run LiquidCache benchmark (in-process)
-              run: |
-                  mkdir -p benchmark_results
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
-                    --manifest benchmark/clickbench/benchmark_manifest.json \
-                    --output benchmark_results/liquid.json \
-                    --iteration 5 \
-                    --reset-cache \
-                    --bench-mode liquid \
-                    --max-memory-mb 64
+    #         - name: Run LiquidCache benchmark (in-process)
+    #           run: |
+    #               mkdir -p benchmark_results
+    #               env RUST_LOG=info cargo run --release --bin in_process -- \
+    #                 --manifest benchmark/clickbench/benchmark_manifest.json \
+    #                 --output benchmark_results/liquid.json \
+    #                 --iteration 5 \
+    #                 --reset-cache \
+    #                 --bench-mode liquid \
+    #                 --max-memory-mb 64
 
-            - name: Run DataFusion benchmark (plain parquet)
-              run: |
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
-                    --manifest benchmark/clickbench/benchmark_manifest.json \
-                    --output benchmark_results/parquet.json \
-                    --iteration 5 \
-                    --bench-mode parquet
+    #         - name: Run DataFusion benchmark (plain parquet)
+    #           run: |
+    #               env RUST_LOG=info cargo run --release --bin in_process -- \
+    #                 --manifest benchmark/clickbench/benchmark_manifest.json \
+    #                 --output benchmark_results/parquet.json \
+    #                 --iteration 5 \
+    #                 --bench-mode parquet
 
-            - name: Run DataFusion benchmark (default config)
-              run: |
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
-                    --manifest benchmark/clickbench/benchmark_manifest.json \
-                    --output benchmark_results/df_default.json \
-                    --iteration 5 \
-                    --bench-mode datafusion-default
+    #         - name: Run DataFusion benchmark (default config)
+    #           run: |
+    #               env RUST_LOG=info cargo run --release --bin in_process -- \
+    #                 --manifest benchmark/clickbench/benchmark_manifest.json \
+    #                 --output benchmark_results/df_default.json \
+    #                 --iteration 5 \
+    #                 --bench-mode datafusion-default
 
-            - name: Annotate results with commit/timestamp
-              run: |
-                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-                     '. + {"timestamp": $timestamp, "commit": $commit}' \
-                     benchmark_results/liquid.json > benchmark_results/liquid_final.json
-                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-                     '. + {"timestamp": $timestamp, "commit": $commit}' \
-                     benchmark_results/parquet.json > benchmark_results/parquet_final.json
-                  jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
-                     '. + {"timestamp": $timestamp, "commit": $commit}' \
-                     benchmark_results/df_default.json > benchmark_results/df_default_final.json
+    #         - name: Annotate results with commit/timestamp
+    #           run: |
+    #               jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+    #                  '. + {"timestamp": $timestamp, "commit": $commit}' \
+    #                  benchmark_results/liquid.json > benchmark_results/liquid_final.json
+    #               jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+    #                  '. + {"timestamp": $timestamp, "commit": $commit}' \
+    #                  benchmark_results/parquet.json > benchmark_results/parquet_final.json
+    #               jq --arg timestamp "$(date -Iminutes)" --arg commit "${{ github.sha }}" \
+    #                  '. + {"timestamp": $timestamp, "commit": $commit}' \
+    #                  benchmark_results/df_default.json > benchmark_results/df_default_final.json
 
-            - name: Compare LiquidCache vs DataFusion (same runner)
-              id: compare
-              run: |
-                  python3 .github/compare_benchmarks.py \
-                    benchmark_results/liquid_final.json \
-                    benchmark_results/df_default_final.json \
-                    --output comparison.md
-                  echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
+    #         - name: Compare LiquidCache vs DataFusion (same runner)
+    #           id: compare
+    #           run: |
+    #               python3 .github/compare_benchmarks.py \
+    #                 benchmark_results/liquid_final.json \
+    #                 benchmark_results/df_default_final.json \
+    #                 --output comparison.md
+    #               echo "COMPARISON_AVAILABLE=true" >> $GITHUB_OUTPUT
 
-            - name: Comment PR with benchmark results
-              if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
-              uses: actions/github-script@v7
-              with:
-                  script: |
-                      const fs = require('fs');
+    #         - name: Comment PR with benchmark results
+    #           if: steps.compare.outputs.COMPARISON_AVAILABLE == 'true' && github.event_name == 'pull_request'
+    #           uses: actions/github-script@v7
+    #           with:
+    #               script: |
+    #                   const fs = require('fs');
 
-                      let comment = '';
-                      try {
-                        comment = fs.readFileSync('comparison.md', 'utf8');
-                      } catch (error) {
-                        comment = 'Error reading benchmark comparison results';
-                      }
+    #                   let comment = '';
+    #                   try {
+    #                     comment = fs.readFileSync('comparison.md', 'utf8');
+    #                   } catch (error) {
+    #                     comment = 'Error reading benchmark comparison results';
+    #                   }
 
-                      // Check if this is an external PR (from a fork)
-                      const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
+    #                   // Check if this is an external PR (from a fork)
+    #                   const isExternalPR = context.payload.pull_request.head.repo.full_name !== context.payload.pull_request.base.repo.full_name;
 
-                      if (isExternalPR) {
-                        console.log('Skipping comment for external PR due to permission restrictions');
-                        console.log('Benchmark results:');
-                        console.log(comment);
-                        return;
-                      }
+    #                   if (isExternalPR) {
+    #                     console.log('Skipping comment for external PR due to permission restrictions');
+    #                     console.log('Benchmark results:');
+    #                     console.log(comment);
+    #                     return;
+    #                   }
 
-                      try {
-                        // Find existing benchmark comment
-                        const comments = await github.rest.issues.listComments({
-                          owner: context.repo.owner,
-                          repo: context.repo.repo,
-                          issue_number: context.issue.number,
-                        });
+    #                   try {
+    #                     // Find existing benchmark comment
+    #                     const comments = await github.rest.issues.listComments({
+    #                       owner: context.repo.owner,
+    #                       repo: context.repo.repo,
+    #                       issue_number: context.issue.number,
+    #                     });
 
-                        const botComment = comments.data.find(comment =>
-                          comment.user.type === 'Bot' &&
-                          comment.body.includes('## 📊 Benchmark Comparison')
-                        );
+    #                     const botComment = comments.data.find(comment =>
+    #                       comment.user.type === 'Bot' &&
+    #                       comment.body.includes('## 📊 Benchmark Comparison')
+    #                     );
 
-                        if (botComment) {
-                          // Update existing comment
-                          await github.rest.issues.updateComment({
-                            owner: context.repo.owner,
-                            repo: context.repo.repo,
-                            comment_id: botComment.id,
-                            body: comment
-                          });
-                        } else {
-                          // Create new comment
-                          await github.rest.issues.createComment({
-                            owner: context.repo.owner,
-                            repo: context.repo.repo,
-                            issue_number: context.issue.number,
-                            body: comment
-                          });
-                        }
-                      } catch (error) {
-                        console.log('Failed to post comment, likely due to permissions:', error.message);
-                        console.log('Benchmark results:');
-                        console.log(comment);
-                      }
+    #                     if (botComment) {
+    #                       // Update existing comment
+    #                       await github.rest.issues.updateComment({
+    #                         owner: context.repo.owner,
+    #                         repo: context.repo.repo,
+    #                         comment_id: botComment.id,
+    #                         body: comment
+    #                       });
+    #                     } else {
+    #                       // Create new comment
+    #                       await github.rest.issues.createComment({
+    #                         owner: context.repo.owner,
+    #                         repo: context.repo.repo,
+    #                         issue_number: context.issue.number,
+    #                         body: comment
+    #                       });
+    #                     }
+    #                   } catch (error) {
+    #                     console.log('Failed to post comment, likely due to permissions:', error.message);
+    #                     console.log('Benchmark results:');
+    #                     console.log(comment);
+    #                   }
 
     examples:
         name: Run client/server/inprocess examples
@@ -464,25 +466,38 @@ jobs:
                   shared-key: ci-${{ runner.os }}
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
-            - name: Build datafusion-local example
-              run: cargo build --bin datafusion-local
-            - name: Build datafusion-client-server example
-              run: cargo build --bin datafusion-client-server
-            - name: Build core example
-              run: cargo build --bin core
+            - name: Build LiquidCache server
+              run: cargo build --bin example_server
+            - name: Build LiquidCache client
+              run: cargo build --bin example_client
+            - name: Build LiquidCache client projection pushdown
+              run: cargo build --bin example_projection_pushdown
+            - name: Build LiquidCache in process eviction
+              run: cargo build --bin example_inprocess_cache_eviction
+            - name: Build LiquidCache in process insertion
+              run: cargo build --bin example_inprocess_insertion
+            - name: Build LiquidCache in process read
+              run: cargo build --bin example_inprocess_read
 
             - name: Start LiquidCache server
               run: |
-                  env RUST_LOG=info nohup cargo run --bin datafusion-client-server -- --mode server &> server.log &
+                  env RUST_LOG=info nohup cargo run --bin example_server -- --abort-on-panic &> server.log &
                   echo $! > server.pid  # Save PID for later cleanup
                   sleep 2  # Wait for server to start up
 
-            - name: Run datafusion client
+            - name: Start LiquidCache client
               run: |
                   # First run to populate the cache
-                  env RUST_LOG=info cargo run --bin datafusion-client-server -- --mode client
+                  env RUST_LOG=info cargo run --bin example_client
                   # Run twice to test the cache
-                  env RUST_LOG=info cargo run --bin datafusion-client-server -- --mode client
+                  env RUST_LOG=info cargo run --bin example_client
+
+            - name: Start LiquidCache client projection pushdown
+              run: |
+                  # First run to populate the cache
+                  env RUST_LOG=info cargo run --bin example_projection_pushdown
+                  # Run twice to test the cache
+                  env RUST_LOG=info cargo run --bin example_projection_pushdown
 
             - name: Kill LiquidCache server and show logs
               if: always()
@@ -492,8 +507,17 @@ jobs:
                   pkill -F server.pid || true
                   rm -f server.pid
 
-            - name: Run datafusion-local example
-              run: env RUST_LOG=info cargo run --bin datafusion-local
+            - name: Start LiquidCache in process projection pushdown
+              run: |
+                  # Run to populate to evict cache
+                  env RUST_LOG=info cargo run --bin example_inprocess_cache_eviction
 
-            - name: Run core example
-              run: env RUST_LOG=info cargo run --bin core
+            - name: Start LiquidCache in process insert
+              run: |
+                  # Run to populate cache with arrow array
+                  env RUST_LOG=info cargo run --bin example_inprocess_insertion
+
+            - name: Start LiquidCache in process read arrow array
+              run: |
+                  # Run to populate cache and read arrow array
+                  env RUST_LOG=info cargo run --bin example_inprocess_read

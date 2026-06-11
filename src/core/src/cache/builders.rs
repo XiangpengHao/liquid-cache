@@ -50,12 +50,10 @@ impl Default for LiquidCacheBuilder {
 impl LiquidCacheBuilder {
     /// Create a new instance of [LiquidCacheBuilder].
     pub fn new() -> Self {
-        let max_memory_bytes = default_max_memory_bytes();
-        let max_disk_bytes = max_memory_bytes.saturating_mul(10);
         Self {
             batch_size: 8192,
-            max_memory_bytes,
-            max_disk_bytes,
+            max_memory_bytes: 1024 * 1024 * 1024,
+            max_disk_bytes: usize::MAX,
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
@@ -73,14 +71,14 @@ impl LiquidCacheBuilder {
     }
 
     /// Set the max memory bytes for the cache.
-    /// Default is half of available system memory.
+    /// Default is 1GB.
     pub fn with_max_memory_bytes(mut self, max_memory_bytes: usize) -> Self {
         self.max_memory_bytes = max_memory_bytes;
         self
     }
 
     /// Set the max disk bytes for the cache.
-    /// Default is 10x the default memory size.
+    /// Default is unlimited.
     pub fn with_max_disk_bytes(mut self, max_disk_bytes: usize) -> Self {
         self.max_disk_bytes = max_disk_bytes;
         self
@@ -157,17 +155,6 @@ impl LiquidCacheBuilder {
             self.squeeze_victims_concurrently,
         ))
     }
-}
-
-/// Returns half of the total system memory in bytes.
-///
-/// Used as the default value for [`LiquidCacheBuilder::with_max_memory_bytes`].
-pub fn default_max_memory_bytes() -> usize {
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    let total = sys.total_memory();
-    let half = total / 2;
-    usize::try_from(half).unwrap_or(usize::MAX)
 }
 
 /// Builder returned by [`LiquidCache::insert`] for configuring cache writes.

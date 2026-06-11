@@ -1,5 +1,6 @@
 use super::opener::LiquidParquetOpener;
 use crate::cache::LiquidCacheParquetRef;
+use crate::reader::plantime::engagement_policy::{CacheEngagementPolicy, default_engagement_policy};
 use ahash::{HashMap, HashMapExt};
 use arrow_schema::Schema;
 use bytes::Bytes;
@@ -32,12 +33,22 @@ use parquet::{
     file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
+    any::Any,
     ops::Range,
     sync::{Arc, LazyLock},
 };
 use tokio::sync::RwLock;
 
 static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
+
+/// Pre-seed the metadata cache with already-loaded metadata.
+/// Callers that have pre-loaded parquet metadata (e.g., from a custom
+/// ParquetFileReaderFactory) can inject it here so that LC's opener
+/// skips the expensive `ArrowReaderMetadata::load_async()` call.
+pub async fn pre_seed_metadata_cache(path: &Path, metadata: Arc<ParquetMetaData>) {
+    let mut cache = META_CACHE.val.write().await;
+    cache.entry(path.clone()).or_insert(metadata);
+}
 
 #[derive(Debug)]
 pub(crate) struct CachedMetaReaderFactory {
@@ -58,8 +69,7 @@ impl CachedMetaReaderFactory {
     ) -> ParquetMetadataCacheReader {
         let path = partitioned_file.object_meta.location.clone();
         let store = Arc::clone(&self.store);
-        let mut inner = ParquetObjectReader::new(store, path.clone())
-            .with_file_size(partitioned_file.object_meta.size);
+        let mut inner = ParquetObjectReader::new(store, path.clone());
 
         if let Some(hint) = metadata_size_hint {
             inner = inner.with_footer_size_hint(hint);
@@ -138,6 +148,7 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             {
                 let cache = META_CACHE.val.read().await;
                 if let Some(meta) = cache.get(&path) {
+                    log::debug!("[LC-Meta] HIT path={}", path);
                     return Ok(meta.clone());
                 }
             }
@@ -145,8 +156,12 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             // Upgrade to write lock and double-check
             let mut cache = META_CACHE.val.write().await;
             match cache.entry(path.clone()) {
-                std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    log::debug!("[LC-Meta] HIT (race) path={}", path);
+                    Ok(entry.get().clone())
+                }
                 std::collections::hash_map::Entry::Vacant(entry) => {
+                    log::debug!("[LC-Meta] MISS (loading from store) path={}", path);
                     let meta = self.inner.get_metadata(options.as_ref()).await?;
                     let meta = Arc::try_unwrap(meta).unwrap_or_else(|e| e.as_ref().clone());
                     let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())
@@ -175,6 +190,12 @@ pub struct LiquidParquetSource {
     projection: ProjectionExprs,
     table_schema: TableSchema,
     span: Option<Arc<fastrace::Span>>,
+    /// Optional caller-provided reader factory with pre-loaded metadata.
+    /// When set, LC's opener uses this to get metadata instantly instead of
+    /// fetching from the object store.
+    parquet_file_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
+    /// Policy that decides per-file whether to use LC stream or delegate to parquet.
+    engagement_policy: Arc<dyn CacheEngagementPolicy>,
 }
 
 impl LiquidParquetSource {
@@ -232,9 +253,41 @@ impl LiquidParquetSource {
         self
     }
 
+    /// Set predicate for row_filter only — no page-index pruning.
+    /// Used by the indexed path where the BoolNode's RowSelection is authoritative
+    /// and page-level statistics must not override it.
+    pub fn with_predicate_no_page_pruning(
+        mut self,
+        file_schema: Arc<Schema>,
+        predicate: Arc<dyn PhysicalExpr>,
+    ) -> Self {
+        let metrics = ExecutionPlanMetricsSet::new();
+        let predicate_creation_errors =
+            MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
+        self.metrics = metrics;
+        self.predicate = Some(Arc::clone(&predicate));
+
+        match PruningPredicate::try_new(Arc::clone(&predicate), Arc::clone(&file_schema)) {
+            Ok(pruning_predicate) => {
+                if !pruning_predicate.always_true() {
+                    self.pruning_predicate = Some(Arc::new(pruning_predicate));
+                }
+            }
+            Err(e) => {
+                log::debug!("Could not create pruning predicate for: {e}");
+                predicate_creation_errors.add(1);
+            }
+        };
+
+        // Deliberately skip page_pruning_predicate — page-index stats must not
+        // prune pages that the caller's RowSelection already validated.
+        self
+    }
+
     /// Create a new LiquidParquetSource from a ParquetSource
     pub fn from_parquet_source(source: ParquetSource, liquid_cache: LiquidCacheParquetRef) -> Self {
         let predicate = source.filter();
+        let reader_factory = source.parquet_file_reader_factory().cloned();
 
         let table_schema = source.table_schema().clone();
         let file_schema = table_schema.file_schema().clone();
@@ -256,6 +309,8 @@ impl LiquidParquetSource {
             pruning_predicate: None,
             page_pruning_predicate: None,
             span: None,
+            parquet_file_reader_factory: reader_factory,
+            engagement_policy: default_engagement_policy(),
         };
 
         if let Some(predicate) = predicate {
@@ -265,6 +320,12 @@ impl LiquidParquetSource {
         v
     }
 
+    /// Set a custom cache engagement policy.
+    pub fn with_engagement_policy(mut self, policy: Arc<dyn CacheEngagementPolicy>) -> Self {
+        self.engagement_policy = policy;
+        self
+    }
+
     /// Get the predicate for the LiquidParquetSource
     pub fn predicate(&self) -> Option<Arc<dyn PhysicalExpr>> {
         self.predicate.clone()
@@ -272,6 +333,10 @@ impl LiquidParquetSource {
 }
 
 impl FileSource for LiquidParquetSource {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn create_file_opener(
         &self,
         object_store: Arc<dyn ObjectStore>,
@@ -284,6 +349,14 @@ impl FileSource for LiquidParquetSource {
             .unwrap_or_else(|| Arc::new(DefaultPhysicalExprAdapterFactory) as _);
 
         let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
+
+        // If the caller provided a ParquetFileReaderFactory (with pre-loaded
+        // metadata), pre-seed LC's metadata cache for all files in this partition.
+        // This avoids expensive ArrowReaderMetadata::load_async() calls in the
+        // opener for files whose metadata we already have.
+        // Pass caller's reader factory to the opener so it can use pre-loaded
+        // metadata (avoids re-fetching from object store).
+        let caller_reader_factory = self.parquet_file_reader_factory.clone();
 
         let execution_span = self
             .span
@@ -303,6 +376,8 @@ impl FileSource for LiquidParquetSource {
             self.reorder_filters(),
             expr_adapter_factory,
             execution_span.map(Arc::new),
+            caller_reader_factory,
+            Arc::clone(&self.engagement_policy),
         );
 
         Ok(Arc::new(opener))
