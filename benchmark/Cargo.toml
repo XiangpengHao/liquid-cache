@@ -18,7 +18,7 @@ arrow-flight = { workspace = true }
 tonic = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }
 url = { workspace = true }
-mimalloc = "0.1.52"
+mimalloc = "0.1.50"
 serde_json.workspace = true
 serde.workspace = true
 sysinfo = { version = "0.38.4", default-features = false, features = [
@@ -35,12 +35,12 @@ opentelemetry = "0.31.0"
 opentelemetry_sdk = "0.31.0"
 opentelemetry-otlp = { version = "0.31.1", features = ["trace", "grpc-tonic"] }
 logforth = { version = "0.29.1", features = ["append-opentelemetry", "bridge-log"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
-uuid = { version = "1.23.3", features = ["v4"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json"] }
+uuid = { version = "1.23.1", features = ["v4"] }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 usdt = "0.6"
-regex = "1.12.4"
+regex = "1.12.3"
 perf-event2 = "0.7.4"
 
 [features]

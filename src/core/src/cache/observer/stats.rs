@@ -97,6 +97,8 @@ define_runtime_stats! {
     (get, "Number of `get` calls issued via `CachedData`.", incr_get),
     (get_with_selection, "Number of `get_with_selection` calls issued via `CachedData`.", incr_get_with_selection),
     (eval_predicate, "Number of `eval_predicate` calls issued via `CachedData`.", incr_eval_predicate),
+    (cache_hit, "Number of cache hits (data found in cache).", incr_cache_hit),
+    (cache_miss, "Number of cache misses (data not in cache, fell back to Parquet).", incr_cache_miss),
     (get_squeezed_success, "Number of Squeezed-Liquid full evaluations finished without IO.", incr_get_squeezed_success),
     (get_squeezed_needs_io, "Number of Squeezed-Liquid full paths that required IO.", incr_get_squeezed_needs_io),
     (try_read_liquid_calls, "Number of `try_read_liquid` calls issued via `CachedData`.", incr_try_read_liquid),

@@ -273,7 +273,8 @@ pub fn extract_execution_metrics(
     let mut bytes_scanned = 0;
 
     let _ = plan.apply(|node| {
-        if let Some(data_source_exec) = node.downcast_ref::<DataSourceExec>()
+        let any_plan = node.as_any();
+        if let Some(data_source_exec) = any_plan.downcast_ref::<DataSourceExec>()
             && let Some(metrics) = data_source_exec.metrics()
         {
             let aggregated_metrics = metrics

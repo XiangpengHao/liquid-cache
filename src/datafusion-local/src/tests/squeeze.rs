@@ -47,7 +47,7 @@ async fn squeeze_strings() {
         .unwrap();
 
     let plan = ctx
-        .sql("SELECT COUNT(DISTINCT(\"URL\")) FROM hits WHERE \"Referer\" <> '0'")
+        .sql("SELECT COUNT(DISTINCT(\"URL\")) FROM hits WHERE \"Referer\" <> 0")
         .await
         .unwrap();
     let result = plan.collect().await.unwrap();

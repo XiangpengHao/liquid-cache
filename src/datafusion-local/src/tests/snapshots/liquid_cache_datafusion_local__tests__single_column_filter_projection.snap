@@ -26,7 +26,7 @@ entries.memory.liquid: 0
 entries.memory.squeezed_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 262528
+usage.memory_bytes: 197072
 usage.disk_bytes: 0
 RuntimeStatsSnapshot:
   get: 1

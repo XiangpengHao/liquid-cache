@@ -13,7 +13,7 @@ pub mod policies;
 mod transcode;
 mod utils;
 
-pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder, default_max_memory_bytes};
+pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder};
 pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::LiquidCache;
 pub use expressions::{CacheExpression, VariantRequest};

@@ -3,7 +3,14 @@ use std::sync::Arc;
 use crate::{
     cache::LiquidCacheParquetRef,
     reader::{
-        plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
+        plantime::{
+            engagement_policy::{
+                CacheEngagementPolicy, EngagementContext, EngagementDecision,
+                default_engagement_policy,
+            },
+            row_filter::build_row_filter,
+            row_group_filter::RowGroupAccessPlanFilter,
+        },
         runtime::LiquidStreamBuilder,
     },
 };
@@ -15,7 +22,7 @@ use datafusion::{
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
-            FileOpenFuture, FileOpener, ParquetFileMetrics,
+            FileOpenFuture, FileOpener, ParquetFileMetrics, ParquetFileReaderFactory,
             parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
         },
         table_schema::TableSchema,
@@ -56,6 +63,10 @@ pub struct LiquidParquetOpener {
     liquid_cache: LiquidCacheParquetRef,
     expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     span: Option<Arc<fastrace::Span>>,
+    /// Optional caller-provided reader factory with pre-loaded metadata.
+    caller_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
+    /// Policy that decides whether to use LC stream or delegate to parquet.
+    engagement_policy: Arc<dyn CacheEngagementPolicy>,
 }
 
 impl LiquidParquetOpener {
@@ -73,6 +84,8 @@ impl LiquidParquetOpener {
         reorder_filters: bool,
         expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
         span: Option<Arc<fastrace::Span>>,
+        caller_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
+        engagement_policy: Arc<dyn CacheEngagementPolicy>,
     ) -> Self {
         Self {
             partition_index,
@@ -87,6 +100,8 @@ impl LiquidParquetOpener {
             reorder_filters,
             expr_adapter_factory,
             span,
+            caller_reader_factory,
+            engagement_policy,
         }
     }
 }
@@ -120,14 +135,30 @@ fn transfer_lineage_metadata_to_file_schema(
 impl FileOpener for LiquidParquetOpener {
     fn open(&self, partitioned_file: PartitionedFile) -> Result<FileOpenFuture, DataFusionError> {
         let file_range = partitioned_file.range.clone();
-        let access_plan_ext = partitioned_file.extensions.get_arc::<ParquetAccessPlan>();
+        let extensions = partitioned_file.extensions.clone();
         let file_name = partitioned_file.object_meta.location.to_string();
         let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
 
         let metadata_size_hint = partitioned_file.metadata_size_hint;
+        let has_predicate = self.predicate.is_some();
+        log::debug!(
+            "[LC-Opener] open file={}, predicate={}, batch_size={}, limit={:?}",
+            file_name, has_predicate, self.batch_size, self.limit
+        );
 
         let lc = self.liquid_cache.clone();
         let file_loc = partitioned_file.object_meta.location.to_string();
+
+        // If caller provided a reader factory with pre-loaded metadata, create
+        // a reader from it. We'll use this for get_metadata() to avoid refetching.
+        let caller_metadata_reader = self.caller_reader_factory.as_ref().and_then(|factory| {
+            factory.create_reader(
+                self.partition_index,
+                partitioned_file.clone(),
+                metadata_size_hint,
+                &self.metrics,
+            ).ok()
+        });
 
         let mut async_file_reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
@@ -169,6 +200,7 @@ impl FileOpener for LiquidParquetOpener {
 
         let expr_adapter_factory = Arc::clone(&self.expr_adapter_factory);
         let span = self.span.clone();
+        let engagement_policy = Arc::clone(&self.engagement_policy);
         Ok(Box::pin(async move {
             // Prune this file using the file level statistics and partition values.
             // Since dynamic filters may have been updated since planning it is possible that we are able
@@ -203,12 +235,22 @@ impl FileOpener for LiquidParquetOpener {
                 .with_page_index_policy(parquet::file::metadata::PageIndexPolicy::Required);
             let mut metadata_timer = file_metrics.metadata_load_time.timer();
 
-            // Begin by loading the metadata from the underlying reader (note
-            // the returned metadata may actually include page indexes as some
-            // readers may return page indexes even when not requested -- for
-            // example when they are cached)
-            let mut reader_metadata =
-                ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?;
+            // Try to get metadata from caller's pre-loaded reader first (instant).
+            // Fall back to loading from the object store if not available.
+            let mut reader_metadata = if let Some(mut caller_reader) = caller_metadata_reader {
+                match caller_reader.get_metadata(Some(&options)).await {
+                    Ok(meta) => {
+                        log::debug!("[LC-Meta] REUSE from caller factory: {}", file_name);
+                        ArrowReaderMetadata::try_new(meta, options.clone())?
+                    }
+                    Err(_) => {
+                        log::debug!("[LC-Meta] caller factory failed, loading from store: {}", file_name);
+                        ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?
+                    }
+                }
+            } else {
+                ArrowReaderMetadata::load_async(&mut async_file_reader, options.clone()).await?
+            };
 
             // Note about schemas: we are actually dealing with **3 different schemas** here:
             // - The table schema as defined by the TableProvider.
@@ -281,7 +323,7 @@ impl FileOpener for LiquidParquetOpener {
             let predicate = pruning_predicate.as_ref().map(|p| p.as_ref());
             let rg_metadata = file_metadata.row_groups();
             // track which row groups to actually read
-            let access_plan = create_initial_plan(&file_name, access_plan_ext, rg_metadata.len())?;
+            let access_plan = create_initial_plan(&file_name, extensions, rg_metadata.len())?;
             let mut row_groups = RowGroupAccessPlanFilter::new(access_plan);
             // if there is a range restricting what parts of the file to read
             if let Some(range) = file_range.as_ref() {
@@ -327,7 +369,76 @@ impl FileOpener for LiquidParquetOpener {
             }
 
             let row_group_indexes = access_plan.row_group_indexes();
+
+            // Early exit: if all row groups were pruned, return empty stream
+            if row_group_indexes.is_empty() {
+                log::debug!("[LC-Opener] EMPTY: all RGs pruned, file={}", file_name);
+                return Ok(futures::stream::empty().boxed());
+            }
+
             let row_selection = access_plan.into_overall_row_selection(rg_metadata)?;
+
+            // Estimate selectivity from row_selection: how many rows survived
+            // RG pruning + page index pruning vs total rows in selected RGs.
+            let total_rows: usize = row_group_indexes
+                .iter()
+                .map(|&idx| rg_metadata[idx].num_rows() as usize)
+                .sum();
+            let selected_rows = row_selection.as_ref()
+                .map(|sel| sel.row_count())
+                .unwrap_or(total_rows);
+            let estimated_selectivity = if total_rows > 0 {
+                selected_rows as f64 / total_rows as f64
+            } else {
+                1.0
+            };
+
+            // If selectivity is low (few rows match), the decode cost is already
+            // minimal — LC cache overhead would dominate for negligible savings.
+            // Delegate to plain parquet for fast pass-through.
+            // For high selectivity (most rows match = lots of decode), LC cache
+            // saves significant decode work on warm iterations.
+            let engagement_ctx = EngagementContext {
+                estimated_selectivity,
+                has_predicate: predicate.is_some(),
+                total_rows,
+                selected_rows,
+                file_path: file_name.clone(),
+            };
+
+            match engagement_policy.decide(&engagement_ctx) {
+                EngagementDecision::DelegateToParquet => {
+                    log::debug!(
+                        "[LC-Opener] DELEGATE to plain parquet: selectivity={:.3}, file={}",
+                        estimated_selectivity, file_name
+                    );
+                    let mut plain_builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                        async_file_reader,
+                        reader_metadata,
+                    )
+                    .with_batch_size(batch_size)
+                    .with_projection(mask)
+                    .with_row_groups(row_group_indexes);
+
+                    if let Some(sel) = row_selection {
+                        plain_builder = plain_builder.with_row_selection(sel);
+                    }
+                    if let Some(lim) = limit {
+                        plain_builder = plain_builder.with_limit(lim);
+                    }
+
+                    let stream = plain_builder.build()?;
+                    let adapted = stream
+                        .map_err(|e| DataFusionError::External(Box::new(e)));
+                    return Ok(adapted.boxed());
+                }
+                EngagementDecision::UseLiquidCache => {
+                    log::debug!(
+                        "[LC-Opener] LC STREAM: selectivity={:.3}, predicate={}, file={}",
+                        estimated_selectivity, predicate.is_some(), file_name
+                    );
+                }
+            }
 
             let mut liquid_builder =
                 LiquidStreamBuilder::new(async_file_reader, Arc::clone(reader_metadata.metadata()))
@@ -383,19 +494,23 @@ impl FileOpener for LiquidParquetOpener {
 
 fn create_initial_plan(
     file_name: &str,
-    access_plan: Option<Arc<ParquetAccessPlan>>,
+    extensions: Option<Arc<dyn std::any::Any + Send + Sync>>,
     row_group_count: usize,
 ) -> Result<ParquetAccessPlan, DataFusionError> {
-    if let Some(access_plan) = access_plan {
-        let plan_len = access_plan.len();
-        if plan_len != row_group_count {
-            return exec_err!(
-                "Invalid ParquetAccessPlan for {file_name}. Specified {plan_len} row groups, but file has {row_group_count}"
-            );
-        }
+    if let Some(extensions) = extensions {
+        if let Some(access_plan) = extensions.downcast_ref::<ParquetAccessPlan>() {
+            let plan_len = access_plan.len();
+            if plan_len != row_group_count {
+                return exec_err!(
+                    "Invalid ParquetAccessPlan for {file_name}. Specified {plan_len} row groups, but file has {row_group_count}"
+                );
+            }
 
-        // check row group count matches the plan
-        return Ok(access_plan.as_ref().clone());
+            // check row group count matches the plan
+            return Ok(access_plan.clone());
+        } else {
+            debug!("ParquetExec Ignoring unknown extension specified for {file_name}");
+        }
     }
 
     // default to scanning all row groups

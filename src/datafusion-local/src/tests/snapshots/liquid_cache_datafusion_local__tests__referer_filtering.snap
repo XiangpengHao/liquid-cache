@@ -35,12 +35,12 @@ values:
 stats:
 entries.total: 8
 entries.after_first_run: 8
-entries.memory.arrow: 1
-entries.memory.liquid: 7
+entries.memory.arrow: 0
+entries.memory.liquid: 8
 entries.memory.squeezed_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 917947
+usage.memory_bytes: 884561
 usage.disk_bytes: 877216
 RuntimeStatsSnapshot:
   get: 2

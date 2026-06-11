@@ -51,24 +51,8 @@ event=insert_success entry=1 kind=DiskLiquid
 event=insert_success entry=262146 kind=MemoryArrow
 event=eval_predicate entry=2 selection=true cached=MemoryLiquid
 event=read entry=262146 selection=true expr=None cached=MemoryArrow
-event=insert_failed entry=4294967296 kind=MemoryArrow
-event=squeeze_begin victims=[262146,2]
-event=squeeze_victim entry=262146
-event=insert_success entry=262146 kind=MemoryLiquid
-event=squeeze_victim entry=2
-event=io_write entry=2 kind=MemorySqueezedLiquid bytes=63528
-event=insert_success entry=2 kind=MemorySqueezedLiquid
 event=insert_success entry=4294967296 kind=MemoryArrow
-event=insert_failed entry=4295229440 kind=MemoryArrow
-event=squeeze_begin victims=[4294967296,262146,2]
-event=squeeze_victim entry=4294967296
-event=insert_success entry=4294967296 kind=MemoryLiquid
-event=squeeze_victim entry=262146
-event=io_write entry=262146 kind=DiskLiquid bytes=17448
-event=insert_success entry=262146 kind=DiskLiquid
-event=squeeze_victim entry=2
-event=insert_success entry=2 kind=DiskLiquid
 event=insert_success entry=4295229440 kind=MemoryArrow
-event=eval_predicate entry=4294967296 selection=true cached=MemoryLiquid
+event=eval_predicate entry=4294967296 selection=true cached=MemoryArrow
 event=read entry=4295229440 selection=true expr=None cached=MemoryArrow
 ]
