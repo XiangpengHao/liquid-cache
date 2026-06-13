@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use crate::{
-    cache::LiquidCacheParquetRef,
+    cache::{ColumnSqueezeHints, LiquidCacheParquetRef},
     reader::{
         plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
         runtime::LiquidStreamBuilder,
     },
 };
-use ahash::AHashMap;
 use arrow::array::{RecordBatch, RecordBatchOptions};
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::SchemaRef;
 use datafusion::{
     common::exec_err,
     datasource::{
@@ -56,6 +55,7 @@ pub struct LiquidParquetOpener {
     liquid_cache: LiquidCacheParquetRef,
     expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     span: Option<Arc<fastrace::Span>>,
+    squeeze_hints: Arc<ColumnSqueezeHints>,
 }
 
 impl LiquidParquetOpener {
@@ -73,6 +73,7 @@ impl LiquidParquetOpener {
         reorder_filters: bool,
         expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
         span: Option<Arc<fastrace::Span>>,
+        squeeze_hints: Arc<ColumnSqueezeHints>,
     ) -> Self {
         Self {
             partition_index,
@@ -87,34 +88,9 @@ impl LiquidParquetOpener {
             reorder_filters,
             expr_adapter_factory,
             span,
+            squeeze_hints,
         }
     }
-}
-
-// transfer lineage metadata from tagged schema to dst schema
-// The two schema must from the same file.
-fn transfer_lineage_metadata_to_file_schema(
-    tagged_schema: SchemaRef,
-    dst_schema: SchemaRef,
-) -> Schema {
-    let mut new_fields = vec![];
-
-    let mut tagged_fields = AHashMap::new();
-    for field in tagged_schema.fields().iter() {
-        tagged_fields.insert(field.name().to_string(), field.clone());
-    }
-    for field in dst_schema.fields().iter() {
-        let tagged_field = match tagged_fields.get(field.name()) {
-            Some(tagged_field) => {
-                let new_field = Field::clone(field).with_metadata(tagged_field.metadata().clone());
-                Arc::new(new_field)
-            }
-            None => field.clone(),
-        };
-        new_fields.push(tagged_field);
-    }
-    let dst_metadata = dst_schema.metadata().clone();
-    Schema::new(new_fields).with_metadata(dst_metadata)
 }
 
 impl FileOpener for LiquidParquetOpener {
@@ -169,6 +145,7 @@ impl FileOpener for LiquidParquetOpener {
 
         let expr_adapter_factory = Arc::clone(&self.expr_adapter_factory);
         let span = self.span.clone();
+        let squeeze_hints = Arc::clone(&self.squeeze_hints);
         Ok(Box::pin(async move {
             // Prune this file using the file level statistics and partition values.
             // Since dynamic filters may have been updated since planning it is possible that we are able
@@ -217,10 +194,6 @@ impl FileOpener for LiquidParquetOpener {
             //   This is what the physical file schema is coerced to.
             // - The physical file schema: this is the schema as defined by the parquet file. This is what the parquet file actually contains.
             let physical_file_schema = Arc::clone(reader_metadata.schema());
-            let physical_file_schema = Arc::new(transfer_lineage_metadata_to_file_schema(
-                Arc::clone(&logical_file_schema),
-                Arc::clone(&physical_file_schema),
-            ));
             let cache_full_schema = Arc::clone(&physical_file_schema);
             options = options.with_schema(Arc::clone(&physical_file_schema));
             reader_metadata =
@@ -346,7 +319,11 @@ impl FileOpener for LiquidParquetOpener {
                 liquid_builder = liquid_builder.with_span(span);
             }
 
-            let liquid_cache = lc.register_or_get_file(file_loc, Arc::clone(&cache_full_schema));
+            let liquid_cache = lc.register_or_get_file_with_hints(
+                file_loc,
+                Arc::clone(&cache_full_schema),
+                squeeze_hints,
+            );
 
             let stream = liquid_builder.build(liquid_cache)?;
 

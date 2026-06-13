@@ -33,6 +33,7 @@ parquet = { workspace = true }
 parquet-variant-compute = { workspace = true }
 fastrace = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sysinfo = { version = "0.38.4", default-features = false, features = ["system"] }
 
 [dev-dependencies]

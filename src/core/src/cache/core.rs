@@ -728,9 +728,9 @@ impl LiquidCache {
         expression: Option<&CacheExpression>,
         selection: Option<&BooleanBuffer>,
     ) -> Option<ArrayRef> {
-        if let Some(CacheExpression::ExtractDate32 { field }) = expression
+        if let Some(field) = expression.and_then(CacheExpression::as_date32_field)
             && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
-            && squeezed.field() == *field
+            && squeezed.field() == field
         {
             let component = squeezed.to_component_array();
             self.observer.on_hit_date32_expression();

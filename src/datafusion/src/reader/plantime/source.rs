@@ -1,5 +1,5 @@
 use super::opener::LiquidParquetOpener;
-use crate::cache::LiquidCacheParquetRef;
+use crate::cache::{ColumnSqueezeHints, LiquidCacheParquetRef};
 use ahash::{HashMap, HashMapExt};
 use arrow_schema::Schema;
 use bytes::Bytes;
@@ -175,6 +175,7 @@ pub struct LiquidParquetSource {
     projection: ProjectionExprs,
     table_schema: TableSchema,
     span: Option<Arc<fastrace::Span>>,
+    squeeze_hints: Arc<ColumnSqueezeHints>,
 }
 
 impl LiquidParquetSource {
@@ -196,6 +197,20 @@ impl LiquidParquetSource {
             table_schema,
             ..self.clone()
         }
+    }
+
+    /// Attach typed squeeze hints (keyed by file-schema column name) derived
+    /// from the query plan. These flow to the cache when the file is opened.
+    pub fn with_squeeze_hints(&self, squeeze_hints: Arc<ColumnSqueezeHints>) -> Self {
+        Self {
+            squeeze_hints,
+            ..self.clone()
+        }
+    }
+
+    /// The typed squeeze hints currently attached to this source.
+    pub fn squeeze_hints(&self) -> &Arc<ColumnSqueezeHints> {
+        &self.squeeze_hints
     }
 
     /// Set predicate information, also sets pruning_predicate and page_pruning_predicate attributes
@@ -256,6 +271,7 @@ impl LiquidParquetSource {
             pruning_predicate: None,
             page_pruning_predicate: None,
             span: None,
+            squeeze_hints: Arc::default(),
         };
 
         if let Some(predicate) = predicate {
@@ -303,6 +319,7 @@ impl FileSource for LiquidParquetSource {
             self.reorder_filters(),
             expr_adapter_factory,
             execution_span.map(Arc::new),
+            Arc::clone(&self.squeeze_hints),
         );
 
         Ok(Arc::new(opener))

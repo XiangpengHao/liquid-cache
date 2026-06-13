@@ -65,6 +65,24 @@ impl From<Action> for LiquidCacheActions {
     }
 }
 
+/// A typed squeeze hint for one file-schema column, shipped alongside a plan.
+///
+/// The cache server cannot re-derive squeeze hints for lineage that lives only
+/// in the client-side part of the plan (e.g. a `date_part` projection above the
+/// pushed-down scan), so the client derives them from the full physical plan and
+/// ships them here. `hint` is the canonical encoding produced by
+/// `CacheExpression::to_metadata_value`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ColumnSqueezeHint {
+    /// File-schema column name the hint applies to.
+    #[prost(string, tag = "1")]
+    pub column: ::prost::alloc::string::String,
+
+    /// Canonical `CacheExpression` encoding.
+    #[prost(string, tag = "2")]
+    pub hint: ::prost::alloc::string::String,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RegisterPlanRequest {
     #[prost(bytes, tag = "1")]
@@ -72,6 +90,11 @@ pub struct RegisterPlanRequest {
 
     #[prost(bytes, tag = "2")]
     pub handle: Bytes,
+
+    /// Typed squeeze hints for the (single) scan in this plan fragment, derived
+    /// by the client from the full physical plan.
+    #[prost(message, repeated, tag = "3")]
+    pub squeeze_hints: ::prost::alloc::vec::Vec<ColumnSqueezeHint>,
 }
 
 impl ProstMessageExt for RegisterPlanRequest {
