@@ -33,6 +33,7 @@ use datafusion::datasource::physical_plan::{FileScanConfig, FileSource, ParquetS
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::JoinType;
 use datafusion::physical_expr::Partitioning;
+use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::aggregates::AggregateExec;
@@ -45,7 +46,6 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use datafusion::physical_expr::ScalarFunctionExpr;
 use liquid_cache::cache::CacheExpression;
 use liquid_cache::liquid_array::Date32Field;
 
@@ -130,10 +130,7 @@ impl SqueezeHintMap {
     ///
     /// Pushed-down fragments are single-scan, so this returns that scan's hints;
     /// `fragment` must be a node from the same plan this map was analyzed from.
-    pub fn for_fragment(
-        &self,
-        fragment: &std::sync::Arc<dyn ExecutionPlan>,
-    ) -> ColumnSqueezeHints {
+    pub fn for_fragment(&self, fragment: &std::sync::Arc<dyn ExecutionPlan>) -> ColumnSqueezeHints {
         let mut merged = ColumnSqueezeHints::default();
         fragment
             .apply(|node| {
@@ -598,9 +595,9 @@ fn derive_substring(data_type: &DataType, usages: &[Vec<Op>]) -> Option<CacheExp
 fn literal_utf8(expr: &std::sync::Arc<dyn PhysicalExpr>) -> Option<String> {
     let literal = expr.downcast_ref::<Literal>()?;
     match literal.value() {
-        ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) | ScalarValue::Utf8View(Some(v)) => {
-            Some(v.clone())
-        }
+        ScalarValue::Utf8(Some(v))
+        | ScalarValue::LargeUtf8(Some(v))
+        | ScalarValue::Utf8View(Some(v)) => Some(v.clone()),
         _ => None,
     }
 }
@@ -648,6 +645,39 @@ fn is_string_type(data_type: &DataType) -> bool {
 
 fn is_date_part_type(data_type: &DataType) -> bool {
     matches!(data_type, DataType::Date32 | DataType::Timestamp(_, _))
+}
+
+/// Converts one parquet scan node, given its derived hints, into its
+/// liquid-cache-backed equivalent. Returns `None` for non-parquet nodes.
+pub(crate) type ScanConverter<'a> = dyn FnMut(
+        &std::sync::Arc<dyn ExecutionPlan>,
+        ColumnSqueezeHints,
+    ) -> Option<std::sync::Arc<dyn ExecutionPlan>>
+    + 'a;
+
+/// Rewrite every parquet scan in `plan`, attaching the squeeze hints derived for
+/// it. `hints` resolves a scan's node pointer to its hints; scans absent from
+/// the map get [`ColumnSqueezeHints::default`].
+pub(crate) fn rewrite_with_hints(
+    plan: std::sync::Arc<dyn ExecutionPlan>,
+    convert: &mut ScanConverter<'_>,
+    hints: &HashMap<NodePtr, ColumnSqueezeHints>,
+) -> std::sync::Arc<dyn ExecutionPlan> {
+    plan.transform_up(|node| {
+        let ptr = node_ptr(&node);
+        let scan_hints = hints.get(&ptr).cloned().unwrap_or_default();
+        if let Some(new_node) = convert(&node, scan_hints) {
+            Ok(Transformed::new(
+                new_node,
+                true,
+                TreeNodeRecursion::Continue,
+            ))
+        } else {
+            Ok(Transformed::no(node))
+        }
+    })
+    .unwrap()
+    .data
 }
 
 #[cfg(test)]
@@ -720,10 +750,9 @@ mod tests {
 
     #[tokio::test]
     async fn extract_multiple_components_are_unioned() {
-        let hints = hints_for(
-            "SELECT EXTRACT(DAY FROM date) AS d, EXTRACT(MONTH FROM date) AS m FROM t",
-        )
-        .await;
+        let hints =
+            hints_for("SELECT EXTRACT(DAY FROM date) AS d, EXTRACT(MONTH FROM date) AS m FROM t")
+                .await;
         assert_eq!(
             hints.get("date"),
             Some(&date(&[Date32Field::Month, Date32Field::Day]))
@@ -768,33 +797,4 @@ mod tests {
                 .is_none_or(|e| !matches!(e.as_ref(), CacheExpression::SubstringSearch))
         );
     }
-}
-
-/// Converts one parquet scan node, given its derived hints, into its
-/// liquid-cache-backed equivalent. Returns `None` for non-parquet nodes.
-pub(crate) type ScanConverter<'a> = dyn FnMut(
-        &std::sync::Arc<dyn ExecutionPlan>,
-        ColumnSqueezeHints,
-    ) -> Option<std::sync::Arc<dyn ExecutionPlan>>
-    + 'a;
-
-/// Rewrite every parquet scan in `plan`, attaching the squeeze hints derived for
-/// it. `hints` resolves a scan's node pointer to its hints; scans absent from
-/// the map get [`ColumnSqueezeHints::default`].
-pub(crate) fn rewrite_with_hints(
-    plan: std::sync::Arc<dyn ExecutionPlan>,
-    convert: &mut ScanConverter<'_>,
-    hints: &HashMap<NodePtr, ColumnSqueezeHints>,
-) -> std::sync::Arc<dyn ExecutionPlan> {
-    plan.transform_up(|node| {
-        let ptr = node_ptr(&node);
-        let scan_hints = hints.get(&ptr).cloned().unwrap_or_default();
-        if let Some(new_node) = convert(&node, scan_hints) {
-            Ok(Transformed::new(new_node, true, TreeNodeRecursion::Continue))
-        } else {
-            Ok(Transformed::no(node))
-        }
-    })
-    .unwrap()
-    .data
 }

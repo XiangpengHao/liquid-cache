@@ -219,7 +219,12 @@ impl CachedFile {
             .map(|(idx, field)| {
                 let is_predicate_column = predicate_column_ids.contains(&idx);
                 let expression = self.squeeze_hints.get(field.name()).cloned();
-                (idx as u64, Arc::clone(field), expression, is_predicate_column)
+                (
+                    idx as u64,
+                    Arc::clone(field),
+                    expression,
+                    is_predicate_column,
+                )
             })
             .collect();
 

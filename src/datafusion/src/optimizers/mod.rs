@@ -16,9 +16,7 @@ use datafusion::{
 pub(crate) use squeeze_hint::HintAnalyzer;
 pub use squeeze_hint::SqueezeHintMap;
 
-use crate::{
-    LiquidCacheParquetRef, LiquidParquetSource, cache::ColumnSqueezeHints,
-};
+use crate::{LiquidCacheParquetRef, LiquidParquetSource, cache::ColumnSqueezeHints};
 
 /// Physical optimizer rule for local mode liquid cache.
 ///
@@ -80,12 +78,16 @@ pub fn rewrite_data_source_plan_with_hints(
     cache: &LiquidCacheParquetRef,
     hints: &ColumnSqueezeHints,
 ) -> Arc<dyn ExecutionPlan> {
-    plan.transform_up(|node| {
-        match convert_parquet_scan(&node, cache, hints.clone()) {
-            Some(new_node) => Ok(Transformed::new(new_node, true, TreeNodeRecursion::Continue)),
+    plan.transform_up(
+        |node| match convert_parquet_scan(&node, cache, hints.clone()) {
+            Some(new_node) => Ok(Transformed::new(
+                new_node,
+                true,
+                TreeNodeRecursion::Continue,
+            )),
             None => Ok(Transformed::no(node)),
-        }
-    })
+        },
+    )
     .unwrap()
     .data
 }
@@ -109,8 +111,9 @@ fn convert_parquet_scan(
     let (file_scan_config, parquet_source) =
         data_source_exec.downcast_to_file_source::<ParquetSource>()?;
 
-    let new_source = LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone())
-        .with_squeeze_hints(Arc::new(hints));
+    let new_source =
+        LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone())
+            .with_squeeze_hints(Arc::new(hints));
 
     let mut new_config = file_scan_config.clone();
     new_config.file_source = Arc::new(new_source);
