@@ -29,8 +29,8 @@ pub use id::{BatchID, ParquetArrayID};
 
 /// Typed squeeze hints for a single file, keyed by file-schema column name.
 ///
-/// Produced by the physical [`HintAnalyzer`](crate::optimizers::HintAnalyzer)
-/// (local mode) or shipped from the client (Flight mode), and attached to the
+/// Produced by the physical squeeze-hint analyzer (local mode) or shipped from
+/// the client (Flight mode), and attached to the
 /// [`LiquidParquetSource`](crate::LiquidParquetSource) that opens the file.
 pub type ColumnSqueezeHints = HashMap<String, Arc<CacheExpression>>;
 

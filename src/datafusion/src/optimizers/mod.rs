@@ -24,7 +24,7 @@ use crate::{
 ///
 /// Rewrites `DataSourceExec` parquet scans to use [`LiquidParquetSource`], and
 /// in the same pass derives typed squeeze hints from the full physical plan
-/// (via [`HintAnalyzer`]) and attaches each scan's hints to its source.
+/// (via the squeeze-hint analyzer) and attaches each scan's hints to its source.
 #[derive(Debug)]
 pub struct LocalModeOptimizer {
     cache: LiquidCacheParquetRef,
