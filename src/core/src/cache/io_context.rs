@@ -27,7 +27,7 @@ pub trait EntryMetadata: Debug + Send + Sync {
     /// Get the squeeze hint for an entry.
     /// If None, the entry will be evicted to disk entirely.
     /// If Some, the entry will be squeezed according to the cache expressions previously recorded for this column.
-    /// For example, if expression is ExtractDate32 { field: Date32Field::Year },
+    /// For example, if expression is `ExtractDate32 { fields: [Date32Field::Year] }`,
     /// the entry will be squeezed to a [crate::liquid_array::SqueezedDate32Array] with the year
     /// component (Date32 or Timestamp input).
     fn squeeze_hint(&self, _entry_id: &EntryID) -> Option<Arc<CacheExpression>> {

@@ -37,8 +37,10 @@ use fastrace::future::FutureExt;
 use fastrace::prelude::*;
 use futures::{Stream, TryStreamExt, future::BoxFuture, ready};
 use liquid_cache_common::rpc::{
-    FetchResults, LiquidCacheActions, RegisterObjectStoreRequest, RegisterPlanRequest,
+    ColumnSqueezeHint, FetchResults, LiquidCacheActions, RegisterObjectStoreRequest,
+    RegisterPlanRequest,
 };
+use liquid_cache_datafusion::cache::ColumnSqueezeHints;
 use tonic::Request;
 use uuid::Uuid;
 
@@ -61,6 +63,9 @@ pub struct LiquidCacheClientExec {
     uuid: Uuid,
     plan_registered: Arc<AtomicUsize>,
     properties: Arc<PlanProperties>,
+    /// Typed squeeze hints for the scan in `remote_plan`, derived by the client
+    /// from the full physical plan and shipped to the cache server.
+    squeeze_hints: ColumnSqueezeHints,
 }
 
 impl std::fmt::Debug for LiquidCacheClientExec {
@@ -74,6 +79,7 @@ impl LiquidCacheClientExec {
         remote_plan: Arc<dyn ExecutionPlan>,
         cache_server: String,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
+        squeeze_hints: ColumnSqueezeHints,
     ) -> Self {
         let properties = Arc::new(PlanProperties::new(
             remote_plan.equivalence_properties().clone(), // Equivalence Properties
@@ -90,6 +96,7 @@ impl LiquidCacheClientExec {
             uuid,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
+            squeeze_hints,
         }
     }
 
@@ -145,6 +152,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             metrics: self.metrics.clone(),
             uuid: self.uuid,
             properties: self.properties.clone(),
+            squeeze_hints: self.squeeze_hints.clone(),
         }))
     }
 
@@ -171,6 +179,7 @@ impl ExecutionPlan for LiquidCacheClientExec {
             self.uuid,
             partition,
             self.object_stores.clone(),
+            squeeze_hints_to_wire(&self.squeeze_hints),
         );
         Ok(Box::pin(FlightStream::new(
             Some(Box::pin(stream)),
@@ -227,6 +236,17 @@ impl ExecutionPlan for LiquidCacheClientExec {
     }
 }
 
+/// Convert typed squeeze hints into their wire form (canonical string encoding).
+fn squeeze_hints_to_wire(hints: &ColumnSqueezeHints) -> Vec<ColumnSqueezeHint> {
+    hints
+        .iter()
+        .map(|(column, expr)| ColumnSqueezeHint {
+            column: column.clone(),
+            hint: expr.to_metadata_value(),
+        })
+        .collect()
+}
+
 async fn flight_stream(
     server: String,
     plan: Arc<dyn ExecutionPlan>,
@@ -234,6 +254,7 @@ async fn flight_stream(
     handle: Uuid,
     partition: usize,
     object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
+    squeeze_hints: Vec<ColumnSqueezeHint>,
 ) -> Result<SendableRecordBatchStream> {
     // Materialized scalar-subquery results are embedded in scan predicates as
     // `ScalarSubqueryExpr`, which cannot be serialized on its own and is
@@ -273,6 +294,7 @@ async fn flight_stream(
             let action = LiquidCacheActions::RegisterPlan(RegisterPlanRequest {
                 plan: plan_bytes.to_vec(),
                 handle: handle.into_bytes().to_vec().into(),
+                squeeze_hints: squeeze_hints.clone(),
             })
             .into();
             client

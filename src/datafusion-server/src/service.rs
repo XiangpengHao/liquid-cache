@@ -9,9 +9,9 @@ use liquid_cache::{ByteCache, cache::squeeze_policies::SqueezePolicy};
 use liquid_cache::{cache::HydrationPolicy, cache_policies::CachePolicy};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_datafusion::{
-    cache::{LiquidCacheParquet, LiquidCacheParquetRef},
+    cache::{ColumnSqueezeHints, LiquidCacheParquet, LiquidCacheParquetRef},
     extract_execution_metrics,
-    optimizers::rewrite_data_source_plan,
+    optimizers::{SqueezeHintMap, rewrite_data_source_plan_with_hints},
 };
 use log::{debug, info};
 use object_store::ObjectStore;
@@ -147,11 +147,22 @@ impl LiquidCacheServiceInner {
         }
     }
 
-    pub(crate) fn register_plan(&self, handle: Uuid, plan: Arc<dyn ExecutionPlan>) {
+    pub(crate) fn register_plan(
+        &self,
+        handle: Uuid,
+        plan: Arc<dyn ExecutionPlan>,
+        squeeze_hints: ColumnSqueezeHints,
+    ) {
         let cache = self.cache();
+        // Hints the server can derive from the fragment itself (e.g. a
+        // `date_part` inside a pushed-down partial aggregate). The client ships
+        // hints for lineage that only exists in the client-side part of the
+        // plan; those take precedence on conflict.
+        let mut hints = SqueezeHintMap::analyze(&plan).for_fragment(&plan);
+        hints.extend(squeeze_hints);
         self.execution_plans.write().unwrap().insert(
             handle,
-            ExecutionPlanEntry::new(rewrite_data_source_plan(plan, cache)),
+            ExecutionPlanEntry::new(rewrite_data_source_plan_with_hints(plan, cache, &hints)),
         );
     }
 

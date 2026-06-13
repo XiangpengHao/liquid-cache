@@ -4,14 +4,13 @@ use arrow::{
     compute::prep_null_mask_filter,
     record_batch::RecordBatch,
 };
-use arrow_schema::{ArrowError, DataType, Field, Schema};
+use arrow_schema::{ArrowError, Field, Schema};
 use liquid_cache::cache::{CacheExpression, CacheFull, LiquidCache, LiquidExpr};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 
 use crate::{
     LiquidPredicate,
     cache::{BatchID, ColumnAccessPath, ParquetArrayID},
-    optimizers::{DATE_MAPPING_METADATA_KEY, STRING_FINGERPRINT_METADATA_KEY},
 };
 use std::sync::Arc;
 
@@ -26,26 +25,6 @@ pub struct CachedColumn {
 
 /// A reference to a cached column.
 pub type CachedColumnRef = Arc<CachedColumn>;
-
-fn infer_expression(field: &Field) -> Option<CacheExpression> {
-    if let Some(mapping) = field.metadata().get(DATE_MAPPING_METADATA_KEY)
-        && matches!(
-            field.data_type(),
-            DataType::Date32 | DataType::Timestamp(_, _)
-        )
-        && let Some(expr) = CacheExpression::try_from_date_part_str(mapping)
-    {
-        return Some(expr);
-    }
-    if field
-        .metadata()
-        .contains_key(STRING_FINGERPRINT_METADATA_KEY)
-        && is_string_type(field.data_type())
-    {
-        return Some(CacheExpression::substring_search());
-    }
-    None
-}
 
 /// Error type for inserting an arrow array into the cache.
 #[derive(Debug)]
@@ -67,16 +46,24 @@ impl CachedColumn {
         field: Arc<Field>,
         cache_store: Arc<LiquidCache>,
         column_access_path: ColumnAccessPath,
+        expression: Option<Arc<CacheExpression>>,
         is_predicate_column: bool,
     ) -> Self {
-        let expression = infer_expression(field.as_ref()).map(Arc::new);
-        if let Some(expr) = expression.as_ref() {
+        // Register the column's squeeze hint. Squeeze hints are column-scoped;
+        // `ParquetCacheMetadata` keys them by column (the batch id is masked
+        // off), so registering once on any batch covers every batch.
+        //
+        // The read-path `expression` is the typed lineage hint derived from the
+        // plan (date/variant/substring). A pure predicate column carries no such
+        // hint, but still registers `PredicateColumn` to guide squeezing — it is
+        // deliberately *not* stored as `expression`, since it does not change how
+        // the column is materialized on read.
+        let squeeze_hint = expression
+            .clone()
+            .or_else(|| is_predicate_column.then(|| Arc::new(CacheExpression::PredicateColumn)));
+        if let Some(hint) = squeeze_hint {
             let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
-            cache_store.add_squeeze_hint(&hint_entry_id, expr.clone());
-        } else if is_predicate_column {
-            let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
-            cache_store
-                .add_squeeze_hint(&hint_entry_id, Arc::new(CacheExpression::PredicateColumn));
+            cache_store.add_squeeze_hint(&hint_entry_id, hint);
         }
         Self {
             field,
@@ -200,13 +187,5 @@ impl CachedColumn {
             .insert(self.entry_id(batch_id).into(), array)
             .await?;
         Ok(())
-    }
-}
-
-fn is_string_type(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => true,
-        DataType::Dictionary(_, value_type) => is_string_type(value_type.as_ref()),
-        _ => false,
     }
 }

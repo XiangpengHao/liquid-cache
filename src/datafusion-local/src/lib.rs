@@ -13,7 +13,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy, default_max_memory_bytes};
 use liquid_cache::cache_policies::{CachePolicy, LiquidPolicy};
-use liquid_cache_datafusion::optimizers::{LineageOptimizer, LocalModeOptimizer};
+use liquid_cache_datafusion::optimizers::LocalModeOptimizer;
 use liquid_cache_datafusion::{
     LiquidCacheParquet, LiquidCacheParquetRef, VariantGetUdf, VariantPretty, VariantToJsonUdf,
 };
@@ -190,14 +190,11 @@ impl LiquidCacheLocalBuilder {
         .await;
         let cache_ref = Arc::new(cache);
 
-        let date_extract_optimizer = Arc::new(LineageOptimizer::new());
-
         let optimizer = LocalModeOptimizer::new(cache_ref.clone());
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)
             .with_default_features()
-            .with_optimizer_rule(date_extract_optimizer)
             .with_physical_optimizer_rule(Arc::new(optimizer))
             .build();
 

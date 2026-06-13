@@ -4291,6 +4291,7 @@ dependencies = [
  "futures",
  "insta",
  "liquid-cache-common",
+ "liquid-cache-datafusion",
  "object_store",
  "tokio",
  "tonic",

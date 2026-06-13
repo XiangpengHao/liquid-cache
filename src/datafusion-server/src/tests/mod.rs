@@ -50,7 +50,7 @@ async fn run_sql(
         let handle = Uuid::new_v4();
         let ctx = service.get_ctx();
         let plan = get_physical_plan(sql, ctx).await;
-        service.register_plan(handle, plan);
+        service.register_plan(handle, plan, Default::default());
         let plan = service.get_plan(&handle).unwrap();
         let batches = collect(plan.plan, ctx.task_ctx()).await.unwrap();
         pretty_format_batches(&batches).unwrap().to_string()

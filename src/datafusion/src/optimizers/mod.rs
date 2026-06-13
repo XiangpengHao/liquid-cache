@@ -1,37 +1,28 @@
 //! Optimizers for the Parquet module
 
-mod lineage_opt;
+mod squeeze_hint;
 
 use std::sync::Arc;
 
-use arrow_schema::{Field, Schema, SchemaRef};
 use datafusion::{
     catalog::memory::DataSourceExec,
     common::tree_node::{Transformed, TreeNode, TreeNodeRecursion},
     config::ConfigOptions,
-    datasource::{
-        physical_plan::{FileSource, ParquetSource},
-        source::DataSource,
-        table_schema::TableSchema,
-    },
-    physical_expr_adapter::PhysicalExprAdapterFactory,
+    datasource::{physical_plan::ParquetSource, source::DataSource},
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::ExecutionPlan,
 };
-pub use lineage_opt::LineageOptimizer;
 
-use crate::{
-    LiquidCacheParquetRef, LiquidParquetSource,
-    optimizers::lineage_opt::{ColumnAnnotation, metadata_from_factory, serialize_date_part},
-};
+pub(crate) use squeeze_hint::HintAnalyzer;
+pub use squeeze_hint::SqueezeHintMap;
 
-pub(crate) const DATE_MAPPING_METADATA_KEY: &str = "liquid.cache.date_mapping";
-pub(crate) const STRING_FINGERPRINT_METADATA_KEY: &str = "liquid.cache.string_fingerprint";
+use crate::{LiquidCacheParquetRef, LiquidParquetSource, cache::ColumnSqueezeHints};
 
-/// Physical optimizer rule for local mode liquid cache
+/// Physical optimizer rule for local mode liquid cache.
 ///
-/// This optimizer rewrites DataSourceExec nodes that read Parquet files
-/// to use LiquidParquetSource instead of the default ParquetSource
+/// Rewrites `DataSourceExec` parquet scans to use [`LiquidParquetSource`], and
+/// in the same pass derives typed squeeze hints from the full physical plan
+/// (via the squeeze-hint analyzer) and attaches each scan's hints to its source.
 #[derive(Debug)]
 pub struct LocalModeOptimizer {
     cache: LiquidCacheParquetRef,
@@ -55,7 +46,16 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, datafusion::error::DataFusionError> {
-        Ok(rewrite_data_source_plan(plan, &self.cache))
+        let analysis = HintAnalyzer::analyze(&plan);
+        let cache = self.cache.clone();
+        let mut convert = |node: &Arc<dyn ExecutionPlan>, hints: ColumnSqueezeHints| {
+            convert_parquet_scan(node, &cache, hints)
+        };
+        Ok(squeeze_hint::rewrite_with_hints(
+            plan,
+            &mut convert,
+            &analysis,
+        ))
     }
 
     fn name(&self) -> &str {
@@ -63,90 +63,62 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
     }
 
     fn schema_check(&self) -> bool {
-        // We deliberately enrich scan schemas with metadata describing variant/date
-        // extractions, so allow the optimizer to adjust schema metadata.
-        false
+        true
     }
 }
 
-/// Rewrite the data source plan to use liquid cache.
+/// Rewrite the data source plan to use liquid cache, attaching `hints` (keyed by
+/// file-schema column name) to every parquet scan it rewrites.
+///
+/// This is the entry point used by the cache server, where hints are derived on
+/// the client (which has the full plan) and shipped alongside the pushed
+/// fragment, which is always single-scan.
+pub fn rewrite_data_source_plan_with_hints(
+    plan: Arc<dyn ExecutionPlan>,
+    cache: &LiquidCacheParquetRef,
+    hints: &ColumnSqueezeHints,
+) -> Arc<dyn ExecutionPlan> {
+    plan.transform_up(
+        |node| match convert_parquet_scan(&node, cache, hints.clone()) {
+            Some(new_node) => Ok(Transformed::new(
+                new_node,
+                true,
+                TreeNodeRecursion::Continue,
+            )),
+            None => Ok(Transformed::no(node)),
+        },
+    )
+    .unwrap()
+    .data
+}
+
+/// Rewrite the data source plan to use liquid cache (no squeeze hints).
 pub fn rewrite_data_source_plan(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
 ) -> Arc<dyn ExecutionPlan> {
-    let rewritten = plan
-        .transform_up(|node| try_optimize_parquet_source(node, cache))
-        .unwrap();
-    rewritten.data
+    rewrite_data_source_plan_with_hints(plan, cache, &ColumnSqueezeHints::default())
 }
 
-fn try_optimize_parquet_source(
-    plan: Arc<dyn ExecutionPlan>,
+/// If `node` is a `DataSourceExec` over a `ParquetSource`, return an equivalent
+/// node backed by [`LiquidParquetSource`] carrying `hints`.
+fn convert_parquet_scan(
+    node: &Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
-) -> Result<Transformed<Arc<dyn ExecutionPlan>>, datafusion::error::DataFusionError> {
-    if let Some(data_source_exec) = plan.downcast_ref::<DataSourceExec>()
-        && let Some((file_scan_config, parquet_source)) =
-            data_source_exec.downcast_to_file_source::<ParquetSource>()
-    {
-        let mut new_config = file_scan_config.clone();
+    hints: ColumnSqueezeHints,
+) -> Option<Arc<dyn ExecutionPlan>> {
+    let data_source_exec = node.downcast_ref::<DataSourceExec>()?;
+    let (file_scan_config, parquet_source) =
+        data_source_exec.downcast_to_file_source::<ParquetSource>()?;
 
-        let mut new_source =
-            LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone());
-        if let Some(expr_adapter_factory) = file_scan_config.expr_adapter_factory.as_ref() {
-            let new_schema =
-                enrich_source_schema(file_scan_config.file_schema(), expr_adapter_factory);
-            let table_partition_cols = new_source.table_schema().table_partition_cols();
-            let new_table_schema =
-                TableSchema::new(Arc::new(new_schema), table_partition_cols.clone());
-            new_source = new_source.with_table_schema(new_table_schema);
-        }
+    let new_source =
+        LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone())
+            .with_squeeze_hints(Arc::new(hints));
 
-        new_config.file_source = Arc::new(new_source);
-        let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
-        let new_plan = Arc::new(DataSourceExec::new(new_file_source));
-
-        return Ok(Transformed::new(
-            new_plan,
-            true,
-            TreeNodeRecursion::Continue,
-        ));
-    }
-    Ok(Transformed::no(plan))
-}
-
-fn enrich_source_schema(
-    file_schema: &SchemaRef,
-    expr_adapter_factory: &Arc<dyn PhysicalExprAdapterFactory>,
-) -> Schema {
-    let mut new_fields = vec![];
-    for field in file_schema.fields() {
-        if let Some(annotation) = metadata_from_factory(expr_adapter_factory, field.name()) {
-            new_fields.push(process_field_annotation(field, annotation));
-        } else {
-            new_fields.push(field.clone());
-        }
-    }
-    Schema::new(new_fields)
-}
-
-fn process_field_annotation(field: &Arc<Field>, annotation: ColumnAnnotation) -> Arc<Field> {
-    let mut field_metadata = field.metadata().clone();
-    match annotation {
-        ColumnAnnotation::DatePart(unit) => {
-            field_metadata.insert(
-                DATE_MAPPING_METADATA_KEY.to_string(),
-                serialize_date_part(&unit),
-            );
-        }
-        ColumnAnnotation::VariantPaths(_) => {}
-        ColumnAnnotation::SubstringSearch => {
-            field_metadata.insert(
-                STRING_FINGERPRINT_METADATA_KEY.to_string(),
-                "substring".into(),
-            );
-        }
-    }
-    Arc::new(Field::clone(field.as_ref()).with_metadata(field_metadata))
+    let mut new_config = file_scan_config.clone();
+    new_config.file_source = Arc::new(new_source);
+    let new_file_source: Arc<dyn DataSource> = Arc::new(new_config);
+    Some(Arc::new(DataSourceExec::new(new_file_source)))
 }
 
 #[cfg(test)]
