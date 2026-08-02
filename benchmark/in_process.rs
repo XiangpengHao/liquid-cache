@@ -93,7 +93,17 @@ impl InProcessBenchmark {
             .with_io_mode(self.io_mode)
             .with_output_dir(self.output_dir.clone())
             .with_fixed_buffer_pool_size_mb(self.fixed_buffer_pool_size_mb);
-        runner.run(manifest, self, output).await?;
+        let benchmark_result = runner.run(manifest, self, output).await?;
+        for query_result in &benchmark_result.results {
+            if let Some((avg_wall_ms, avg_cache_cpu_ms)) = query_result.warm_averages() {
+                println!(
+                    "Query {} average (excluding first iteration): wall {:.1} ms, cache CPU {:.1} ms",
+                    query_result.query_id(),
+                    avg_wall_ms,
+                    avg_cache_cpu_ms,
+                );
+            }
+        }
         Ok(())
     }
 }

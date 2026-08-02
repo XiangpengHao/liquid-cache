@@ -400,6 +400,23 @@ impl QueryResult {
     pub fn add(&mut self, iteration_result: IterationResult) {
         self.iteration_results.push(iteration_result);
     }
+
+    pub fn query_id(&self) -> u32 {
+        self.query.id()
+    }
+
+    /// Average query wall time and cache CPU time over warm iterations (excluding the first).
+    pub fn warm_averages(&self) -> Option<(f64, f64)> {
+        let warm = self.iteration_results.get(1..)?;
+        if warm.is_empty() {
+            return None;
+        }
+        let n = warm.len() as f64;
+        Some((
+            warm.iter().map(|r| r.time_millis as f64).sum::<f64>() / n,
+            warm.iter().map(|r| r.cache_cpu_time as f64).sum::<f64>() / n,
+        ))
+    }
 }
 
 #[derive(Serialize)]
