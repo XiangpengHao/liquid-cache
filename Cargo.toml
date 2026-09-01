@@ -30,25 +30,25 @@ liquid-cache-datafusion = { path = "src/datafusion", version = "0.1.13" }
 liquid-cache-common = { path = "src/common", version = "0.1.13" }
 liquid-cache = { path = "src/core", version = "0.1.13" }
 liquid-cache-datafusion-local = { path = "src/datafusion-local", version = "0.1.13" }
-arrow = { version = "58.3.0", default-features = false, features = [
+arrow = { version = "58.4.0", default-features = false, features = [
 	"prettyprint",
 	"ipc",
 ] }
-arrow-flight = { version = "58.3.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "58.3.0", features = ["serde"] }
-parquet = { version = "58.3.0", features = [
+arrow-flight = { version = "58.4.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "58.4.0", features = ["serde"] }
+parquet = { version = "58.4.0", features = [
 	"async",
 	"experimental",
 	"variant_experimental",
 ] }
-parquet-variant-json = { version = "58.3.0" }
-parquet-variant-compute = { version = "58.3.0" }
-datafusion = { version = "54.0.0" }
-datafusion-common = { version = "54.0.0" }
-datafusion-expr-common = { version = "54.0.0" }
-datafusion-physical-expr = { version = "54.0.0" }
-datafusion-physical-expr-common = { version = "54.0.0" }
-datafusion-proto = { version = "54.0.0" }
+parquet-variant-json = { version = "58.4.0" }
+parquet-variant-compute = { version = "58.4.0" }
+datafusion = { version = "54.1.0" }
+datafusion-common = { version = "54.1.0" }
+datafusion-expr-common = { version = "54.1.0" }
+datafusion-physical-expr = { version = "54.1.0" }
+datafusion-physical-expr-common = { version = "54.1.0" }
+datafusion-proto = { version = "54.1.0" }
 async-trait = "0.1.89"
 futures = { version = "0.3.32", default-features = false, features = ["std"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
@@ -67,7 +67,7 @@ fastrace = "0.7"
 fastrace-tonic = "0.2"
 congee = "0.4.1"
 insta = "1.47.2"
-t4 = "0.1.7"
+t4 = "0.1.9"
 
 [profile.dev.package]
 insta.opt-level = 3

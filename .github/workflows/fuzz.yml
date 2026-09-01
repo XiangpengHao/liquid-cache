@@ -18,7 +18,7 @@ jobs:
                 target: [fsst_view_fuzz]
         steps:
             - name: Checkout
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
 
             - uses: ./.github/actions/free-disk-space
 
@@ -95,7 +95,7 @@ jobs:
                   } >> "$GITHUB_STEP_SUMMARY"
 
             - name: Upload coverage text summary
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               if: always()
               with:
                   name: fuzz-coverage-text-${{ matrix.target }}
@@ -104,7 +104,7 @@ jobs:
                   if-no-files-found: warn
 
             - name: Upload fuzz artifacts (crashes, reduces, etc.)
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               if: always()
               with:
                   name: fuzz-artifacts-${{ matrix.target }}

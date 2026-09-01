@@ -50,7 +50,7 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
 
     // Create a unified sorted list of all entry IDs (both actual and failed)
     let mut all_entry_ids: Vec<u64> = entries.iter().map(|e| e.entry_id).collect();
-    for (entry_id, _) in state.failed_inserts.iter() {
+    for entry_id in state.failed_inserts.keys() {
         if !all_entry_ids.contains(entry_id) {
             all_entry_ids.push(*entry_id);
         }
