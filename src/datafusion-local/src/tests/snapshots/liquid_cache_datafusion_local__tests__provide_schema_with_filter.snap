@@ -4,6 +4,27 @@ expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values
 ---
 plan: 
 ┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│        WatchID DESC       │
+│                           │
+│         limit: 10         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│    EventTime: EventTime   │
+│           OS: OS          │
+│      WatchID: WatchID     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│        WatchID DESC       │
+│                           │
+│         limit: 10         │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
 │       SortExec(TopK)      │
 │    --------------------   │
 │       WatchID@0 DESC      │
@@ -13,7 +34,7 @@ plan:
 ┌─────────────┴─────────────┐
 │       DataSourceExec      │
 │    --------------------   │
-│          files: 1         │
+│          files: 4         │
 │                           │
 │          format:          │
 │       liquid_parquet      │
@@ -45,9 +66,9 @@ entries.disk.arrow: 0
 usage.memory_bytes: 574612
 usage.disk_bytes: 0
 RuntimeStatsSnapshot:
-  get: 13
-  get_with_selection: 13
-  eval_predicate: 4
+  get: 12
+  get_with_selection: 12
+  eval_predicate: 3
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0

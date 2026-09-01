@@ -20,11 +20,10 @@ use datafusion::{
         table_schema::TableSchema,
     },
     error::DataFusionError,
-    physical_expr::PhysicalExprSimplifier,
     physical_expr::projection::ProjectionExprs,
     physical_expr::utils::reassign_expr_columns,
+    physical_expr::{DynamicFilterTracking, PhysicalExprSimplifier},
     physical_expr_adapter::{PhysicalExprAdapterFactory, replace_columns_with_literals},
-    physical_expr_common::physical_expr::is_dynamic_physical_expr,
     physical_optimizer::pruning::{FilePruner, PruningPredicate, build_pruning_predicate},
     physical_plan::{
         PhysicalExpr,
@@ -157,7 +156,10 @@ impl FileOpener for LiquidParquetOpener {
             // we can end the stream early.
             let mut file_pruner = predicate
                 .as_ref()
-                .filter(|p| is_dynamic_physical_expr(p) || partitioned_file.has_statistics())
+                .filter(|p| {
+                    DynamicFilterTracking::classify(p).contains_dynamic_filter()
+                        || partitioned_file.has_statistics()
+                })
                 .and_then(|p| {
                     FilePruner::try_new(
                         Arc::clone(p),

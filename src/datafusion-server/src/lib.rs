@@ -28,6 +28,7 @@ use arrow_flight::{
     },
 };
 use datafusion::{
+    common::config::ConfigNonZeroUsize,
     error::DataFusionError,
     execution::{SessionStateBuilder, object_store::ObjectStoreUrl},
     prelude::{SessionConfig, SessionContext},
@@ -167,7 +168,7 @@ impl LiquidCacheService {
         let mut session_config = SessionConfig::from_env()?;
         let options_mut = session_config.options_mut();
         options_mut.execution.parquet.pushdown_filters = true;
-        options_mut.execution.batch_size = 8192 * 2;
+        options_mut.execution.batch_size = ConfigNonZeroUsize::try_new(8192 * 2)?;
 
         {
             // view types cause excessive memory usage because they are not gced.

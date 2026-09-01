@@ -11,16 +11,6 @@ expression: displayable.tree_render().to_string()
 │       ASC NULLS LAST      │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│    supplier_cnt@3 DESC,   │
-│        p_brand@0 ASC      │
-│     NULLS LAST, p_type    │
-│     @1 ASC NULLS LAST,    │
-│     p_size@2 ASC NULLS    │
-│            LAST           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │      p_brand: p_brand     │
@@ -29,6 +19,15 @@ expression: displayable.tree_render().to_string()
 │                           │
 │       supplier_cnt:       │
 │       count(alias1)       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│   count(alias1)@3 DESC,   │
+│     p_brand@0 ASC NULLS   │
+│  LAST, p_type@1 ASC NULLS │
+│  LAST, p_size@2 ASC NULLS │
+│            LAST           │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
@@ -94,7 +93,9 @@ expression: displayable.tree_render().to_string()
 │        HashJoinExec       │
 │    --------------------   │
 │    join_type: LeftAnti    │
-│                           ├───────────────────────────────────────────┐
+│                           │
+│         null_aware        ├───────────────────────────────────────────┐
+│                           │                                           │
 │            on:            │                                           │
 │  (ps_suppkey = s_suppkey) │                                           │
 └─────────────┬─────────────┘                                           │
@@ -122,8 +123,8 @@ expression: displayable.tree_render().to_string()
 │                           ││                           ││                           │
 │         predicate:        ││                           ││         predicate:        │
 │  p_brand != Brand#45 AND  ││                           ││  s_comment LIKE %Customer │
-│       p_type NOT LIKE     ││                           ││        %Complaints%       │
-│      MEDIUM POLISHED%     ││                           ││                           │
-│   AND p_size IN (49, 14,  ││                           ││                           │
-│    23, 45, 19, 3, 36, 9)  ││                           ││                           │
+│    p_size IN (49, 14, 23  ││                           ││        %Complaints%       │
+│  , 45, 19, 3, 36, 9) AND  ││                           ││                           │
+│   p_type NOT LIKE MEDIUM  ││                           ││                           │
+│          POLISHED%        ││                           ││                           │
 └───────────────────────────┘└───────────────────────────┘└───────────────────────────┘

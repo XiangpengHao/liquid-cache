@@ -54,11 +54,6 @@ plan:
 │ zo_sql_key ASC NULLS LAST │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│zo_sql_key@0 ASC NULLS LAST│
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │        zo_sql_key:        │
@@ -76,6 +71,22 @@ plan:
 │                           │
 │        zo_sql_num:        │
 │      count(Int64(1))      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│          date_bin         │
+│          (Interva         │
+│       lMonthDayNano(      │
+│       "IntervalMonth      │
+│ DayNano { months: 0, days:│
+│       0, nanoseconds:     │
+│       10000000000 }")     │
+│    ,to_timestamp_micros   │
+│    (default._timestamp)   │
+│  ,to_timestamp(Utf8("2001 │
+│   -01-01T00:00:00")))@0   │
+│       ASC NULLS LAST      │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │

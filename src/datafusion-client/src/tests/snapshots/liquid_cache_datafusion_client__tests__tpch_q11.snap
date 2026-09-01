@@ -19,23 +19,21 @@ expression: displayable.tree_render().to_string()
 │                           │                                                          │     Decimal128(38, 15))   │
 └─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
-│          SortExec         │                                                          │       AggregateExec       │
+│       ProjectionExec      │                                                          │       AggregateExec       │
 │    --------------------   │                                                          │    --------------------   │
-│        value@1 DESC       │                                                          │           aggr:           │
-│                           │                                                          │ sum(partsupp.ps_supplycost│
+│        ps_partkey:        │                                                          │           aggr:           │
+│         ps_partkey        │                                                          │ sum(partsupp.ps_supplycost│
 │                           │                                                          │   * partsupp.ps_availqty) │
-│                           │                                                          │                           │
-│                           │                                                          │        mode: Final        │
+│           value:          │                                                          │                           │
+│ sum(partsupp.ps_supplycost│                                                          │        mode: Final        │
+│   * partsupp.ps_availqty) │                                                          │                           │
 └─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
-│       ProjectionExec      │                                                          │   CoalescePartitionsExec  │
+│          SortExec         │                                                          │   CoalescePartitionsExec  │
 │    --------------------   │                                                          │                           │
-│        ps_partkey:        │                                                          │                           │
-│         ps_partkey        │                                                          │                           │
-│                           │                                                          │                           │
-│           value:          │                                                          │                           │
 │ sum(partsupp.ps_supplycost│                                                          │                           │
 │   * partsupp.ps_availqty) │                                                          │                           │
+│          @1 DESC          │                                                          │                           │
 └─────────────┬─────────────┘                                                          └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                                                          ┌─────────────┴─────────────┐
 │         FilterExec        │                                                          │       AggregateExec       │

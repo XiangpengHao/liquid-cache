@@ -244,7 +244,7 @@ pub(crate) fn try_variant_squeeze(
         shredded_array = Some(shredded_struct);
     }
 
-    let typed_root = variant_array.typed_value_field()?;
+    let typed_root = variant_array.typed_value_column()?;
     let typed_root = typed_root.as_any().downcast_ref::<StructArray>()?;
 
     let mut collected = Vec::new();
@@ -676,7 +676,7 @@ mod tests {
                 inner
                     .column_by_name("metadata")
                     .cloned()
-                    .unwrap_or_else(|| Arc::new(base_variant.metadata_field().clone()) as ArrayRef),
+                    .unwrap_or_else(|| base_variant.metadata_column().clone()),
                 inner.column_by_name("value").cloned().unwrap_or_else(|| {
                     Arc::new(BinaryViewArray::from(vec![None::<&[u8]>; inner.len()])) as ArrayRef
                 }),

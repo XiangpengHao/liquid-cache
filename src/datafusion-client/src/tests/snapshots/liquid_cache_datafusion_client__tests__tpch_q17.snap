@@ -39,8 +39,10 @@ expression: displayable.tree_render().to_string()
 │          filter:          │
 │     CAST(l_quantity AS    │
 │       Decimal128(30,      │
-│    15)) < Float64(0.2) *  ├──────────────┐
-│  avg(lineitem.l_quantity) │              │
+│    15)) < Float64(0.2) *  │
+│  avg(lineitem.l_quantity) ├──────────────┐
+│                           │              │
+│    join_type: RightSemi   │              │
 │                           │              │
 │            on:            │              │
 │  (l_partkey = p_partkey)  │              │

@@ -4,6 +4,7 @@ use ahash::{HashMap, HashMapExt};
 use arrow_schema::Schema;
 use bytes::Bytes;
 use datafusion::{
+    common::tree_node::TreeNodeRecursion,
     config::TableParquetOptions,
     datasource::{
         listing::PartitionedFile,
@@ -16,19 +17,17 @@ use datafusion::{
     error::Result,
     physical_expr::projection::ProjectionExprs,
     physical_expr_adapter::DefaultPhysicalExprAdapterFactory,
-    physical_optimizer::pruning::PruningPredicate,
+    physical_optimizer::pruning::{PruningPredicate, PruningPredicateBuilder},
     physical_plan::{
-        PhysicalExpr,
+        PhysicalExpr, apply_expression_roots,
         metrics::{ExecutionPlanMetricsSet, MetricBuilder},
     },
 };
 use futures::{FutureExt, future::BoxFuture};
-use object_store::{ObjectStore, path::Path};
+use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use parquet::{
-    arrow::{
-        arrow_reader::ArrowReaderOptions,
-        async_reader::{AsyncFileReader, ParquetObjectReader},
-    },
+    arrow::{arrow_reader::ArrowReaderOptions, async_reader::AsyncFileReader},
+    errors::ParquetError,
     file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
@@ -57,17 +56,12 @@ impl CachedMetaReaderFactory {
         metrics: &ExecutionPlanMetricsSet,
     ) -> ParquetMetadataCacheReader {
         let path = partitioned_file.object_meta.location.clone();
-        let store = Arc::clone(&self.store);
-        let mut inner = ParquetObjectReader::new(store, path.clone())
-            .with_file_size(partitioned_file.object_meta.size);
-
-        if let Some(hint) = metadata_size_hint {
-            inner = inner.with_footer_size_hint(hint);
-        }
 
         ParquetMetadataCacheReader {
             file_metrics: ParquetFileMetrics::new(partition_index, path.as_ref(), metrics),
-            inner,
+            store: Arc::clone(&self.store),
+            file_size: partitioned_file.object_meta.size,
+            metadata_size_hint,
             path,
         }
     }
@@ -106,8 +100,14 @@ impl MetadataCache {
 #[derive(Clone)]
 pub struct ParquetMetadataCacheReader {
     file_metrics: ParquetFileMetrics,
-    inner: ParquetObjectReader,
+    store: Arc<dyn ObjectStore>,
+    file_size: u64,
+    metadata_size_hint: Option<usize>,
     path: Path,
+}
+
+fn to_parquet_err(error: object_store::Error) -> ParquetError {
+    ParquetError::External(Box::new(error))
 }
 
 impl AsyncFileReader for ParquetMetadataCacheReader {
@@ -117,14 +117,26 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
     ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
         let total: u64 = ranges.iter().map(|r| r.end - r.start).sum();
         self.file_metrics.bytes_scanned.add(total as usize);
-        self.inner.get_byte_ranges(ranges)
+        async move {
+            self.store
+                .get_ranges(&self.path, &ranges)
+                .await
+                .map_err(to_parquet_err)
+        }
+        .boxed()
     }
 
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         self.file_metrics
             .bytes_scanned
             .add((range.end - range.start) as usize);
-        self.inner.get_bytes(range)
+        async move {
+            self.store
+                .get_range(&self.path, range)
+                .await
+                .map_err(to_parquet_err)
+        }
+        .boxed()
     }
 
     fn get_metadata(
@@ -147,11 +159,15 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
             match cache.entry(path.clone()) {
                 std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    let meta = self.inner.get_metadata(options.as_ref()).await?;
-                    let meta = Arc::try_unwrap(meta).unwrap_or_else(|e| e.as_ref().clone());
+                    let file_size = self.file_size;
+                    let meta = ParquetMetaDataReader::new()
+                        .with_arrow_reader_options(options.as_ref())
+                        .with_prefetch_hint(self.metadata_size_hint)
+                        .load_and_finish(&mut *self, file_size)
+                        .await?;
                     let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())
                         .with_page_index_policy(PageIndexPolicy::Optional);
-                    reader.load_page_index(&mut self.inner).await?;
+                    reader.load_page_index(&mut *self).await?;
                     let meta = Arc::new(reader.finish()?);
                     entry.insert(meta.clone());
                     Ok(meta)
@@ -226,7 +242,10 @@ impl LiquidParquetSource {
         self.metrics = metrics;
         self.predicate = Some(Arc::clone(&predicate));
 
-        match PruningPredicate::try_new(Arc::clone(&predicate), Arc::clone(&file_schema)) {
+        match PruningPredicateBuilder::new()
+            .with_file_schema(Arc::clone(&file_schema))
+            .try_build(Arc::clone(&predicate))
+        {
             Ok(pruning_predicate) => {
                 if !pruning_predicate.always_true() {
                     self.pruning_predicate = Some(Arc::new(pruning_predicate));
@@ -354,5 +373,17 @@ impl FileSource for LiquidParquetSource {
 
     fn file_type(&self) -> &str {
         "liquid_parquet"
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(
+            self.predicate
+                .iter()
+                .chain(self.projection.iter().map(|projection| &projection.expr)),
+            f,
+        )
     }
 }

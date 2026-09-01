@@ -14,20 +14,22 @@ expression: displayable.tree_render().to_string()
 │                           │                             │        mode: Final        │
 └─────────────┬─────────────┘                             └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│          SortExec         │                             │   CoalescePartitionsExec  │
+│       ProjectionExec      │                             │   CoalescePartitionsExec  │
 │    --------------------   │                             │                           │
-│ cntrycode@0 ASC NULLS LAST│                             │                           │
-└─────────────┬─────────────┘                             └─────────────┬─────────────┘
-┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
-│       ProjectionExec      │                             │   LiquidCacheClientExec   │
-│    --------------------   │                             │    --------------------   │
-│    cntrycode: cntrycode   │                             │          server:          │
-│                           │                             │  http://localhost:50051,  │
-│          numcust:         │                             │      object_stores=[]     │
+│    cntrycode: cntrycode   │                             │                           │
+│                           │                             │                           │
+│          numcust:         │                             │                           │
 │      count(Int64(1))      │                             │                           │
 │                           │                             │                           │
 │        totacctbal:        │                             │                           │
 │  sum(custsale.c_acctbal)  │                             │                           │
+└─────────────┬─────────────┘                             └─────────────┬─────────────┘
+┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
+│          SortExec         │                             │   LiquidCacheClientExec   │
+│    --------------------   │                             │    --------------------   │
+│ cntrycode@0 ASC NULLS LAST│                             │          server:          │
+│                           │                             │  http://localhost:50051,  │
+│                           │                             │      object_stores=[]     │
 └─────────────┬─────────────┘                             └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
 │       AggregateExec       │                             │       AggregateExec       │
@@ -57,8 +59,8 @@ expression: displayable.tree_render().to_string()
 │   count(1), sum(custsale  │                             │      format: parquet      │
 │        .c_acctbal)        │                             │                           │
 │                           │                             │         predicate:        │
-│    group_by: cntrycode    │                             │  c_acctbal > Some(0),15,2 │
-│       mode: Partial       │                             │   AND substr(c_phone, 1,  │
+│    group_by: cntrycode    │                             │    c_acctbal > 0.00 AND   │
+│       mode: Partial       │                             │     substr(c_phone, 1,    │
 │                           │                             │   2) IN (13, 31, 23, 29,  │
 │                           │                             │         30, 18, 17)       │
 └─────────────┬─────────────┘                             └───────────────────────────┘

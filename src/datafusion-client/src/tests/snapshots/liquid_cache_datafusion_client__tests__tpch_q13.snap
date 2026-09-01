@@ -8,18 +8,18 @@ expression: displayable.tree_render().to_string()
 │custdist DESC, c_count DESC│
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│ custdist@1 DESC, c_count@0│
-│            DESC           │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │      c_count: c_count     │
 │                           │
 │         custdist:         │
 │      count(Int64(1))      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│  count(Int64(1))@1 DESC,  │
+│       c_count@0 DESC      │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │

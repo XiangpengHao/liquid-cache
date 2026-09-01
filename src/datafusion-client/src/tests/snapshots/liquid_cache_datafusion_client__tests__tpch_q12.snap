@@ -8,11 +8,6 @@ expression: displayable.tree_render().to_string()
 │ l_shipmode ASC NULLS LAST │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│l_shipmode@0 ASC NULLS LAST│
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │      high_line_count:     │
@@ -35,6 +30,11 @@ expression: displayable.tree_render().to_string()
 │  y != Utf8("2-HIGH") THEN │
 │   Int64(1) ELSE Int64(0)  │
 │            END)           │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│l_shipmode@0 ASC NULLS LAST│
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │

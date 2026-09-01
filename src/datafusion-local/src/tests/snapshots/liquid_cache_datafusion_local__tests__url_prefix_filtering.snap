@@ -25,18 +25,9 @@ plan:
 │       mode: Partial       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│      RepartitionExec      │
-│    --------------------   │
-│ partition_count(in->out): │
-│           1 -> 4          │
-│                           │
-│    partitioning_scheme:   │
-│     RoundRobinBatch(4)    │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       DataSourceExec      │
 │    --------------------   │
-│          files: 1         │
+│          files: 4         │
 │                           │
 │          format:          │
 │       liquid_parquet      │

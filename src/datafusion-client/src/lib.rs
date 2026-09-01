@@ -9,6 +9,7 @@ mod metrics;
 mod optimizer;
 pub use client_exec::LiquidCacheClientExec;
 use datafusion::{
+    common::config::ConfigNonZeroUsize,
     error::{DataFusionError, Result},
     execution::{SessionStateBuilder, object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     prelude::*,
@@ -91,7 +92,7 @@ impl LiquidCacheClientBuilder {
             .execution
             .parquet
             .binary_as_string = true;
-        session_config.options_mut().execution.batch_size = 8192 * 2;
+        session_config.options_mut().execution.batch_size = ConfigNonZeroUsize::try_new(8192 * 2)?;
         // Dynamic filters (e.g. a hash join's runtime build-side filter) are pushed
         // into scan predicates by DataFusion. In distributed mode those scans are
         // serialized and executed on a remote server that can never receive the

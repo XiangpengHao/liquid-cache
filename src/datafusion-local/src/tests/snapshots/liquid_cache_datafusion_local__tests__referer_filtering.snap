@@ -4,6 +4,11 @@ expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values
 ---
 plan: 
 ┌───────────────────────────┐
+│  SortPreservingMergeExec  │
+│    --------------------   │
+│        Referer DESC       │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
 │          SortExec         │
 │    --------------------   │
 │       Referer@0 DESC      │
@@ -11,7 +16,7 @@ plan:
 ┌─────────────┴─────────────┐
 │       DataSourceExec      │
 │    --------------------   │
-│          files: 1         │
+│          files: 4         │
 │                           │
 │          format:          │
 │       liquid_parquet      │
@@ -35,13 +40,13 @@ values:
 stats:
 entries.total: 8
 entries.after_first_run: 8
-entries.memory.arrow: 1
-entries.memory.liquid: 7
+entries.memory.arrow: 0
+entries.memory.liquid: 8
 entries.memory.squeezed_liquid: 0
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 917947
-usage.disk_bytes: 877216
+usage.memory_bytes: 884561
+usage.disk_bytes: 882044
 RuntimeStatsSnapshot:
   get: 2
   get_with_selection: 2
@@ -50,7 +55,7 @@ RuntimeStatsSnapshot:
   get_squeezed_needs_io: 0
   try_read_liquid_calls: 0
   hit_date32_expression_calls: 0
-  read_io_count: 5
+  read_io_count: 7
   write_io_count: 0
   disk_evictions: 0
   disk_reservation_failures: 0

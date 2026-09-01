@@ -17,11 +17,11 @@ expression: displayable.tree_render().to_string()
 │           aggr:           │
 │        sum(lineitem       │
 │        .l_extendedp       │
-│   rice * Some(1),20,0 -   │
-│     lineitem.l_discount   │
-│     ) as sum(lineitem     │
-│     .l_extendedprice      │
-│   * Int64(1) - lineitem   │
+│    rice * 1 - lineitem    │
+│      .l_discount) as      │
+│        sum(lineitem       │
+│      .l_extendedprice     │
+│    * Int64(1) - lineitem  │
 │        .l_discount)       │
 │                           │
 │        mode: Final        │
@@ -35,11 +35,11 @@ expression: displayable.tree_render().to_string()
 │           aggr:           │
 │        sum(lineitem       │
 │        .l_extendedp       │
-│   rice * Some(1),20,0 -   │
-│     lineitem.l_discount   │
-│     ) as sum(lineitem     │
-│     .l_extendedprice      │
-│   * Int64(1) - lineitem   │
+│    rice * 1 - lineitem    │
+│      .l_discount) as      │
+│        sum(lineitem       │
+│      .l_extendedprice     │
+│    * Int64(1) - lineitem  │
 │        .l_discount)       │
 │                           │
 │       mode: Partial       │
@@ -52,26 +52,21 @@ expression: displayable.tree_render().to_string()
 │     p_container IN (SM    │
 │   CASE, SM BOX, SM PACK,  │
 │  SM PKG) AND l_quantity > │
-│    = Some(100),15,2 AND   │
-│     l_quantity <= Some    │
-│  (1100),15,2 AND p_size < │
-│ = 5 OR p_brand = Brand#23 │
+│  = 1.00 AND l_quantity <= │
+│    11.00 AND p_size <= 5  │
+│    OR p_brand = Brand#23  │
 │   AND p_container IN (MED │
 │   BAG, MED BOX, MED PKG,  │
-│        MED PACK) AND      │
-│        l_quantity >=      │
-│     Some(1000),15,2 AND   ├──────────────┐
-│     l_quantity <= Some    │              │
-│  (2000),15,2 AND p_size   │              │
-│  <= 10 OR p_brand = Brand │              │
-│  #34 AND p_container IN   │              │
-│    (LG CASE, LG BOX, LG   │              │
-│      PACK, LG PKG) AND    │              │
-│     l_quantity >= Some    │              │
-│      (2000),15,2 AND      │              │
-│        l_quantity <=      │              │
-│     Some(3000),15,2 AND   │              │
-│        p_size <= 15       │              │
+│        MED PACK) AND      ├──────────────┐
+│        l_quantity >=      │              │
+│   10.00 AND l_quantity <  │              │
+│  = 20.00 AND p_size <= 10 │              │
+│    OR p_brand = Brand#34  │              │
+│   AND p_container IN (LG  │              │
+│   CASE, LG BOX, LG PACK,  │              │
+│   LG PKG) AND l_quantity  │              │
+│  >= 20.00 AND l_quantity  │              │
+│ <= 30.00 AND p_size <= 15 │              │
 │                           │              │
 │            on:            │              │
 │  (p_partkey = l_partkey)  │              │
@@ -118,16 +113,11 @@ expression: displayable.tree_render().to_string()
                              │          REG) AND         │
                              │         l_shipinstr       │
                              │  uct = DELIVER IN PERSON  │
-                             │     AND (l_quantity >=    │
-                             │     Some(100),15,2 AND    │
-                             │     l_quantity <= Some    │
-                             │       (1100),15,2 OR      │
-                             │        l_quantity >=      │
-                             │     Some(1000),15,2 AND   │
-                             │     l_quantity <= Some    │
-                             │       (2000),15,2 OR      │
-                             │        l_quantity >=      │
-                             │     Some(2000),15,2 AND   │
-                             │   l_quantity <= Some(3000 │
-                             │          ),15,2)          │
+                             │    AND (l_quantity >= 1   │
+                             │  .00 AND l_quantity <= 11 │
+                             │  .00 OR l_quantity >= 10  │
+                             │   .00 AND l_quantity <=   │
+                             │   20.00 OR l_quantity >=  │
+                             │   20.00 AND l_quantity <= │
+                             │           30.00)          │
                              └───────────────────────────┘

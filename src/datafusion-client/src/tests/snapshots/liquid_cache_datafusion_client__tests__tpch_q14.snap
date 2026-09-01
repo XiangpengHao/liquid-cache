@@ -26,8 +26,8 @@ expression: displayable.tree_render().to_string()
 │ sum(CASE WHEN part.p_type │
 │      LIKE PROMO% THEN     │
 │       __common_expr_1     │
-│   ELSE Some(0),38,4 END)  │
-│    as sum(CASE WHEN part  │
+│     ELSE 0.0000 END) as   │
+│     sum(CASE WHEN part    │
 │     .p_type LIKE Utf8(    │
 │       "PROMO%") THEN      │
 │          lineitem         │
@@ -53,8 +53,8 @@ expression: displayable.tree_render().to_string()
 │ sum(CASE WHEN part.p_type │
 │      LIKE PROMO% THEN     │
 │       __common_expr_1     │
-│   ELSE Some(0),38,4 END)  │
-│    as sum(CASE WHEN part  │
+│     ELSE 0.0000 END) as   │
+│     sum(CASE WHEN part    │
 │     .p_type LIKE Utf8(    │
 │       "PROMO%") THEN      │
 │          lineitem         │
@@ -74,8 +74,8 @@ expression: displayable.tree_render().to_string()
 │       ProjectionExec      │
 │    --------------------   │
 │      __common_expr_1:     │
-│ l_extendedprice * (Some(1)│
-│    ,20,0 - l_discount)    │
+│   l_extendedprice * (1 -  │
+│         l_discount)       │
 │                           │
 │       p_type: p_type      │
 └─────────────┬─────────────┘

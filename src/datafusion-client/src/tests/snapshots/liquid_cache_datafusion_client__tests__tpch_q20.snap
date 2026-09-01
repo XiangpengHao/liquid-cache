@@ -27,8 +27,10 @@ expression: displayable.tree_render().to_string()
 │(n_nationkey = s_nationkey)│                             │    CAST(ps_availqty AS    │
 │                           │                             │         Float64) >        │
 │                           │                             │       Float64(0.5) *      │
-│                           ├──────────────┐              │        sum(lineitem       ├───────────────────────────────────────────┐
-│                           │              │              │        .l_quantity)       │                                           │
+│                           │                             │        sum(lineitem       │
+│                           ├──────────────┐              │        .l_quantity)       ├───────────────────────────────────────────┐
+│                           │              │              │                           │                                           │
+│                           │              │              │    join_type: LeftSemi    │                                           │
 │                           │              │              │                           │                                           │
 │                           │              │              │            on:            │                                           │
 │                           │              │              │ (ps_partkey = l_partkey), │                                           │

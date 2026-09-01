@@ -15,7 +15,7 @@ use datafusion::{
         tree_node::{TreeNode, TreeNodeRecursion},
     },
     datasource::physical_plan::FileScanConfig,
-    physical_plan::ExecutionPlan,
+    physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext},
 };
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_datafusion::LiquidParquetSource;
@@ -315,6 +315,9 @@ pub(crate) async fn start_flamegraph_handler(
 impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
     fn from(plan: &Arc<dyn ExecutionPlan>) -> Self {
         let metrics = plan.metrics().unwrap().aggregate_by_name();
+        let statistics = StatisticsContext::new()
+            .compute(plan.as_ref(), &StatisticsArgs::new())
+            .unwrap();
         let mut metric_values = Vec::new();
         for metric in metrics.iter() {
             metric_values.push(MetricValues {
@@ -324,13 +327,7 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
         }
 
         let mut column_statistics = Vec::new();
-        for (i, cs) in plan
-            .partition_statistics(None)
-            .unwrap()
-            .column_statistics
-            .iter()
-            .enumerate()
-        {
+        for (i, cs) in statistics.column_statistics.iter().enumerate() {
             let min = if cs.min_value != Precision::Absent {
                 Some(cs.min_value.to_string())
             } else {
@@ -378,16 +375,8 @@ impl From<&Arc<dyn ExecutionPlan>> for ExecutionPlanWithStats {
                 })
                 .collect(),
             statistics: Statistics {
-                num_rows: plan
-                    .partition_statistics(None)
-                    .unwrap()
-                    .num_rows
-                    .to_string(),
-                total_byte_size: plan
-                    .partition_statistics(None)
-                    .unwrap()
-                    .total_byte_size
-                    .to_string(),
+                num_rows: statistics.num_rows.to_string(),
+                total_byte_size: statistics.total_byte_size.to_string(),
                 column_statistics,
             },
             metrics: metric_values,
