@@ -293,12 +293,30 @@ impl LiquidStreamBuilder {
         let file_schema = liquid_cache.schema();
         let schema = build_projection_schema(&file_schema, &projection_column_ids);
 
+        // `plan_row_group` applies limit/offset by truncating the row
+        // selection BEFORE the row filter runs, so combining them with a
+        // filter caps the rows *scanned* rather than the rows *matched* —
+        // silently dropping matches that sit past the first `limit + offset`
+        // physical rows (upstream parquet counts the limit against
+        // post-filter matches instead). Until limit accounting moves after
+        // predicate evaluation, only honor limit/offset for unfiltered
+        // scans, where scanned rows == emitted rows and truncation is
+        // exact. Filtered scans still get capped post-filter by
+        // DataFusion's FileStream, which slices emitted batches against
+        // `FileScanConfig::limit`; all that is lost is scan-internal early
+        // termination.
+        let (limit, offset) = if self.filter.is_some() {
+            (None, None)
+        } else {
+            (self.limit, self.offset)
+        };
+
         let reader = ReaderFactory {
             metadata: Arc::clone(&self.metadata),
             input: self.input,
             filter: self.filter,
-            limit: self.limit,
-            offset: self.offset,
+            limit,
+            offset,
             cached_file: liquid_cache,
         };
 
