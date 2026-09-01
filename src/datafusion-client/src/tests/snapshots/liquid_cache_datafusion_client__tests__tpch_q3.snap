@@ -11,15 +11,6 @@ expression: displayable.tree_render().to_string()
 │       ASC NULLS LAST      │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│       SortExec(TopK)      │
-│    --------------------   │
-│         limit: 10         │
-│                           │
-│      revenue@1 DESC,      │
-│        o_orderdate@2      │
-│       ASC NULLS LAST      │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │        l_orderkey:        │
@@ -38,16 +29,28 @@ expression: displayable.tree_render().to_string()
 │        .l_discount)       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
+│       SortExec(TopK)      │
+│    --------------------   │
+│         limit: 10         │
+│                           │
+│        sum(lineitem       │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│    .l_discount)@3 DESC,   │
+│      o_orderdate@1 ASC    │
+│         NULLS LAST        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
 │       AggregateExec       │
 │    --------------------   │
 │           aggr:           │
 │        sum(lineitem       │
 │        .l_extendedp       │
-│   rice * Some(1),20,0 -   │
-│     lineitem.l_discount   │
-│     ) as sum(lineitem     │
-│     .l_extendedprice      │
-│   * Int64(1) - lineitem   │
+│    rice * 1 - lineitem    │
+│      .l_discount) as      │
+│        sum(lineitem       │
+│      .l_extendedprice     │
+│    * Int64(1) - lineitem  │
 │        .l_discount)       │
 │                           │
 │         group_by:         │
@@ -74,11 +77,11 @@ expression: displayable.tree_render().to_string()
 │           aggr:           │
 │        sum(lineitem       │
 │        .l_extendedp       │
-│   rice * Some(1),20,0 -   │
-│     lineitem.l_discount   │
-│     ) as sum(lineitem     │
-│     .l_extendedprice      │
-│   * Int64(1) - lineitem   │
+│    rice * 1 - lineitem    │
+│      .l_discount) as      │
+│        sum(lineitem       │
+│      .l_extendedprice     │
+│    * Int64(1) - lineitem  │
 │        .l_discount)       │
 │                           │
 │         group_by:         │

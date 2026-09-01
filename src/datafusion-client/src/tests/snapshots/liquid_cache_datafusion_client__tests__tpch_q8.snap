@@ -32,16 +32,14 @@ expression: displayable.tree_render().to_string()
 │ sum(CASE WHEN all_nations │
 │   .nation = BRAZIL THEN   │
 │     all_nations.volume    │
-│    ELSE Some(0),38,4 END  │
-│     ) as sum(CASE WHEN    │
+│     ELSE 0.0000 END) as   │
+│        sum(CASE WHEN      │
 │         all_nations       │
 │      .nation = Utf8(      │
 │       "BRAZIL") THEN      │
-│         all_nations       │
-│     .volume ELSE Int64    │
-│       (0) END), sum       │
-│        (all_nations       │
-│          .volume)         │
+│     all_nations.volume    │
+│   ELSE Int64(0) END), sum │
+│    (all_nations.volume)   │
 │                           │
 │      group_by: o_year     │
 │                           │
@@ -64,16 +62,14 @@ expression: displayable.tree_render().to_string()
 │ sum(CASE WHEN all_nations │
 │   .nation = BRAZIL THEN   │
 │     all_nations.volume    │
-│    ELSE Some(0),38,4 END  │
-│     ) as sum(CASE WHEN    │
+│     ELSE 0.0000 END) as   │
+│        sum(CASE WHEN      │
 │         all_nations       │
 │      .nation = Utf8(      │
 │       "BRAZIL") THEN      │
-│         all_nations       │
-│     .volume ELSE Int64    │
-│       (0) END), sum       │
-│        (all_nations       │
-│          .volume)         │
+│     all_nations.volume    │
+│   ELSE Int64(0) END), sum │
+│    (all_nations.volume)   │
 │                           │
 │      group_by: o_year     │
 │       mode: Partial       │
@@ -88,8 +84,8 @@ expression: displayable.tree_render().to_string()
 │        o_orderdate)       │
 │                           │
 │          volume:          │
-│ l_extendedprice * (Some(1)│
-│    ,20,0 - l_discount)    │
+│   l_extendedprice * (1 -  │
+│         l_discount)       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │        HashJoinExec       │

@@ -79,7 +79,7 @@ expression: displayable.tree_render().to_string()
 │    --------------------   ││    --------------------   │
 │         predicate:        ││            on:            ├───────────────────────────────────────────┐
 │ sum(lineitem.l_quantity) >││ (o_orderkey = l_orderkey) │                                           │
-│      Some(30000),25,2     ││                           │                                           │
+│           300.00          ││                           │                                           │
 └─────────────┬─────────────┘└─────────────┬─────────────┘                                           │
 ┌─────────────┴─────────────┐┌─────────────┴─────────────┐                             ┌─────────────┴─────────────┐
 │       AggregateExec       ││        HashJoinExec       │                             │   LiquidCacheClientExec   │

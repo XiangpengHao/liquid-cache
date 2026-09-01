@@ -9,12 +9,6 @@ expression: displayable.tree_render().to_string()
 │         o_year DESC       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│  nation@0 ASC NULLS LAST, │
-│        o_year@1 DESC      │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │       nation: nation      │
@@ -22,6 +16,12 @@ expression: displayable.tree_render().to_string()
 │                           │
 │        sum_profit:        │
 │     sum(profit.amount)    │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│  nation@0 ASC NULLS LAST, │
+│        o_year@1 DESC      │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
@@ -60,8 +60,8 @@ expression: displayable.tree_render().to_string()
 │       ProjectionExec      │
 │    --------------------   │
 │          amount:          │
-│ l_extendedprice * (Some(1)│
-│   ,20,0 - l_discount) -   │
+│   l_extendedprice * (1 -  │
+│        l_discount) -      │
 │       ps_supplycost *     │
 │         l_quantity        │
 │                           │

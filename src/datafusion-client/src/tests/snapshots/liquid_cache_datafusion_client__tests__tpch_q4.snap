@@ -9,12 +9,6 @@ expression: displayable.tree_render().to_string()
 │            LAST           │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│   o_orderpriority@0 ASC   │
-│         NULLS LAST        │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │      o_orderpriority:     │
@@ -22,6 +16,12 @@ expression: displayable.tree_render().to_string()
 │                           │
 │        order_count:       │
 │      count(Int64(1))      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│   o_orderpriority@0 ASC   │
+│         NULLS LAST        │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │

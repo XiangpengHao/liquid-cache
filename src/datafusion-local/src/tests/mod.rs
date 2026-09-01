@@ -100,7 +100,11 @@ async fn create_session_context_with_liquid_cache(
     cache_size_bytes: usize,
     cache_dir: &Path,
 ) -> Result<(SessionContext, LiquidCacheParquetRef)> {
-    let mut config = SessionConfig::new();
+    // These tests snapshot exact cache contents and counters. A repartitioned
+    // file scan populates the cache concurrently, so insertion order (and, for
+    // LIMIT queries, which partitions finish before cancellation) is not a
+    // stable property to snapshot.
+    let mut config = SessionConfig::new().with_repartition_file_scans(false);
     config.options_mut().execution.target_partitions = 4;
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_max_memory_bytes(cache_size_bytes)
@@ -124,6 +128,12 @@ async fn get_physical_plan(sql: &str, ctx: &SessionContext) -> Arc<dyn Execution
     state.create_physical_plan(&plan).await.unwrap()
 }
 
+async fn get_result(ctx: &SessionContext, sql: &str) -> String {
+    let plan = get_physical_plan(sql, ctx).await;
+    let batches = collect(plan, ctx.task_ctx()).await.unwrap();
+    pretty_format_batches(&batches).unwrap().to_string()
+}
+
 async fn run_sql_with_cache(
     sql: &str,
     squeeze_policy: Box<dyn SqueezePolicy>,
@@ -138,12 +148,6 @@ async fn run_sql_with_cache(
     let plan = get_physical_plan(sql, &ctx).await;
     let displayable = DisplayableExecutionPlan::new(plan.as_ref());
     let plan_string = format!("{}", displayable.tree_render());
-
-    async fn get_result(ctx: &SessionContext, sql: &str) -> String {
-        let plan = get_physical_plan(sql, ctx).await;
-        let batches = collect(plan, ctx.task_ctx()).await.unwrap();
-        pretty_format_batches(&batches).unwrap().to_string()
-    }
 
     // Clear any historical runtime counters before warming the cache.
     cache.storage().stats();
@@ -485,4 +489,54 @@ async fn test_provide_schema_with_filter() {
         println!("reference: \n{reference}");
     }
     assert_eq!(formatted_results, reference);
+}
+
+#[tokio::test]
+async fn test_repartitioned_file_scan_cache_correctness() {
+    let reference_cache_dir = TempDir::new().unwrap();
+    let parallel_cache_dir = TempDir::new().unwrap();
+    let sql = r#"select "WatchID", "OS", "EventTime" from hits where "OS" <> 2 order by "WatchID" desc limit 10"#;
+
+    let reference = run_sql_with_cache(
+        sql,
+        Box::new(TranscodeSqueezeEvict),
+        1024 * 1024,
+        reference_cache_dir.path(),
+    )
+    .await
+    .values;
+
+    // DataFusion 55 lowered repartition_file_min_size from 10 MiB to 1 MiB,
+    // which splits the 2.3 MiB fixture into four concurrent scan partitions.
+    let mut config = SessionConfig::new();
+    config.options_mut().execution.target_partitions = 4;
+    let (ctx, cache) = LiquidCacheLocalBuilder::new()
+        .with_max_memory_bytes(1024 * 1024)
+        .with_cache_dir(parallel_cache_dir.path().to_path_buf())
+        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_cache_policy(Box::new(LiquidPolicy::new()))
+        .build(config)
+        .await
+        .unwrap();
+    ctx.register_parquet("hits", TEST_FILE, ParquetReadOptions::default())
+        .await
+        .unwrap();
+
+    let plan = get_physical_plan(sql, &ctx).await;
+    let plan = format!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).tree_render()
+    );
+    assert!(
+        plan.contains("files: 4"),
+        "expected a repartitioned scan:\n{plan}"
+    );
+
+    assert_eq!(get_result(&ctx, sql).await, reference);
+    let entries_after_first_run = cache.storage().stats().total_entries;
+    assert_eq!(get_result(&ctx, sql).await, reference);
+
+    let stats = cache.storage().stats();
+    assert!(stats.runtime.get_with_selection > 0);
+    assert!(stats.total_entries >= entries_after_first_run);
 }

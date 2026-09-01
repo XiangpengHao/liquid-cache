@@ -11,14 +11,6 @@ expression: displayable.tree_render().to_string()
 │            LAST           │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│  supp_nation@0 ASC NULLS  │
-│     LAST, cust_nation@1   │
-│   ASC NULLS LAST, l_year  │
-│     @2 ASC NULLS LAST     │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │        cust_nation:       │
@@ -31,6 +23,14 @@ expression: displayable.tree_render().to_string()
 │                           │
 │        supp_nation:       │
 │        supp_nation        │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│  supp_nation@0 ASC NULLS  │
+│     LAST, cust_nation@1   │
+│   ASC NULLS LAST, l_year  │
+│     @2 ASC NULLS LAST     │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │       AggregateExec       │
@@ -79,8 +79,8 @@ expression: displayable.tree_render().to_string()
 │    supp_nation: n_name    │
 │                           │
 │          volume:          │
-│ l_extendedprice * (Some(1)│
-│    ,20,0 - l_discount)    │
+│   l_extendedprice * (1 -  │
+│         l_discount)       │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
 │        HashJoinExec       │

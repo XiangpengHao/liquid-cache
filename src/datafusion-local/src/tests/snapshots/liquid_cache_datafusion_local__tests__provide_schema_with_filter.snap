@@ -4,6 +4,13 @@ expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values
 ---
 plan: 
 ┌───────────────────────────┐
+│       ProjectionExec      │
+│    --------------------   │
+│    EventTime: EventTime   │
+│           OS: OS          │
+│      WatchID: WatchID     │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
 │       SortExec(TopK)      │
 │    --------------------   │
 │       WatchID@0 DESC      │

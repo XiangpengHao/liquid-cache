@@ -10,13 +10,6 @@ expression: displayable.tree_render().to_string()
 │       ASC NULLS LAST      │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
-│          SortExec         │
-│    --------------------   │
-│  l_returnflag@0 ASC NULLS │
-│    LAST, l_linestatus@1   │
-│       ASC NULLS LAST      │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │       ProjectionExec      │
 │    --------------------   │
 │         avg_disc:         │
@@ -51,6 +44,13 @@ expression: displayable.tree_render().to_string()
 │            ...            │
 └─────────────┬─────────────┘
 ┌─────────────┴─────────────┐
+│          SortExec         │
+│    --------------------   │
+│  l_returnflag@0 ASC NULLS │
+│    LAST, l_linestatus@1   │
+│       ASC NULLS LAST      │
+└─────────────┬─────────────┘
+┌─────────────┴─────────────┐
 │       AggregateExec       │
 │    --------------------   │
 │           aggr:           │
@@ -62,14 +62,13 @@ expression: displayable.tree_render().to_string()
 │     .l_extendedprice *    │
 │     Int64(1) - lineitem   │
 │     .l_discount), sum     │
-│     (__common_expr_1 *    │
-│       Some(1),20,0 +      │
-│     lineitem.l_tax) as    │
-│        sum(lineitem       │
-│       .l_extendedpri      │
-│  ce * Int64(1) - lineitem │
-│  .l_discount * Int64(1)   │
-│   + lineitem.l_tax), avg  │
+│   (__common_expr_1 * 1 +  │
+│   lineitem.l_tax) as sum  │
+│         (lineitem         │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│  .l_discount * Int64(1) + │
+│    lineitem.l_tax), avg   │
 │   (lineitem.l_quantity),  │
 │        avg(lineitem       │
 │       .l_extendedpri      │
@@ -105,14 +104,13 @@ expression: displayable.tree_render().to_string()
 │     .l_extendedprice *    │
 │     Int64(1) - lineitem   │
 │     .l_discount), sum     │
-│     (__common_expr_1 *    │
-│       Some(1),20,0 +      │
-│     lineitem.l_tax) as    │
-│        sum(lineitem       │
-│       .l_extendedpri      │
-│  ce * Int64(1) - lineitem │
-│  .l_discount * Int64(1)   │
-│   + lineitem.l_tax), avg  │
+│   (__common_expr_1 * 1 +  │
+│   lineitem.l_tax) as sum  │
+│         (lineitem         │
+│        .l_extendedp       │
+│ rice * Int64(1) - lineitem│
+│  .l_discount * Int64(1) + │
+│    lineitem.l_tax), avg   │
 │   (lineitem.l_quantity),  │
 │        avg(lineitem       │
 │       .l_extendedpri      │
@@ -129,8 +127,8 @@ expression: displayable.tree_render().to_string()
 │       ProjectionExec      │
 │    --------------------   │
 │      __common_expr_1:     │
-│ l_extendedprice * (Some(1)│
-│    ,20,0 - l_discount)    │
+│   l_extendedprice * (1 -  │
+│         l_discount)       │
 │                           │
 │        l_discount:        │
 │         l_discount        │

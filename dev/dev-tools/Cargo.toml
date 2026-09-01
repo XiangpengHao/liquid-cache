@@ -6,7 +6,7 @@ edition = "2024"
 
 
 [dependencies]
-dioxus = { version = "=0.7.5", features = ["router", "fullstack"] }
+dioxus = { version = "=0.7.10", features = ["router", "fullstack"] }
 # Must match the wasm-bindgen-cli version pinned in flake.nix.
 # Only used through dioxus macros, hence the cargo-shear ignore.
 wasm-bindgen = "=0.2.126"

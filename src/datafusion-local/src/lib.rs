@@ -7,9 +7,9 @@ mod tests;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use datafusion::error::Result;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::{common::config::ConfigNonZeroUsize, error::Result};
 use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy, default_max_memory_bytes};
 use liquid_cache::cache_policies::{CachePolicy, LiquidPolicy};
@@ -159,7 +159,7 @@ impl LiquidCacheLocalBuilder {
             .schema_force_view_types = false;
         config.options_mut().execution.parquet.skip_arrow_metadata = false;
         config.options_mut().execution.parquet.skip_metadata = false;
-        config.options_mut().execution.batch_size = self.batch_size;
+        config.options_mut().execution.batch_size = ConfigNonZeroUsize::try_new(self.batch_size)?;
 
         let store = t4::mount(self.cache_dir.join("liquid_cache.t4"))
             .await

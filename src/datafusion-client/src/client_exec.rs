@@ -10,7 +10,7 @@ use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_schema::{Schema, SchemaRef};
 use datafusion::catalog::memory::DataSourceExec;
 use datafusion::common::internal_err;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::config::ConfigOptions;
 use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use datafusion::execution::object_store::ObjectStoreUrl;
@@ -23,7 +23,10 @@ use datafusion::physical_plan::filter_pushdown::{
     ChildPushdownResult, FilterDescription, FilterPushdownPhase, FilterPushdownPropagation,
 };
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion::physical_plan::{ExecutionPlanProperties, PhysicalExpr, PlanProperties};
+use datafusion::physical_plan::{
+    ChildrenPropertiesMode, ExecutionPlanProperties, PhysicalExpr, PlanProperties,
+    ReplaceChildrenOptions,
+};
 use datafusion::{
     error::Result,
     execution::{RecordBatchStream, SendableRecordBatchStream},
@@ -75,18 +78,22 @@ impl std::fmt::Debug for LiquidCacheClientExec {
 }
 
 impl LiquidCacheClientExec {
+    fn plan_properties(remote_plan: &Arc<dyn ExecutionPlan>) -> Arc<PlanProperties> {
+        Arc::new(PlanProperties::new(
+            remote_plan.equivalence_properties().clone(),
+            remote_plan.output_partitioning().clone(),
+            remote_plan.pipeline_behavior(),
+            remote_plan.boundedness(),
+        ))
+    }
+
     pub(crate) fn new(
         remote_plan: Arc<dyn ExecutionPlan>,
         cache_server: String,
         object_stores: Vec<(ObjectStoreUrl, HashMap<String, String>)>,
         squeeze_hints: ColumnSqueezeHints,
     ) -> Self {
-        let properties = Arc::new(PlanProperties::new(
-            remote_plan.equivalence_properties().clone(), // Equivalence Properties
-            remote_plan.output_partitioning().clone(),    // Output Partitioning
-            remote_plan.pipeline_behavior(),
-            remote_plan.boundedness(),
-        ));
+        let properties = Self::plan_properties(&remote_plan);
         let uuid = Uuid::new_v4();
         Self {
             remote_plan,
@@ -140,20 +147,49 @@ impl ExecutionPlan for LiquidCacheClientExec {
         vec![&self.remote_plan]
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+        options: ReplaceChildrenOptions,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return internal_err!(
+                "LiquidCacheClientExec expects one child, received {}",
+                children.len()
+            );
+        }
+        let remote_plan = children.swap_remove(0);
+        let properties = match options.children_properties {
+            ChildrenPropertiesMode::Keep => Arc::clone(&self.properties),
+            ChildrenPropertiesMode::Recompute => Self::plan_properties(&remote_plan),
+        };
         Ok(Arc::new(Self {
-            remote_plan: children.first().unwrap().clone(),
+            remote_plan,
             cache_server: self.cache_server.clone(),
             plan_registered: self.plan_registered.clone(),
             object_stores: self.object_stores.clone(),
             metrics: self.metrics.clone(),
             uuid: self.uuid,
-            properties: self.properties.clone(),
+            properties,
             squeeze_hints: self.squeeze_hints.clone(),
         }))
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn execute(
