@@ -4,11 +4,6 @@ expression: "format!(\"plan: \\n{}\\nvalues: \\n{}\\nstats:\\n{}\", plan, values
 ---
 plan: 
 ┌───────────────────────────┐
-│  SortPreservingMergeExec  │
-│    --------------------   │
-│          OS DESC          │
-└─────────────┬─────────────┘
-┌─────────────┴─────────────┐
 │          SortExec         │
 │    --------------------   │
 │         OS@0 DESC         │
@@ -16,7 +11,7 @@ plan:
 ┌─────────────┴─────────────┐
 │       DataSourceExec      │
 │    --------------------   │
-│          files: 4         │
+│          files: 1         │
 │                           │
 │          format:          │
 │       liquid_parquet      │

@@ -6,7 +6,7 @@ plan:
 ┌───────────────────────────┐
 │       DataSourceExec      │
 │    --------------------   │
-│          files: 4         │
+│          files: 1         │
 │                           │
 │          format:          │
 │       liquid_parquet      │
