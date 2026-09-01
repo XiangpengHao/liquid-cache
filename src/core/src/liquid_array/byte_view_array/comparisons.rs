@@ -540,8 +540,10 @@ fn compare_with_arrow_inner(
 
 fn compress_needle(compressor: &Compressor, needle: &[u8]) -> Vec<u8> {
     let mut compressed = Vec::with_capacity(needle.len().saturating_mul(2));
+    // SAFETY: the largest compressed size is all escapes == 2 * plaintext_len.
     unsafe {
-        compressor.compress_into(needle, &mut compressed);
+        let len = compressor.compress_into(needle, compressed.spare_capacity_mut());
+        compressed.set_len(len);
     }
     compressed
 }

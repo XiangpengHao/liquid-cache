@@ -41,20 +41,21 @@
               llvmPackages.bintools
               lldb
               cargo-fuzz
-              bpftrace
-              perf
               nixd
               inferno
               cargo-flamegraph
               nodejs
               tailwindcss_4
               dioxus-cli
-              wasm-bindgen-cli_0_2_118
+              wasm-bindgen-cli_0_2_126
               binaryen
               (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
                 extensions = [ "rust-src" "llvm-tools-preview" ];
-                targets = [ "x86_64-unknown-linux-gnu" "wasm32-unknown-unknown" ];
+                targets = [ "wasm32-unknown-unknown" ];
               }))
+            ] ++ lib.optionals stdenv.hostPlatform.isLinux [
+              bpftrace
+              perf
             ];
 
             shellHook = ''

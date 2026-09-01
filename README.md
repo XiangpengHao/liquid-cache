@@ -93,7 +93,7 @@ tokio_test::block_on(async {
 
 ### LiquidCache uses DIRECT I/O
 
-By default, LiquidCache uses [DIRECT I/O](https://man7.org/linux/man-pages/man2/open.2.html#:~:text=O_DIRECT). This means that it bypasses the OS page cache, this avoids double-caching and bound memory usage. 
+By default, LiquidCache bypasses the OS page cache using [O_DIRECT](https://man7.org/linux/man-pages/man2/open.2.html#:~:text=O_DIRECT) on Linux and `F_NOCACHE` on macOS. This avoids double-caching and bounds memory usage.
 
 This also means LiquidCache can *appear slower* than other caches when most data fits in OS page cache, which is common in dev environments but unrealistic in production.
 

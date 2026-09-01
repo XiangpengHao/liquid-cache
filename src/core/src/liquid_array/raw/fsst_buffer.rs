@@ -70,7 +70,8 @@ impl RawFsstBuffer {
                 // (all bytes escaped) which is `2 * plaintext_len`.
                 compress_buffer.reserve(bytes.len().saturating_mul(2));
                 unsafe {
-                    compressor.compress_into(bytes, compress_buffer);
+                    let len = compressor.compress_into(bytes, compress_buffer.spare_capacity_mut());
+                    compress_buffer.set_len(len);
                 }
 
                 values_buffer.extend_from_slice(compress_buffer);

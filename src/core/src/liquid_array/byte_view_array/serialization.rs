@@ -308,8 +308,8 @@ impl LiquidByteViewArray<FsstArray> {
                 panic!("Fingerprint data size does not match dictionary size");
             }
             let mut fingerprints = Vec::with_capacity(view_header.fingerprint_size as usize / 4);
-            for chunk in bytes[cursor..fingerprint_end].chunks_exact(4) {
-                fingerprints.push(u32::from_le_bytes(chunk.try_into().unwrap()));
+            for chunk in bytes[cursor..fingerprint_end].as_chunks::<4>().0 {
+                fingerprints.push(u32::from_le_bytes(*chunk));
             }
             Some(Arc::from(fingerprints.into_boxed_slice()))
         };

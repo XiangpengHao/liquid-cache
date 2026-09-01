@@ -14,6 +14,7 @@ use liquid_cache::cache_policies::LiquidPolicy;
 use liquid_cache_datafusion::{LiquidCacheParquetRef, extract_execution_metrics};
 use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
 use log::{info, warn};
+#[cfg(target_os = "linux")]
 use perf_event::{
     Builder as PerfBuilder, Counter, Group,
     events::{Hardware, Software},
@@ -72,6 +73,27 @@ impl DiskIoGuard {
     }
 }
 
+// perf events are backed by Linux's perf_event_open; on other platforms the
+// collector fails to initialize and the runner skips the counters.
+#[cfg(not(target_os = "linux"))]
+struct PerfEventCollector;
+
+#[cfg(not(target_os = "linux"))]
+impl PerfEventCollector {
+    fn new() -> io::Result<Self> {
+        Err(io::Error::other("perf events are only supported on Linux"))
+    }
+
+    fn start(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn stop(self) -> io::Result<PerfEventStats> {
+        Err(io::Error::other("perf events are only supported on Linux"))
+    }
+}
+
+#[cfg(target_os = "linux")]
 struct PerfEventCollector {
     group: Group,
     cycles: Counter,
@@ -82,6 +104,7 @@ struct PerfEventCollector {
     page_faults: Counter,
 }
 
+#[cfg(target_os = "linux")]
 impl PerfEventCollector {
     fn new() -> io::Result<Self> {
         let mut group = Group::new()?;

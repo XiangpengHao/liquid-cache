@@ -21,7 +21,7 @@ url = { workspace = true }
 mimalloc = "0.1.52"
 serde_json.workspace = true
 serde.workspace = true
-sysinfo = { version = "0.38.4", default-features = false, features = [
+sysinfo = { version = "0.39.6", default-features = false, features = [
 	"network",
 	"disk",
 ] }
@@ -30,17 +30,19 @@ parquet = { workspace = true }
 arrow = { workspace = true }
 fastrace = { version = "0.7.17" }
 fastrace-tonic = { workspace = true }
-fastrace-opentelemetry = "0.16"
-opentelemetry = "0.31.0"
-opentelemetry_sdk = "0.31.0"
-opentelemetry-otlp = { version = "0.31.1", features = ["trace", "grpc-tonic"] }
-logforth = { version = "0.29.1", features = ["append-opentelemetry", "bridge-log"] }
+fastrace-opentelemetry = "0.18"
+opentelemetry = "0.32.0"
+opentelemetry_sdk = "0.32.0"
+opentelemetry-otlp = { version = "0.32.0", features = ["trace", "grpc-tonic"] }
+logforth = { version = "0.30.1", features = ["starter-log", "filter-rustlog"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json"] }
 uuid = { version = "1.23.3", features = ["v4"] }
 pprof = { version = "0.15.0", features = ["flamegraph"] }
 anyhow = "1.0"
 usdt = "0.6"
 regex = "1.12.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 perf-event2 = "0.7.4"
 
 [features]

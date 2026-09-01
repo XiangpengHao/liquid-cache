@@ -310,6 +310,7 @@ pub fn extract_execution_metrics(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_arch = "x86_64")]
     use super::*;
 
     #[test]

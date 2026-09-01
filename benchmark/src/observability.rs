@@ -7,7 +7,7 @@ use datafusion::datasource::source::DataSource;
 use datafusion::physical_plan::ExecutionPlan;
 use fastrace_opentelemetry::OpenTelemetryReporter;
 use liquid_cache_datafusion::LiquidParquetSource;
-use logforth::filter::env_filter::EnvFilterBuilder;
+use logforth::filter::rustlog::RustLogFilterBuilder;
 use opentelemetry::InstrumentationScope;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::SpanExporter;
@@ -54,7 +54,7 @@ pub fn instrument_liquid_source_with_span(
 pub fn setup_observability(service_name: &str, jaeger_endpoint: Option<&str>) {
     logforth::starter_log::builder()
         .dispatch(|d| {
-            d.filter(EnvFilterBuilder::from_default_env().build())
+            d.filter(RustLogFilterBuilder::from_default_env().build())
                 .append(logforth::append::Stdout::default())
         })
         .apply();

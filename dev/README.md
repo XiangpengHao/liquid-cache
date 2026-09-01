@@ -9,6 +9,12 @@
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
+Alternatively, use the Nix dev shell (works on both Linux and macOS; also provides the tooling for `dev-tools`, e.g. dioxus-cli, tailwindcss, wasm-bindgen):
+
+```bash
+nix develop
+```
+
 Run tests:
 
 ```bash
