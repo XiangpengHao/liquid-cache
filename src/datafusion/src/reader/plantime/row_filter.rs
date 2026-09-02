@@ -84,6 +84,7 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
 /// A row filter that can be used to filter rows from a parquet file.
+#[derive(Clone)]
 pub struct LiquidRowFilter {
     predicates: Vec<LiquidPredicate>,
 }

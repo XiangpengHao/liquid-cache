@@ -1,9 +1,9 @@
-use super::opener::LiquidParquetOpener;
+use super::LiquidMorselizer;
 use crate::cache::{ColumnSqueezeHints, LiquidCacheParquetRef};
 use ahash::{HashMap, HashMapExt};
 use bytes::Bytes;
 use datafusion::{
-    common::tree_node::TreeNodeRecursion,
+    common::{internal_err, tree_node::TreeNodeRecursion},
     config::{ConfigOptions, TableParquetOptions},
     datasource::{
         listing::PartitionedFile,
@@ -23,6 +23,7 @@ use datafusion::{
         metrics::ExecutionPlanMetricsSet,
     },
 };
+use datafusion_datasource::morsel::Morselizer;
 use futures::{FutureExt, future::BoxFuture};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use parquet::{
@@ -274,10 +275,21 @@ impl LiquidParquetSource {
 impl FileSource for LiquidParquetSource {
     fn create_file_opener(
         &self,
+        _object_store: Arc<dyn ObjectStore>,
+        _base_config: &FileScanConfig,
+        _partition: usize,
+    ) -> Result<Arc<dyn datafusion::datasource::physical_plan::FileOpener>> {
+        internal_err!(
+            "LiquidParquetSource::create_file_opener called but it supports the Morsel API, please use that instead"
+        )
+    }
+
+    fn create_morselizer(
+        &self,
         object_store: Arc<dyn ObjectStore>,
         base_config: &FileScanConfig,
         partition: usize,
-    ) -> Result<Arc<dyn datafusion::datasource::physical_plan::FileOpener>> {
+    ) -> Result<Box<dyn Morselizer>> {
         let expr_adapter_factory = base_config
             .expr_adapter_factory
             .clone()
@@ -289,24 +301,22 @@ impl FileSource for LiquidParquetSource {
             .span
             .clone()
             .map(|span| fastrace::Span::enter_with_parent(format!("opener_{partition}"), &span));
-        let opener = LiquidParquetOpener::new(
-            partition,
-            self.projection.clone(),
-            self.batch_size
-                .expect("Batch size must be set before creating LiquidParquetOpener"),
-            base_config.limit,
-            self.predicate.clone(),
-            self.table_schema.clone(),
-            self.metrics.clone(),
-            self.liquid_cache.clone(),
-            reader_factory,
-            self.reorder_filters(),
+        Ok(Box::new(LiquidMorselizer {
+            partition_index: partition,
+            projection: self.projection.clone(),
+            batch_size: self
+                .batch_size
+                .expect("Batch size must be set before creating LiquidMorselizer"),
+            predicate: self.predicate.clone(),
+            table_schema: self.table_schema.clone(),
+            metrics: self.metrics.clone(),
+            liquid_cache: self.liquid_cache.clone(),
+            parquet_file_reader_factory: reader_factory,
+            reorder_filters: self.reorder_filters(),
             expr_adapter_factory,
-            execution_span.map(Arc::new),
-            Arc::clone(&self.squeeze_hints),
-        );
-
-        Ok(Arc::new(opener))
+            span: execution_span.map(Arc::new),
+            squeeze_hints: Arc::clone(&self.squeeze_hints),
+        }))
     }
 
     fn with_batch_size(&self, batch_size: usize) -> Arc<dyn FileSource> {

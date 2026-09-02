@@ -4302,6 +4302,7 @@ dependencies = [
  "arrow-schema",
  "bytes",
  "datafusion",
+ "datafusion-datasource",
  "divan",
  "fastrace",
  "futures",

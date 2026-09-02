@@ -92,6 +92,11 @@ struct ParquetFallback {
 
 impl LiquidCacheReader {
     pub(crate) fn new(config: LiquidCacheReaderConfig) -> Self {
+        debug_assert_eq!(
+            config.batch_size,
+            config.cached_row_group.batch_size(),
+            "DataFusion and LiquidCache batch sizes must agree"
+        );
         let inner = LiquidCacheReaderInner::new(
             config.batch_size,
             config.selection,
@@ -104,14 +109,6 @@ impl LiquidCacheReader {
             state: ReaderState::Ready(Box::new(inner)),
             row_filter: config.row_filter,
         }
-    }
-
-    pub(crate) fn into_filter(self) -> Option<LiquidRowFilter> {
-        debug_assert!(
-            matches!(self.state, ReaderState::Finished),
-            "cannot extract filter before reader completes"
-        );
-        self.row_filter
     }
 }
 
@@ -753,30 +750,6 @@ mod tests {
         let batch = &batches[0];
         assert_eq!(batch.num_columns(), 0);
         assert_eq!(batch.num_rows(), 2);
-    }
-
-    #[tokio::test]
-    async fn into_filter_returns_stored_filter_after_completion() {
-        let batch_size = 2;
-        let test = make_row_group(batch_size, &[vec![1, 2]]).await;
-        let selection = RowSelection::from(Vec::<RowSelector>::new());
-        let filter = LiquidRowFilter::new(Vec::new());
-
-        let mut reader = test.reader(ReaderRequest {
-            selection,
-            row_filter: Some(filter),
-            projection_columns: vec![0],
-            schema: Arc::clone(&test.schema),
-        });
-
-        let waker = futures::task::noop_waker();
-        let mut cx = Context::from_waker(&waker);
-        assert!(matches!(
-            Pin::new(&mut reader).poll_next(&mut cx),
-            Poll::Ready(None)
-        ));
-
-        assert!(reader.into_filter().is_some());
     }
 
     #[tokio::test]
