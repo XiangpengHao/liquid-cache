@@ -14,6 +14,7 @@ use datafusion::{
         table_schema::TableSchema,
     },
     error::Result,
+    execution::object_store::ObjectStoreUrl,
     physical_expr::projection::ProjectionExprs,
     physical_expr::utils::conjunction,
     physical_expr_adapter::DefaultPhysicalExprAdapterFactory,
@@ -43,11 +44,12 @@ static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
 #[derive(Debug)]
 pub(crate) struct CachedMetaReaderFactory {
     store: Arc<dyn ObjectStore>,
+    store_url: ObjectStoreUrl,
 }
 
 impl CachedMetaReaderFactory {
-    pub(crate) fn new(store: Arc<dyn ObjectStore>) -> Self {
-        Self { store }
+    pub(crate) fn new(store: Arc<dyn ObjectStore>, store_url: ObjectStoreUrl) -> Self {
+        Self { store, store_url }
     }
 
     pub(crate) fn create_liquid_reader(
@@ -62,6 +64,7 @@ impl CachedMetaReaderFactory {
         ParquetMetadataCacheReader {
             file_metrics: ParquetFileMetrics::new(partition_index, path.as_ref(), metrics),
             store: Arc::clone(&self.store),
+            store_url: self.store_url.clone(),
             file_size: partitioned_file.object_meta.size,
             metadata_size_hint,
             path,
@@ -88,7 +91,7 @@ impl ParquetFileReaderFactory for CachedMetaReaderFactory {
 }
 
 struct MetadataCache {
-    val: RwLock<HashMap<Path, Arc<ParquetMetaData>>>,
+    val: RwLock<HashMap<(ObjectStoreUrl, Path), Arc<ParquetMetaData>>>,
 }
 
 impl MetadataCache {
@@ -103,6 +106,7 @@ impl MetadataCache {
 pub struct ParquetMetadataCacheReader {
     file_metrics: ParquetFileMetrics,
     store: Arc<dyn ObjectStore>,
+    store_url: ObjectStoreUrl,
     file_size: u64,
     metadata_size_hint: Option<usize>,
     path: Path,
@@ -145,20 +149,20 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
         &mut self,
         options: Option<&ArrowReaderOptions>,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        let path = self.path.clone();
+        let cache_key = (self.store_url.clone(), self.path.clone());
         let options = options.cloned();
         async move {
             // First check with read lock
             {
                 let cache = META_CACHE.val.read().await;
-                if let Some(meta) = cache.get(&path) {
+                if let Some(meta) = cache.get(&cache_key) {
                     return Ok(meta.clone());
                 }
             }
 
             // Upgrade to write lock and double-check
             let mut cache = META_CACHE.val.write().await;
-            match cache.entry(path.clone()) {
+            match cache.entry(cache_key) {
                 std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let file_size = self.file_size;
@@ -295,7 +299,10 @@ impl FileSource for LiquidParquetSource {
             .clone()
             .unwrap_or_else(|| Arc::new(DefaultPhysicalExprAdapterFactory) as _);
 
-        let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
+        let reader_factory = Arc::new(CachedMetaReaderFactory::new(
+            object_store,
+            base_config.object_store_url.clone(),
+        ));
 
         let execution_span = self
             .span

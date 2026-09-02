@@ -681,7 +681,7 @@ mod tests {
         cache_policies::LiquidPolicy,
     };
     use object_store::local::LocalFileSystem;
-    use parquet::arrow::ArrowWriter;
+    use parquet::arrow::{ArrowWriter, async_reader::AsyncFileReader};
 
     use crate::{
         cache::{BatchID, CachedFileRef, CachedRowGroupRef, LiquidCacheParquet},
@@ -809,10 +809,8 @@ mod tests {
     async fn plan_test_file(options: PlanOptions) -> PlannedTestFile {
         let schema = schema();
         let tmp_dir = tempfile::tempdir().unwrap();
-        let file_name = format!(
-            "data_{}.parquet",
-            NEXT_FILE_ID.fetch_add(1, Ordering::Relaxed)
-        );
+        let file_id = NEXT_FILE_ID.fetch_add(1, Ordering::Relaxed);
+        let file_name = "data.parquet".to_string();
         let parquet_path = tmp_dir.path().join(&file_name);
         if let Some(values) = options.single_row_group_values {
             write_single_row_group_file(&parquet_path, Arc::clone(&schema), values);
@@ -838,7 +836,10 @@ mod tests {
             predicate: options.predicate,
             table_schema: TableSchema::from(Arc::clone(&schema)),
             metrics: metrics.clone(),
-            parquet_file_reader_factory: Arc::new(CachedMetaReaderFactory::new(object_store)),
+            parquet_file_reader_factory: Arc::new(CachedMetaReaderFactory::new(
+                object_store,
+                ObjectStoreUrl::parse(format!("test-{file_id}:///")).unwrap(),
+            )),
             reorder_filters: false,
             liquid_cache: cache.clone(),
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
@@ -861,6 +862,44 @@ mod tests {
             Operator::Gt,
             Arc::new(Literal::new(ScalarValue::Int32(Some(literal)))),
         ))
+    }
+
+    #[tokio::test]
+    async fn metadata_cache_is_scoped_to_object_store() {
+        let schema = schema();
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let path_a = dir_a.path().join("data.parquet");
+        let path_b = dir_b.path().join("data.parquet");
+        write_single_row_group_file(&path_a, schema.clone(), vec![1]);
+        write_single_row_group_file(&path_b, schema, vec![1, 2]);
+        let metrics = ExecutionPlanMetricsSet::new();
+        let mut reader_a = CachedMetaReaderFactory::new(
+            Arc::new(LocalFileSystem::new_with_prefix(dir_a.path()).unwrap()),
+            ObjectStoreUrl::parse("store-a:///").unwrap(),
+        )
+        .create_liquid_reader(
+            0,
+            PartitionedFile::new("data.parquet", std::fs::metadata(path_a).unwrap().len()),
+            None,
+            &metrics,
+        );
+        let mut reader_b = CachedMetaReaderFactory::new(
+            Arc::new(LocalFileSystem::new_with_prefix(dir_b.path()).unwrap()),
+            ObjectStoreUrl::parse("store-b:///").unwrap(),
+        )
+        .create_liquid_reader(
+            0,
+            PartitionedFile::new("data.parquet", std::fs::metadata(path_b).unwrap().len()),
+            None,
+            &metrics,
+        );
+
+        let metadata_a = reader_a.get_metadata(None).await.unwrap();
+        let metadata_b = reader_b.get_metadata(None).await.unwrap();
+
+        assert_eq!(metadata_a.file_metadata().num_rows(), 1);
+        assert_eq!(metadata_b.file_metadata().num_rows(), 2);
     }
 
     async fn collect_columns(morsels: Vec<Box<dyn Morsel>>) -> (Vec<i32>, Vec<i32>) {

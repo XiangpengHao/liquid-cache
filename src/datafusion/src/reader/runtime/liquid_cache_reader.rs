@@ -588,12 +588,11 @@ mod tests {
             std::fs::metadata(&parquet_path).unwrap().len(),
         );
         let metrics = ExecutionPlanMetricsSet::new();
-        let input = CachedMetaReaderFactory::new(object_store).create_liquid_reader(
-            0,
-            partitioned_file,
-            None,
-            &metrics,
-        );
+        let input = CachedMetaReaderFactory::new(
+            object_store,
+            datafusion::execution::object_store::ObjectStoreUrl::parse("test-runtime:///").unwrap(),
+        )
+        .create_liquid_reader(0, partitioned_file, None, &metrics);
         let projection = ProjectionMask::roots(
             reader_metadata.metadata().file_metadata().schema_descr(),
             [0],
