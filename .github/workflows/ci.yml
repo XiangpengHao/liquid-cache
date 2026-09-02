@@ -363,10 +363,20 @@ jobs:
             - name: Build benchmark binary
               run: cargo build --release --bin in_process
 
+            # The LiquidCache run reads every query's columns before the DataFusion
+            # run. Without an explicit warmup, Linux's page cache makes DataFusion's
+            # "cold" measurements warm and creates a large, order-dependent bias.
+            - name: Warm filesystem cache
+              run: |
+                  env RUST_LOG=warn target/release/in_process \
+                    --manifest benchmark/clickbench/benchmark_manifest.json \
+                    --iteration 1 \
+                    --bench-mode datafusion-default
+
             - name: Run LiquidCache benchmark (in-process)
               run: |
                   mkdir -p benchmark_results
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
+                  env RUST_LOG=info target/release/in_process \
                     --manifest benchmark/clickbench/benchmark_manifest.json \
                     --output benchmark_results/liquid.json \
                     --iteration 5 \
@@ -376,7 +386,7 @@ jobs:
 
             - name: Run DataFusion benchmark (plain parquet)
               run: |
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
+                  env RUST_LOG=info target/release/in_process \
                     --manifest benchmark/clickbench/benchmark_manifest.json \
                     --output benchmark_results/parquet.json \
                     --iteration 5 \
@@ -384,7 +394,7 @@ jobs:
 
             - name: Run DataFusion benchmark (default config)
               run: |
-                  env RUST_LOG=info cargo run --release --bin in_process -- \
+                  env RUST_LOG=info target/release/in_process \
                     --manifest benchmark/clickbench/benchmark_manifest.json \
                     --output benchmark_results/df_default.json \
                     --iteration 5 \
