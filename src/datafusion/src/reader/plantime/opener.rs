@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     cache::{ColumnSqueezeHints, LiquidCacheParquetRef},
-    reader::{
-        plantime::{row_filter::build_row_filter, row_group_filter::RowGroupAccessPlanFilter},
-        runtime::LiquidStreamBuilder,
-    },
+    reader::{plantime::row_filter::build_row_filter, runtime::LiquidStreamBuilder},
 };
 use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::SchemaRef;
@@ -15,7 +12,10 @@ use datafusion::{
         listing::PartitionedFile,
         physical_plan::{
             FileOpenFuture, FileOpener, ParquetFileMetrics,
-            parquet::{PagePruningAccessPlanFilter, ParquetAccessPlan},
+            parquet::{
+                BloomFilterStatistics, PagePruningAccessPlanFilter, ParquetAccessPlan,
+                RowGroupAccessPlanFilter,
+            },
         },
         table_schema::TableSchema,
     },
@@ -36,10 +36,11 @@ use log::debug;
 use parquet::arrow::{
     ParquetRecordBatchStreamBuilder, ProjectionMask,
     arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
+    parquet_column,
 };
 use parquet::file::metadata::ParquetMetaData;
 
-use super::source::CachedMetaReaderFactory;
+use super::source::{CachedMetaReaderFactory, ParquetMetadataCacheReader};
 
 pub struct LiquidParquetOpener {
     partition_index: usize,
@@ -273,14 +274,10 @@ impl FileOpener for LiquidParquetOpener {
                 );
 
                 if !row_groups.is_empty() {
-                    row_groups
-                        .prune_by_bloom_filters(
-                            &physical_file_schema,
-                            &mut builder,
-                            predicate,
-                            &file_metrics,
-                        )
-                        .await;
+                    let bloom_filters =
+                        load_bloom_filters(&mut builder, predicate, &file_metrics, &row_groups)
+                            .await;
+                    row_groups.prune_by_bloom_filters(predicate, &file_metrics, &bloom_filters);
                 }
             }
 
@@ -358,6 +355,53 @@ impl FileOpener for LiquidParquetOpener {
             Ok(adapted.boxed())
         }))
     }
+}
+
+async fn load_bloom_filters(
+    builder: &mut ParquetRecordBatchStreamBuilder<ParquetMetadataCacheReader>,
+    predicate: &PruningPredicate,
+    file_metrics: &ParquetFileMetrics,
+    row_groups: &RowGroupAccessPlanFilter,
+) -> Vec<BloomFilterStatistics> {
+    let mut row_group_bloom_filters =
+        vec![BloomFilterStatistics::new(); builder.metadata().num_row_groups()];
+    let parquet_columns: Vec<_> = predicate
+        .literal_columns()
+        .into_iter()
+        .filter_map(|column_name| {
+            let parquet_schema = builder.parquet_schema();
+            let (column_idx, _) = parquet_column(parquet_schema, predicate.schema(), &column_name)?;
+            let column = parquet_schema.column(column_idx);
+            Some((
+                column_name,
+                column_idx,
+                column.physical_type(),
+                column.type_length(),
+            ))
+        })
+        .collect();
+
+    for row_group_idx in row_groups.row_group_indexes() {
+        let mut bloom_filters = BloomFilterStatistics::with_capacity(parquet_columns.len());
+        for (column_name, column_idx, physical_type, type_length) in &parquet_columns {
+            let bloom_filter = match builder
+                .get_row_group_column_bloom_filter(row_group_idx, *column_idx)
+                .await
+            {
+                Ok(Some(bloom_filter)) => bloom_filter,
+                Ok(None) => continue,
+                Err(error) => {
+                    debug!("Ignoring error reading bloom filter: {error}");
+                    file_metrics.predicate_evaluation_errors.add(1);
+                    continue;
+                }
+            };
+            bloom_filters.insert(column_name, bloom_filter, *physical_type, *type_length);
+        }
+        row_group_bloom_filters[row_group_idx] = bloom_filters;
+    }
+
+    row_group_bloom_filters
 }
 
 fn create_initial_plan(

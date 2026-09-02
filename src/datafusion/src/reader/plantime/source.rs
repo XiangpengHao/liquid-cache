@@ -1,26 +1,26 @@
 use super::opener::LiquidParquetOpener;
 use crate::cache::{ColumnSqueezeHints, LiquidCacheParquetRef};
 use ahash::{HashMap, HashMapExt};
-use arrow_schema::Schema;
 use bytes::Bytes;
 use datafusion::{
     common::tree_node::TreeNodeRecursion,
-    config::TableParquetOptions,
+    config::{ConfigOptions, TableParquetOptions},
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
             FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory,
-            ParquetSource, parquet::PagePruningAccessPlanFilter,
+            ParquetSource, parquet::can_expr_be_pushed_down_with_schemas,
         },
         table_schema::TableSchema,
     },
     error::Result,
     physical_expr::projection::ProjectionExprs,
+    physical_expr::utils::conjunction,
     physical_expr_adapter::DefaultPhysicalExprAdapterFactory,
-    physical_optimizer::pruning::{PruningPredicate, PruningPredicateBuilder},
     physical_plan::{
-        PhysicalExpr, apply_expression_roots,
-        metrics::{ExecutionPlanMetricsSet, MetricBuilder},
+        DisplayFormatType, PhysicalExpr, apply_expression_roots,
+        filter_pushdown::{FilterPushdownPropagation, PushedDown, PushedDownPredicate},
+        metrics::ExecutionPlanMetricsSet,
     },
 };
 use futures::{FutureExt, future::BoxFuture};
@@ -31,6 +31,7 @@ use parquet::{
     file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
+    fmt::{self, Formatter},
     ops::Range,
     sync::{Arc, LazyLock},
 };
@@ -183,8 +184,6 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
 pub struct LiquidParquetSource {
     metrics: ExecutionPlanMetricsSet,
     predicate: Option<Arc<dyn PhysicalExpr>>,
-    pruning_predicate: Option<Arc<PruningPredicate>>,
-    page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     table_parquet_options: TableParquetOptions,
     liquid_cache: LiquidCacheParquetRef,
     batch_size: Option<usize>,
@@ -229,40 +228,9 @@ impl LiquidParquetSource {
         &self.squeeze_hints
     }
 
-    /// Set predicate information, also sets pruning_predicate and page_pruning_predicate attributes
-    pub fn with_predicate(
-        mut self,
-        file_schema: Arc<Schema>,
-        predicate: Arc<dyn PhysicalExpr>,
-    ) -> Self {
-        let metrics = ExecutionPlanMetricsSet::new();
-        let predicate_creation_errors =
-            MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
-
-        self.metrics = metrics;
-        self.predicate = Some(Arc::clone(&predicate));
-
-        match PruningPredicateBuilder::new()
-            .with_file_schema(Arc::clone(&file_schema))
-            .try_build(Arc::clone(&predicate))
-        {
-            Ok(pruning_predicate) => {
-                if !pruning_predicate.always_true() {
-                    self.pruning_predicate = Some(Arc::new(pruning_predicate));
-                }
-            }
-            Err(e) => {
-                log::debug!("Could not create pruning predicate for: {e}");
-                predicate_creation_errors.add(1);
-            }
-        };
-
-        let page_pruning_predicate = Arc::new(PagePruningAccessPlanFilter::new(
-            &predicate,
-            Arc::clone(&file_schema),
-        ));
-        self.page_pruning_predicate = Some(page_pruning_predicate);
-
+    /// Set predicate information.
+    pub fn with_predicate(mut self, predicate: Arc<dyn PhysicalExpr>) -> Self {
+        self.predicate = Some(predicate);
         self
     }
 
@@ -271,7 +239,6 @@ impl LiquidParquetSource {
         let predicate = source.filter();
 
         let table_schema = source.table_schema().clone();
-        let file_schema = table_schema.file_schema().clone();
         let projection = source.projection().cloned().unwrap_or_else(|| {
             let table_schema = table_schema.table_schema();
             ProjectionExprs::from_indices(
@@ -287,14 +254,12 @@ impl LiquidParquetSource {
             projection,
             metrics: source.metrics().clone(),
             predicate: None,
-            pruning_predicate: None,
-            page_pruning_predicate: None,
             span: None,
             squeeze_hints: Arc::default(),
         };
 
         if let Some(predicate) = predicate {
-            v = v.with_predicate(file_schema, predicate);
+            v = v.with_predicate(predicate);
         }
 
         v
@@ -350,6 +315,10 @@ impl FileSource for LiquidParquetSource {
         Arc::new(conf)
     }
 
+    fn filter(&self) -> Option<Arc<dyn PhysicalExpr>> {
+        self.predicate.clone()
+    }
+
     fn table_schema(&self) -> &TableSchema {
         &self.table_schema
     }
@@ -373,6 +342,58 @@ impl FileSource for LiquidParquetSource {
 
     fn file_type(&self) -> &str {
         "liquid_parquet"
+    }
+
+    fn fmt_extra(&self, t: DisplayFormatType, f: &mut Formatter) -> fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                if let Some(predicate) = self.filter() {
+                    write!(f, ", predicate={predicate}")?;
+                }
+                Ok(())
+            }
+            DisplayFormatType::TreeRender => Ok(()),
+        }
+    }
+
+    fn try_pushdown_filters(
+        &self,
+        filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> Result<FilterPushdownPropagation<Arc<dyn FileSource>>> {
+        let filters: Vec<_> = filters
+            .into_iter()
+            .map(|filter| {
+                if can_expr_be_pushed_down_with_schemas(&filter, self.table_schema.file_schema()) {
+                    PushedDownPredicate::supported(filter)
+                } else {
+                    PushedDownPredicate::unsupported(filter)
+                }
+            })
+            .collect();
+
+        if filters
+            .iter()
+            .all(|filter| matches!(filter.discriminant, PushedDown::No))
+        {
+            return Ok(FilterPushdownPropagation::with_parent_pushdown_result(
+                vec![PushedDown::No; filters.len()],
+            ));
+        }
+
+        let supported = filters
+            .iter()
+            .filter_map(|filter| match filter.discriminant {
+                PushedDown::Yes => Some(Arc::clone(&filter.predicate)),
+                PushedDown::No => None,
+            });
+        let predicate = conjunction(self.predicate.iter().cloned().chain(supported));
+        let source = Arc::new(self.clone().with_predicate(predicate));
+
+        Ok(FilterPushdownPropagation::with_parent_pushdown_result(
+            filters.iter().map(|filter| filter.discriminant).collect(),
+        )
+        .with_updated_node(source))
     }
 
     fn apply_expressions(
