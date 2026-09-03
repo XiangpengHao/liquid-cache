@@ -3,14 +3,18 @@
 
 use crate::io::ParquetCacheMetadata;
 use crate::reader::{LiquidPredicate, extract_multi_column_or};
-use crate::sync::Mutex;
+use crate::sync::{Mutex, RwLock};
 use ahash::AHashMap;
 use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::Column;
 use liquid_cache::cache::squeeze_policies::SqueezePolicy;
 use liquid_cache::cache::{
-    CacheExpression, CachePolicy, EventTrace, HydrationPolicy, LiquidCache, LiquidCacheBuilder,
+    CacheEntry, CacheExpression, CachePolicy, EntryID, EventTrace, HydrationPolicy, LiquidCache,
+    LiquidCacheBuilder,
 };
 use parquet::arrow::arrow_reader::ArrowPredicate;
 use std::collections::HashMap;
@@ -22,8 +26,8 @@ mod column;
 mod id;
 mod stats;
 
-pub(crate) use column::InsertArrowArrayError;
 pub use column::{CachedColumn, CachedColumnRef};
+pub(crate) use column::{InsertArrowArrayError, PrefetchOutcome};
 pub(crate) use id::ColumnAccessPath;
 pub use id::{BatchID, ParquetArrayID};
 
@@ -38,6 +42,30 @@ pub type ColumnSqueezeHints = HashMap<String, Arc<CacheExpression>>;
 type CachedColumnSpec = (u64, Arc<Field>, Option<Arc<CacheExpression>>, bool);
 
 #[derive(Default, Debug)]
+pub(crate) struct RowGroupSnapshots {
+    entries: RwLock<AHashMap<EntryID, Arc<CacheEntry>>>,
+    selections: RwLock<AHashMap<BatchID, BooleanBuffer>>,
+}
+
+impl RowGroupSnapshots {
+    pub(crate) fn get(&self, entry_id: &EntryID) -> Option<Arc<CacheEntry>> {
+        self.entries.read().unwrap().get(entry_id).cloned()
+    }
+
+    pub(crate) fn insert(&self, entry_id: EntryID, entry: Arc<CacheEntry>) {
+        self.entries.write().unwrap().insert(entry_id, entry);
+    }
+
+    pub(crate) fn selection(&self, batch_id: BatchID) -> Option<BooleanBuffer> {
+        self.selections.read().unwrap().get(&batch_id).cloned()
+    }
+
+    pub(crate) fn insert_selection(&self, batch_id: BatchID, selection: BooleanBuffer) {
+        self.selections.write().unwrap().insert(batch_id, selection);
+    }
+}
+
+#[derive(Default, Debug)]
 struct ColumnMaps {
     // invariant: Arc::ptr_eq(map[field.name()], map[field.id()])
     by_id: AHashMap<u64, CachedColumnRef>,
@@ -49,6 +77,7 @@ struct ColumnMaps {
 pub struct CachedRowGroup {
     columns: ColumnMaps,
     cache_store: Arc<LiquidCache>,
+    snapshots: Arc<RowGroupSnapshots>,
 }
 
 impl CachedRowGroup {
@@ -60,6 +89,7 @@ impl CachedRowGroup {
         row_group_idx: u64,
         file_idx: u64,
         columns: &[CachedColumnSpec],
+        snapshots: Arc<RowGroupSnapshots>,
     ) -> Self {
         let mut column_maps = ColumnMaps::default();
         for (column_id, field, expression, is_predicate_column) in columns {
@@ -70,6 +100,7 @@ impl CachedRowGroup {
                 column_access_path,
                 expression.clone(),
                 *is_predicate_column,
+                Arc::clone(&snapshots),
             ));
             column_maps.by_id.insert(*column_id, column.clone());
             column_maps.by_name.insert(field.name().to_string(), column);
@@ -78,6 +109,7 @@ impl CachedRowGroup {
         Self {
             columns: column_maps,
             cache_store,
+            snapshots,
         }
     }
 
@@ -101,6 +133,10 @@ impl CachedRowGroup {
         // (e.g. "table.col"), while cache fields are keyed by file schema names.
         let unqualified = column_name.rsplit('.').next().unwrap_or(column_name);
         self.columns.by_name.get(unqualified).cloned()
+    }
+
+    pub(crate) fn snapshot_selection(&self, batch_id: BatchID) -> Option<BooleanBuffer> {
+        self.snapshots.selection(batch_id)
     }
 
     /// Evaluate a predicate on a row group.
@@ -129,7 +165,28 @@ impl CachedRowGroup {
 
                 for (col_name, expr) in column_exprs {
                     let column = self.get_column_by_name(col_name)?;
-                    let liquid_expr = column.liquid_expr_for_predicate(Arc::clone(&expr));
+                    let snapshot_liquid = match column.snapshot_entry(batch_id) {
+                        Some(entry) => match entry.as_ref() {
+                            CacheEntry::MemoryLiquid(array) => Some(Arc::clone(array)),
+                            _ => {
+                                combined_buffer = None;
+                                break;
+                            }
+                        },
+                        None => None,
+                    };
+                    let expr = expr
+                        .transform_up(|expr| {
+                            if let Some(column) = expr.downcast_ref::<Column>() {
+                                Ok(Transformed::yes(Arc::new(Column::new(column.name(), 0))
+                                    as Arc<dyn PhysicalExpr>))
+                            } else {
+                                Ok(Transformed::no(expr))
+                            }
+                        })
+                        .ok()?
+                        .data;
+                    let liquid_expr = column.liquid_expr_for_predicate(expr);
                     let liquid_expr = match liquid_expr {
                         Some(expr) => expr,
                         None => {
@@ -138,7 +195,10 @@ impl CachedRowGroup {
                         }
                     };
                     let entry_id = column.entry_id(batch_id).into();
-                    let liquid_array = self.cache_store.try_read_liquid(&entry_id).await;
+                    let liquid_array = match snapshot_liquid {
+                        Some(array) => Some(array),
+                        None => self.cache_store.try_read_liquid(&entry_id).await,
+                    };
                     let liquid_array = match liquid_array {
                         None => {
                             combined_buffer = None;
@@ -211,6 +271,15 @@ impl CachedFile {
         row_group_id: u64,
         predicate_column_ids: Vec<usize>,
     ) -> CachedRowGroupRef {
+        self.create_row_group_with_snapshots(row_group_id, predicate_column_ids, Arc::default())
+    }
+
+    pub(crate) fn create_row_group_with_snapshots(
+        &self,
+        row_group_id: u64,
+        predicate_column_ids: Vec<usize>,
+        snapshots: Arc<RowGroupSnapshots>,
+    ) -> CachedRowGroupRef {
         let columns: Vec<CachedColumnSpec> = self
             .file_schema
             .fields()
@@ -233,6 +302,7 @@ impl CachedFile {
             row_group_id,
             self.file_id,
             &columns,
+            snapshots,
         ))
     }
 
@@ -432,7 +502,7 @@ mod tests {
     use super::*;
     use crate::cache::{CachedRowGroupRef, LiquidCacheParquet};
     use crate::reader::FilterCandidateBuilder;
-    use arrow::array::Int32Array;
+    use arrow::array::{Array, ArrayRef, Int32Array, StringViewArray};
     use arrow::buffer::BooleanBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -465,6 +535,152 @@ mod tests {
         .await;
         let file = cache.register_or_get_file("test".to_string(), schema);
         file.create_row_group(0, vec![])
+    }
+
+    async fn setup_liquid_cache(
+        batch_size: usize,
+        schema: SchemaRef,
+        max_memory_bytes: usize,
+    ) -> CachedRowGroupRef {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
+        let cache = LiquidCacheParquet::new(
+            batch_size,
+            max_memory_bytes,
+            usize::MAX,
+            store,
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeSqueezeEvict),
+            Box::new(AlwaysHydrate::new()),
+        )
+        .await;
+        cache
+            .register_or_get_file("test".to_string(), schema)
+            .create_row_group(0, vec![0, 1])
+    }
+
+    fn build_predicate(
+        schema: &SchemaRef,
+        arrays: Vec<ArrayRef>,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> LiquidPredicate {
+        let tmp_meta = tempfile::NamedTempFile::new().unwrap();
+        let mut writer =
+            ArrowWriter::try_new(tmp_meta.reopen().unwrap(), Arc::clone(schema), None).unwrap();
+        writer
+            .write(&RecordBatch::try_new(Arc::clone(schema), arrays).unwrap())
+            .unwrap();
+        writer.close().unwrap();
+        let reader = std::fs::File::open(tmp_meta.path()).unwrap();
+        let metadata = ArrowReaderMetadata::load(&reader, ArrowReaderOptions::new()).unwrap();
+        let candidate = FilterCandidateBuilder::new(expr, Arc::clone(schema))
+            .build(metadata.metadata())
+            .unwrap()
+            .unwrap();
+        let projection = candidate.projection(metadata.metadata());
+        LiquidPredicate::try_new(candidate, projection).unwrap()
+    }
+
+    fn equals(name: &str, index: usize, value: ScalarValue) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            Arc::new(Column::new(name, index)),
+            Operator::Eq,
+            Arc::new(Literal::new(value)),
+        ))
+    }
+
+    fn dummy(len: usize) -> ArrayRef {
+        Arc::new(Int32Array::from(vec![0; len]))
+    }
+
+    async fn insert_liquid_columns(
+        row_group: &CachedRowGroupRef,
+        batch_id: BatchID,
+        arrays: [ArrayRef; 3],
+    ) {
+        for (column_id, array) in arrays.into_iter().enumerate() {
+            row_group
+                .get_column(column_id as u64)
+                .unwrap()
+                .insert(batch_id, array)
+                .await
+                .unwrap();
+        }
+        assert_eq!(row_group.cache_store.stats().memory_liquid_entries, 2);
+    }
+
+    #[tokio::test]
+    async fn or_fast_path_evaluates_on_liquid() {
+        let batch_size = 1024;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("dummy", DataType::Int32, false),
+        ]));
+        let a: ArrayRef = Arc::new(Int32Array::from_iter_values(
+            (0..batch_size).map(|i| (i % 4) as i32 + 1),
+        ));
+        let b: ArrayRef = Arc::new(Int32Array::from_iter_values(
+            (0..batch_size).map(|i| (i % 5) as i32 * 10),
+        ));
+        let budget = a.get_array_memory_size() + b.get_array_memory_size();
+        let row_group = setup_liquid_cache(batch_size, schema.clone(), budget).await;
+        let batch_id = BatchID::from_row_id(0, batch_size);
+        insert_liquid_columns(&row_group, batch_id, [a.clone(), b.clone(), dummy(1)]).await;
+        let expr = Arc::new(BinaryExpr::new(
+            equals("a", 0, ScalarValue::Int32(Some(3))),
+            Operator::Or,
+            equals("b", 1, ScalarValue::Int32(Some(20))),
+        ));
+        let mut predicate = build_predicate(&schema, vec![a, b, dummy(batch_size)], expr);
+        row_group.cache_store.stats();
+        let selection = BooleanBuffer::new_set(batch_size);
+        let result = row_group
+            .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected = BooleanBuffer::collect_bool(batch_size, |i| i % 4 == 2 || i % 5 == 2);
+        assert_eq!(result, BooleanArray::new(expected, None));
+        assert!(row_group.cache_store.stats().runtime.try_read_liquid_calls >= 2);
+    }
+
+    #[tokio::test]
+    async fn or_fast_path_on_strings() {
+        let batch_size = 128;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("city", DataType::Utf8View, false),
+            Field::new("name", DataType::Utf8View, false),
+            Field::new("dummy", DataType::Int32, false),
+        ]));
+        let city: ArrayRef = Arc::new(StringViewArray::from_iter_values(
+            (0..batch_size).map(|i| if i % 5 == 2 { "Tokyo" } else { "Paris" }),
+        ));
+        let name: ArrayRef = Arc::new(StringViewArray::from_iter_values(
+            (0..batch_size).map(|i| if i % 4 == 1 { "Bob" } else { "Alice" }),
+        ));
+        let budget = city.get_array_memory_size() + name.get_array_memory_size();
+        let row_group = setup_liquid_cache(batch_size, schema.clone(), budget).await;
+        let batch_id = BatchID::from_row_id(0, batch_size);
+        insert_liquid_columns(&row_group, batch_id, [city.clone(), name.clone(), dummy(1)]).await;
+        let expr = Arc::new(BinaryExpr::new(
+            equals("name", 1, ScalarValue::Utf8View(Some("Bob".into()))),
+            Operator::Or,
+            equals("city", 0, ScalarValue::Utf8View(Some("Tokyo".into()))),
+        ));
+        let mut predicate = build_predicate(&schema, vec![city, name, dummy(batch_size)], expr);
+        row_group.cache_store.stats();
+        let selection = BooleanBuffer::new_set(batch_size);
+        let result = row_group
+            .evaluate_selection_with_predicate(batch_id, &selection, &mut predicate)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected = BooleanBuffer::collect_bool(batch_size, |i| i % 4 == 1 || i % 5 == 2);
+        assert_eq!(result, BooleanArray::new(expected, None));
+        assert!(row_group.cache_store.stats().runtime.try_read_liquid_calls >= 2);
     }
 
     #[tokio::test]

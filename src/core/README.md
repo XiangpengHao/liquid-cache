@@ -27,7 +27,7 @@ let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
 // Insert once; replacement/placement is handled by the cache policy
 storage.insert(entry_id, arrow_array.clone()).await;
 
-assert!(storage.is_cached(&entry_id));
+assert!(storage.contains(&entry_id));
 });
 ```
 

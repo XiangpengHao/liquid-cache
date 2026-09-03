@@ -5,12 +5,14 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_schema::{ArrowError, Field, Schema};
-use liquid_cache::cache::{CacheExpression, CacheFull, LiquidCache, LiquidExpr};
+use liquid_cache::cache::{
+    CacheEntry, CacheExpression, CacheFull, LiquidCache, LiquidExpr, PrefetchResult,
+};
 use parquet::arrow::arrow_reader::ArrowPredicate;
 
 use crate::{
     LiquidPredicate,
-    cache::{BatchID, ColumnAccessPath, ParquetArrayID},
+    cache::{BatchID, ColumnAccessPath, ParquetArrayID, RowGroupSnapshots},
 };
 use std::sync::Arc;
 
@@ -21,6 +23,7 @@ pub struct CachedColumn {
     field: Arc<Field>,
     column_path: ColumnAccessPath,
     expression: Option<Arc<CacheExpression>>,
+    snapshots: Arc<RowGroupSnapshots>,
 }
 
 /// A reference to a cached column.
@@ -33,6 +36,13 @@ pub enum InsertArrowArrayError {
     AlreadyCached,
     /// The cache does not have enough disk budget to accept the array.
     CacheFull,
+}
+
+pub(crate) enum PrefetchOutcome {
+    Snapshotted,
+    AlreadySnapshotted,
+    Squeezed,
+    Missing,
 }
 
 impl From<CacheFull> for InsertArrowArrayError {
@@ -48,6 +58,7 @@ impl CachedColumn {
         column_access_path: ColumnAccessPath,
         expression: Option<Arc<CacheExpression>>,
         is_predicate_column: bool,
+        snapshots: Arc<RowGroupSnapshots>,
     ) -> Self {
         // Register the column's squeeze hint. Squeeze hints are column-scoped;
         // `ParquetCacheMetadata` keys them by column (the batch id is masked
@@ -70,6 +81,7 @@ impl CachedColumn {
             cache_store,
             column_path: column_access_path,
             expression,
+            snapshots,
         }
     }
 
@@ -78,8 +90,12 @@ impl CachedColumn {
         self.column_path.entry_id(batch_id)
     }
 
-    pub(crate) fn is_cached(&self, batch_id: BatchID) -> bool {
-        self.cache_store.is_cached(&self.entry_id(batch_id).into())
+    pub(crate) fn contains(&self, batch_id: BatchID) -> bool {
+        self.cache_store.contains(&self.entry_id(batch_id).into())
+    }
+
+    pub(crate) fn snapshot_entry(&self, batch_id: BatchID) -> Option<Arc<CacheEntry>> {
+        self.snapshots.get(&self.entry_id(batch_id).into())
     }
 
     /// Returns the Arrow field metadata for this cached column.
@@ -112,11 +128,24 @@ impl CachedColumn {
         );
 
         if let Some(liquid_expr) = liquid_expr
-            && let Some(boolean_array) = self
-                .cache_store
-                .eval_predicate(&entry_id, &liquid_expr)
-                .with_selection(filter)
-                .await
+            && let Some(boolean_array) = match self.snapshots.get(&entry_id) {
+                Some(entry) => {
+                    self.cache_store
+                        .eval_predicate_on_entry(
+                            &entry_id,
+                            entry.as_ref(),
+                            Some(filter),
+                            &liquid_expr,
+                        )
+                        .await
+                }
+                None => {
+                    self.cache_store
+                        .eval_predicate(&entry_id, &liquid_expr)
+                        .with_selection(filter)
+                        .await
+                }
+            }
         {
             let predicate_filter = match boolean_array.null_count() {
                 0 => boolean_array,
@@ -159,6 +188,17 @@ impl CachedColumn {
         filter: &BooleanBuffer,
     ) -> Option<ArrayRef> {
         let entry_id = self.entry_id(batch_id).into();
+        if let Some(entry) = self.snapshots.get(&entry_id) {
+            return self
+                .cache_store
+                .read_entry(
+                    &entry_id,
+                    entry.as_ref(),
+                    Some(filter),
+                    self.expression.as_deref(),
+                )
+                .await;
+        }
         self.cache_store
             .get(&entry_id)
             .with_selection(filter)
@@ -179,7 +219,7 @@ impl CachedColumn {
         batch_id: BatchID,
         array: ArrayRef,
     ) -> Result<(), InsertArrowArrayError> {
-        if self.is_cached(batch_id) {
+        if self.contains(batch_id) {
             return Err(InsertArrowArrayError::AlreadyCached);
         }
 
@@ -187,5 +227,27 @@ impl CachedColumn {
             .insert(self.entry_id(batch_id).into(), array)
             .await?;
         Ok(())
+    }
+
+    pub(crate) fn insert_snapshot(&self, batch_id: BatchID, array: ArrayRef) {
+        self.snapshots.insert(
+            self.entry_id(batch_id).into(),
+            Arc::new(CacheEntry::memory_arrow(array)),
+        );
+    }
+
+    pub(crate) async fn prefetch_snapshot(&self, batch_id: BatchID) -> PrefetchOutcome {
+        let entry_id = self.entry_id(batch_id).into();
+        if self.snapshots.get(&entry_id).is_some() {
+            return PrefetchOutcome::AlreadySnapshotted;
+        }
+        match self.cache_store.prefetch(&entry_id).await {
+            PrefetchResult::Snapshot(entry) => {
+                self.snapshots.insert(entry_id, entry);
+                PrefetchOutcome::Snapshotted
+            }
+            PrefetchResult::Squeezed => PrefetchOutcome::Squeezed,
+            PrefetchResult::Absent => PrefetchOutcome::Missing,
+        }
     }
 }

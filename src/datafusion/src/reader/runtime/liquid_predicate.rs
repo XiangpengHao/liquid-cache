@@ -46,19 +46,23 @@ fn extract_column_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<(&str, Arc<dyn
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>()
         && binary.right().is::<Literal>()
     {
-        return extract_column_literal(binary.left());
+        return column_name(binary.left()).map(|name| (name, Arc::clone(expr)));
     } else if let Some(like_expr) = expr.downcast_ref::<LikeExpr>()
         && like_expr.pattern().is::<Literal>()
     {
-        return extract_column_literal(like_expr.expr());
-    } else if let Some(cast_expr) = expr.downcast_ref::<CastExpr>() {
-        return extract_column_literal(cast_expr.expr());
-    } else if let Some(try_cast_expr) = expr.downcast_ref::<TryCastExpr>() {
-        return extract_column_literal(try_cast_expr.expr());
-    } else if let Some(column) = expr.downcast_ref::<Column>() {
-        return Some((column.name(), Arc::clone(expr)));
+        return column_name(like_expr.expr()).map(|name| (name, Arc::clone(expr)));
     }
     None
+}
+
+fn column_name(expr: &Arc<dyn PhysicalExpr>) -> Option<&str> {
+    if let Some(cast_expr) = expr.downcast_ref::<CastExpr>() {
+        column_name(cast_expr.expr())
+    } else if let Some(try_cast_expr) = expr.downcast_ref::<TryCastExpr>() {
+        column_name(try_cast_expr.expr())
+    } else {
+        expr.downcast_ref::<Column>().map(Column::name)
+    }
 }
 
 #[cfg(test)]

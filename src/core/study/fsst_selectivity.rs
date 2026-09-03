@@ -99,7 +99,7 @@ async fn main() {
                 continue;
             }
 
-            // Warm up once to reduce cold-start noise.
+            // Run once to reduce cold-start noise.
             std::hint::black_box(fsst.to_uncompressed_selected(&selection.indices));
 
             let mut total = 0.0;

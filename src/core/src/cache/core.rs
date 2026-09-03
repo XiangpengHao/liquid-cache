@@ -62,11 +62,21 @@ pub struct LiquidCache {
     squeeze_victims_concurrently: bool,
 }
 
+/// Outcome of [`LiquidCache::prefetch`].
+pub enum PrefetchResult {
+    /// A memory-form snapshot of the entry (Arrow or Liquid), ready to hand to a reader.
+    Snapshot(Arc<CacheEntry>),
+    /// The entry is squeezed; prefetch leaves it alone.
+    Squeezed,
+    /// The entry is not in the index, or its disk blob is gone.
+    Absent,
+}
+
 /// Builder returned by [`LiquidCache::insert`] for configuring cache writes.
 impl LiquidCache {
     /// Return current cache statistics: counts and resource usage.
     pub fn stats(&self) -> CacheStats {
-        // Count entries by residency/format
+        // Count entries by storage tier and format
         let total_entries = self.index.entry_count();
 
         let mut memory_arrow_entries = 0usize;
@@ -141,6 +151,35 @@ impl LiquidCache {
         EvaluatePredicate::new(self, entry_id, predicate)
     }
 
+    /// Prefetch an entry into a memory-form snapshot without recording an access.
+    pub async fn prefetch(&self, entry_id: &EntryID) -> PrefetchResult {
+        let Some(entry) = self.index.get(entry_id) else {
+            return PrefetchResult::Absent;
+        };
+        match entry.as_ref() {
+            CacheEntry::MemoryArrow(_) | CacheEntry::MemoryLiquid(_) => {
+                PrefetchResult::Snapshot(entry)
+            }
+            disk @ CacheEntry::DiskArrow { .. } => {
+                let Some(array) = self.read_disk_arrow_array(entry_id).await else {
+                    return PrefetchResult::Absent;
+                };
+                self.maybe_hydrate(entry_id, disk, MaterializedEntry::Arrow(&array), None)
+                    .await;
+                PrefetchResult::Snapshot(Arc::new(CacheEntry::memory_arrow(array)))
+            }
+            disk @ CacheEntry::DiskLiquid { .. } => {
+                let Some(array) = self.read_disk_liquid_array(entry_id).await else {
+                    return PrefetchResult::Absent;
+                };
+                self.maybe_hydrate(entry_id, disk, MaterializedEntry::Liquid(&array), None)
+                    .await;
+                PrefetchResult::Snapshot(Arc::new(CacheEntry::memory_liquid(array)))
+            }
+            CacheEntry::MemorySqueezedLiquid(_) => PrefetchResult::Squeezed,
+        }
+    }
+
     /// Try to read a liquid array from the cache.
     /// Returns None if the cached data is not in liquid format.
     pub async fn try_read_liquid(
@@ -156,14 +195,14 @@ impl LiquidCache {
         match batch.as_ref() {
             CacheEntry::MemoryLiquid(array) => Some(array.clone()),
             entry @ CacheEntry::DiskLiquid { .. } => {
-                let liquid = self.read_disk_liquid_array(entry_id).await;
+                let liquid = self.read_disk_liquid_array(entry_id).await?;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
                     .await;
                 Some(liquid)
             }
             CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
                 SqueezedBacking::Liquid(_) => {
-                    let liquid = self.read_disk_liquid_array(entry_id).await;
+                    let liquid = self.read_disk_liquid_array(entry_id).await?;
                     Some(liquid)
                 }
                 SqueezedBacking::Arrow(_) => None,
@@ -185,9 +224,9 @@ impl LiquidCache {
         self.budget.reset_usage();
     }
 
-    /// Check if a batch is cached.
-    pub fn is_cached(&self, entry_id: &EntryID) -> bool {
-        self.index.is_cached(entry_id)
+    /// Check whether the cache contains a batch.
+    pub fn contains(&self, entry_id: &EntryID) -> bool {
+        self.index.contains(entry_id)
     }
 
     /// Get the config of the cache.
@@ -598,19 +637,44 @@ impl LiquidCache {
         selection: Option<&BooleanBuffer>,
         expression: Option<&CacheExpression>,
     ) -> Option<ArrayRef> {
-        use arrow::array::BooleanArray;
-
+        self.observer.on_get(selection.is_some());
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(batch.as_ref()));
+        self.read_entry_inner(entry_id, batch.as_ref(), selection, expression)
+            .await
+    }
+
+    /// Read an already-looked-up cache entry.
+    pub async fn read_entry(
+        &self,
+        entry_id: &EntryID,
+        entry: &CacheEntry,
+        selection: Option<&BooleanBuffer>,
+        expression: Option<&CacheExpression>,
+    ) -> Option<ArrayRef> {
+        self.observer.on_get(selection.is_some());
+        self.read_entry_inner(entry_id, entry, selection, expression)
+            .await
+    }
+
+    async fn read_entry_inner(
+        &self,
+        entry_id: &EntryID,
+        entry: &CacheEntry,
+        selection: Option<&BooleanBuffer>,
+        expression: Option<&CacheExpression>,
+    ) -> Option<ArrayRef> {
+        use arrow::array::BooleanArray;
+
         self.trace(InternalEvent::Read {
             entry: *entry_id,
             selection: selection.is_some(),
             expr: expression.cloned(),
-            cached: CachedBatchType::from(batch.as_ref()),
+            cached: CachedBatchType::from(entry),
         });
 
-        match batch.as_ref() {
+        match entry {
             CacheEntry::MemoryArrow(array) => match selection {
                 Some(selection) => {
                     let selection_array = BooleanArray::new(selection.clone(), None);
@@ -623,7 +687,7 @@ impl LiquidCache {
                 None => Some(array.to_arrow_array()),
             },
             CacheEntry::DiskArrow { .. } | CacheEntry::DiskLiquid { .. } => {
-                self.read_disk_array(batch.as_ref(), entry_id, expression, selection)
+                self.read_disk_array(entry, entry_id, expression, selection)
                     .await
             }
             CacheEntry::MemorySqueezedLiquid(array) => {
@@ -647,7 +711,7 @@ impl LiquidCache {
                 {
                     return Some(arrow::array::new_empty_array(data_type));
                 }
-                let full_array = self.read_disk_arrow_array(entry_id).await;
+                let full_array = self.read_disk_arrow_array(entry_id).await?;
                 self.maybe_hydrate(
                     entry_id,
                     entry,
@@ -669,7 +733,7 @@ impl LiquidCache {
                 {
                     return Some(arrow::array::new_empty_array(data_type));
                 }
-                let liquid = self.read_disk_liquid_array(entry_id).await;
+                let liquid = self.read_disk_liquid_array(entry_id).await?;
                 self.maybe_hydrate(
                     entry_id,
                     entry,
@@ -762,7 +826,7 @@ impl LiquidCache {
         let full_array = if !all_paths_present {
             let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
             self.observer.on_get_squeezed_needs_io();
-            let full_array = self.read_disk_arrow_array(entry_id).await;
+            let full_array = self.read_disk_arrow_array(entry_id).await?;
             self.maybe_hydrate(
                 entry_id,
                 &batch,
@@ -818,12 +882,12 @@ impl LiquidCache {
         Ok(())
     }
 
-    async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> ArrayRef {
-        let bytes = self
-            .store
-            .get(&entry_id_to_key(entry_id))
-            .await
-            .expect("read failed");
+    async fn read_disk_arrow_array(&self, entry_id: &EntryID) -> Option<ArrayRef> {
+        let bytes = match self.store.get(&entry_id_to_key(entry_id)).await {
+            Ok(bytes) => bytes,
+            Err(t4::Error::NotFound) => return None,
+            Err(error) => panic!("read failed: {error}"),
+        };
         let bytes_len = bytes.len();
         let cursor = std::io::Cursor::new(bytes);
         let mut reader =
@@ -834,18 +898,18 @@ impl LiquidCache {
             entry: *entry_id,
             bytes: bytes_len,
         });
-        array
+        Some(array)
     }
 
     async fn read_disk_liquid_array(
         &self,
         entry_id: &EntryID,
-    ) -> crate::liquid_array::LiquidArrayRef {
-        let bytes = self
-            .store
-            .get(&entry_id_to_key(entry_id))
-            .await
-            .expect("read failed");
+    ) -> Option<crate::liquid_array::LiquidArrayRef> {
+        let bytes = match self.store.get(&entry_id_to_key(entry_id)).await {
+            Ok(bytes) => bytes,
+            Err(t4::Error::NotFound) => return None,
+            Err(error) => panic!("read failed: {error}"),
+        };
         self.trace(InternalEvent::IoReadLiquid {
             entry: *entry_id,
             bytes: bytes.len(),
@@ -853,10 +917,12 @@ impl LiquidCache {
         let compressor_states = self.metadata.get_compressor(entry_id);
         let compressor = compressor_states.fsst_compressor();
 
-        (crate::liquid_array::ipc::read_from_bytes(
-            Bytes::from(bytes),
-            &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-        )) as _
+        Some(
+            (crate::liquid_array::ipc::read_from_bytes(
+                Bytes::from(bytes),
+                &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
+            )) as _,
+        )
     }
 
     pub(crate) async fn eval_predicate_internal(
@@ -865,19 +931,41 @@ impl LiquidCache {
         selection_opt: Option<&BooleanBuffer>,
         predicate: &LiquidExpr,
     ) -> Option<BooleanArray> {
-        use arrow::array::BooleanArray;
-
         self.observer.on_eval_predicate();
         let batch = self.index.get(entry_id)?;
         self.cache_policy
             .notify_access(entry_id, CachedBatchType::from(batch.as_ref()));
+        self.eval_predicate_on_entry_inner(entry_id, batch.as_ref(), selection_opt, predicate)
+            .await
+    }
+
+    /// Evaluate a predicate on an already-looked-up cache entry.
+    pub async fn eval_predicate_on_entry(
+        &self,
+        entry_id: &EntryID,
+        entry: &CacheEntry,
+        selection_opt: Option<&BooleanBuffer>,
+        predicate: &LiquidExpr,
+    ) -> Option<BooleanArray> {
+        self.observer.on_eval_predicate();
+        self.eval_predicate_on_entry_inner(entry_id, entry, selection_opt, predicate)
+            .await
+    }
+
+    async fn eval_predicate_on_entry_inner(
+        &self,
+        entry_id: &EntryID,
+        entry: &CacheEntry,
+        selection_opt: Option<&BooleanBuffer>,
+        predicate: &LiquidExpr,
+    ) -> Option<BooleanArray> {
         self.trace(InternalEvent::EvalPredicate {
             entry: *entry_id,
             selection: selection_opt.is_some(),
-            cached: CachedBatchType::from(batch.as_ref()),
+            cached: CachedBatchType::from(entry),
         });
 
-        match batch.as_ref() {
+        match entry {
             CacheEntry::MemoryArrow(array) => {
                 let mut owned = None;
                 let selection = selection_opt.unwrap_or_else(|| {
@@ -890,7 +978,7 @@ impl LiquidCache {
                 Some(self.eval_predicate_on_array(filtered, predicate))
             }
             entry @ CacheEntry::DiskArrow { .. } => {
-                let array = self.read_disk_arrow_array(entry_id).await;
+                let array = self.read_disk_arrow_array(entry_id).await?;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Arrow(&array), None)
                     .await;
                 let mut owned = None;
@@ -912,7 +1000,7 @@ impl LiquidCache {
                 Some(array.try_eval_predicate(predicate, selection))
             }
             entry @ CacheEntry::DiskLiquid { .. } => {
-                let liquid = self.read_disk_liquid_array(entry_id).await;
+                let liquid = self.read_disk_liquid_array(entry_id).await?;
                 self.maybe_hydrate(entry_id, entry, MaterializedEntry::Liquid(&liquid), None)
                     .await;
                 let mut owned = None;
@@ -1230,6 +1318,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_disk_blob_is_a_cache_miss() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = t4::mount(directory.path().join("cache.t4")).await.unwrap();
+        let cache = LiquidCacheBuilder::new()
+            .with_store(store.clone())
+            .build()
+            .await;
+        let id = EntryID::from(320usize);
+
+        cache.insert(id, create_test_arrow_array(8)).await.unwrap();
+        cache.flush_all_to_disk().await.unwrap();
+        store.remove(&entry_id_to_key(&id)).await.unwrap();
+
+        assert!(cache.get(&id).await.is_none());
+    }
+
+    #[tokio::test]
     async fn hydrate_disk_liquid_on_get_promotes_to_memory_liquid() {
         let store = create_cache_store(1 << 20, Box::new(LiquidPolicy::new())).await;
         let entry_id = EntryID::from(322usize);
@@ -1268,7 +1373,7 @@ mod tests {
         let err = cache.insert(EntryID::from(900usize), array).await;
 
         assert_eq!(err, Err(CacheFull));
-        assert!(!cache.is_cached(&EntryID::from(900usize)));
+        assert!(!cache.contains(&EntryID::from(900usize)));
     }
 
     #[tokio::test]
@@ -1289,12 +1394,12 @@ mod tests {
         let second = EntryID::from(911usize);
         cache.insert(first, first_array).await.unwrap();
         cache.flush_all_to_disk().await.unwrap();
-        assert!(cache.is_cached(&first));
+        assert!(cache.contains(&first));
 
         cache.insert(second, second_array).await.unwrap();
         cache.flush_all_to_disk().await.unwrap();
 
-        assert!(!cache.is_cached(&first));
+        assert!(!cache.contains(&first));
         assert!(matches!(
             cache.index().get(&second).unwrap().as_ref(),
             CacheEntry::DiskArrow { .. }
@@ -1321,7 +1426,7 @@ mod tests {
 
         cache.flush_all_to_disk().await.unwrap();
 
-        assert!(!cache.is_cached(&first) || !cache.is_cached(&second));
+        assert!(!cache.contains(&first) || !cache.contains(&second));
     }
 
     #[tokio::test]
@@ -1343,7 +1448,7 @@ mod tests {
         cache.remove_disk_entry(entry).await;
 
         assert_eq!(cache.stats().disk_usage_bytes, before - disk_bytes);
-        assert!(!cache.is_cached(&entry));
+        assert!(!cache.contains(&entry));
     }
 
     #[tokio::test]
@@ -1361,6 +1466,6 @@ mod tests {
         let result = cache.flush_all_to_disk().await;
 
         assert_eq!(result, Ok(()));
-        assert!(!cache.is_cached(&entry_id));
+        assert!(!cache.contains(&entry_id));
     }
 }

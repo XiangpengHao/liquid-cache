@@ -108,6 +108,7 @@ async fn create_session_context_with_liquid_cache(
     let mut config = SessionConfig::new().with_repartition_file_scans(false);
     config.options_mut().execution.target_partitions = 4;
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
+        .with_prefetch(false)
         .with_max_memory_bytes(cache_size_bytes)
         .with_cache_dir(cache_dir.to_path_buf())
         .with_squeeze_policy(squeeze_policy)
@@ -135,6 +136,48 @@ async fn get_result(ctx: &SessionContext, sql: &str) -> String {
     pretty_format_batches(&batches).unwrap().to_string()
 }
 
+async fn run_io_profile(prefetch: bool, cache_dir: &Path) -> (String, u64, u64, u64) {
+    let config = SessionConfig::new().with_repartition_file_scans(false);
+    let builder = LiquidCacheLocalBuilder::new()
+        .with_max_memory_bytes(64 * 1024 * 1024)
+        .with_cache_dir(cache_dir.to_path_buf());
+    let builder = if prefetch {
+        builder
+    } else {
+        builder.with_prefetch(false)
+    };
+    let (ctx, cache) = builder.build(config).await.unwrap();
+    ctx.register_parquet("hits", TEST_FILE, ParquetReadOptions::default())
+        .await
+        .unwrap();
+    let sql = r#"SELECT "WatchID" FROM hits WHERE "SearchPhrase" LIKE '%abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789%'"#;
+
+    let first = get_result(&ctx, sql).await;
+    cache.flush_data().await.unwrap();
+    cache.storage().stats();
+    let second = get_result(&ctx, sql).await;
+    let runtime = cache.storage().stats().runtime;
+    assert_eq!(first, second);
+
+    (
+        second,
+        runtime.read_io_count,
+        runtime.get,
+        runtime.eval_predicate,
+    )
+}
+
+#[tokio::test]
+async fn prefetch_matches_lazy_io() {
+    let lazy_dir = TempDir::new().unwrap();
+    let prefetch_dir = TempDir::new().unwrap();
+
+    let lazy = run_io_profile(false, lazy_dir.path()).await;
+    let prefetch = run_io_profile(true, prefetch_dir.path()).await;
+
+    assert_eq!(lazy, prefetch);
+}
+
 async fn run_sql_with_cache(
     sql: &str,
     squeeze_policy: Box<dyn SqueezePolicy>,
@@ -150,7 +193,7 @@ async fn run_sql_with_cache(
     let displayable = DisplayableExecutionPlan::new(plan.as_ref());
     let plan_string = format!("{}", displayable.tree_render());
 
-    // Clear any historical runtime counters before warming the cache.
+    // Clear any historical runtime counters before prefetching the cache.
     cache.storage().stats();
 
     let first_run = get_result(&ctx, sql).await;
@@ -346,6 +389,7 @@ async fn test_provide_schema2() {
     let mut config = SessionConfig::new();
     config.options_mut().execution.target_partitions = 4;
     let (liquid_ctx, cache) = LiquidCacheLocalBuilder::new()
+        .with_prefetch(false)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_max_memory_bytes(1024 * 1024)
         .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
@@ -394,7 +438,7 @@ async fn test_provide_schema2() {
         let displayable = DisplayableExecutionPlan::new(plan.as_ref());
         let plan_string = format!("{}", displayable.tree_render());
 
-        // Reset runtime counters so we measure hits from the warm run onwards.
+        // Reset runtime counters so we measure hits from the prefetch run onwards.
         cache.storage().stats();
 
         let first_liquid_run = liquid_ctx.sql(sql).await.unwrap().collect().await.unwrap();
