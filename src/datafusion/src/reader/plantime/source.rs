@@ -52,6 +52,10 @@ impl CachedMetaReaderFactory {
         Self { store, store_url }
     }
 
+    pub(crate) fn object_store_url(&self) -> &ObjectStoreUrl {
+        &self.store_url
+    }
+
     pub(crate) fn create_liquid_reader(
         &self,
         partition_index: usize,

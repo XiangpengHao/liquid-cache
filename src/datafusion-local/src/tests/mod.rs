@@ -24,6 +24,7 @@ use datafusion::{
 use crate::LiquidCacheLocalBuilder;
 mod date_optimizer;
 mod filter_limit;
+mod nested_filter;
 mod squeeze;
 mod variants;
 

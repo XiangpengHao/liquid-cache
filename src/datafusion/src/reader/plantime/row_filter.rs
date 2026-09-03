@@ -64,7 +64,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow::array::BooleanArray;
-use arrow::datatypes::{DataType, Schema};
+use arrow::datatypes::Schema;
 use arrow::error::{ArrowError, Result as ArrowResult};
 use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
@@ -115,7 +115,7 @@ impl LiquidRowFilter {
 ///
 /// An expression can be evaluated as a `DatafusionArrowPredicate` if it:
 /// * Does not reference any projected columns
-/// * Does not reference columns with non-primitive types (e.g. structs / lists)
+/// * References only columns present in the physical file schema
 #[derive(Debug, Clone)]
 pub struct LiquidPredicate {
     /// the filter expression
@@ -299,11 +299,9 @@ impl FilterCandidateBuilder {
 
 // a struct that implements TreeNodeRewriter to traverse a PhysicalExpr tree structure to determine
 // if any column references in the expression would prevent it from being predicate-pushed-down.
-// if non_primitive_columns || projected_columns, it can't be pushed down.
+// if projected_columns, it can't be pushed down.
 // can't be reused between calls to `rewrite`; each construction must be used only once.
 struct PushdownChecker<'schema> {
-    /// Does the expression require any non-primitive columns (like structs)?
-    non_primitive_columns: bool,
     /// Does the expression reference any columns that are not in the file schema?
     projected_columns: bool,
     // Indices into the file schema of the columns required to evaluate the expression
@@ -314,7 +312,6 @@ struct PushdownChecker<'schema> {
 impl<'schema> PushdownChecker<'schema> {
     fn new(file_schema: &'schema Schema) -> Self {
         Self {
-            non_primitive_columns: false,
             projected_columns: false,
             required_columns: BTreeSet::default(),
             file_schema,
@@ -324,10 +321,6 @@ impl<'schema> PushdownChecker<'schema> {
     fn check_single_column(&mut self, column_name: &str) -> Option<TreeNodeRecursion> {
         if let Ok(idx) = self.file_schema.index_of(column_name) {
             self.required_columns.insert(idx);
-            if DataType::is_nested(self.file_schema.field(idx).data_type()) {
-                self.non_primitive_columns = true;
-                return Some(TreeNodeRecursion::Jump);
-            }
         } else {
             // If the column does not exist in the file schema then it cannot be pushed down.
             self.projected_columns = true;
@@ -339,7 +332,7 @@ impl<'schema> PushdownChecker<'schema> {
 
     #[inline]
     fn prevents_pushdown(&self) -> bool {
-        self.non_primitive_columns || self.projected_columns
+        self.projected_columns
     }
 }
 

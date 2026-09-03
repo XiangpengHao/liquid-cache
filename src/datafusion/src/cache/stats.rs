@@ -164,7 +164,7 @@ impl LiquidCacheParquet {
 mod tests {
     use std::io::Read;
 
-    use crate::cache::id::BatchID;
+    use crate::cache::{ParquetFileIdentity, id::BatchID};
 
     use super::*;
     use arrow::{
@@ -209,7 +209,13 @@ mod tests {
         let mut memory_size_sum = 0;
         for file_no in 0..8 {
             let file_name = format!("test_{file_no}.parquet");
-            let file = cache.register_or_get_file(file_name, schema.clone());
+            let file = cache.register_or_get_file(
+                ParquetFileIdentity::new(
+                    datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
+                    file_name,
+                ),
+                schema.clone(),
+            );
             for rg in 0..8 {
                 let row_group = file.create_row_group(rg, vec![]);
                 for col in 0..8 {

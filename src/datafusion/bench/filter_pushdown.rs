@@ -15,7 +15,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
 use datafusion::physical_plan::expressions::Column;
 use datafusion::physical_plan::metrics;
-use liquid_cache_datafusion::cache::{BatchID, LiquidCacheParquet};
+use liquid_cache_datafusion::cache::{BatchID, LiquidCacheParquet, ParquetFileIdentity};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use rand::RngExt as _;
@@ -52,7 +52,13 @@ fn setup_cache() -> (Arc<CachedColumn>, tempfile::TempDir) {
     ));
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));
     let schema = Arc::new(Schema::new(vec![field.clone()]));
-    let file = cache.register_or_get_file("test_file.parquet".to_string(), schema);
+    let file = cache.register_or_get_file(
+        ParquetFileIdentity::new(
+            datafusion::execution::object_store::ObjectStoreUrl::local_filesystem(),
+            "test_file.parquet".to_string(),
+        ),
+        schema,
+    );
     let row_group = file.create_row_group(0, vec![]);
     (row_group.get_column(0).unwrap(), tmp_dir)
 }
