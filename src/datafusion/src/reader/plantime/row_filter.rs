@@ -84,6 +84,7 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{PhysicalExpr, split_conjunction};
 
 /// A row filter that can be used to filter rows from a parquet file.
+#[derive(Clone)]
 pub struct LiquidRowFilter {
     predicates: Vec<LiquidPredicate>,
 }
@@ -105,24 +106,6 @@ impl LiquidRowFilter {
     }
 }
 
-pub(crate) fn get_predicate_column_id(projection: &parquet::arrow::ProjectionMask) -> Vec<usize> {
-    #[derive(Debug, Clone)]
-    struct ProjectionMaskLiquid {
-        mask: Option<Vec<bool>>,
-    }
-    let project_inner: &ProjectionMaskLiquid = unsafe { std::mem::transmute(projection) };
-    project_inner
-        .mask
-        .as_ref()
-        .map(|m| {
-            m.iter()
-                .enumerate()
-                .filter_map(|(pos, &x)| if x { Some(pos) } else { None })
-                .collect::<Vec<usize>>()
-        })
-        .unwrap_or_default()
-}
-
 /// A "compiled" predicate passed to `ParquetRecordBatchStream` to perform
 /// row-level filtering during parquet decoding.
 ///
@@ -142,6 +125,9 @@ pub struct LiquidPredicate {
     /// Path to the columns in the parquet schema required to evaluate the
     /// expression
     projection_mask: ProjectionMask,
+    /// Indices into the file schema of the columns required to evaluate the
+    /// expression, in `filter_schema` order
+    column_ids: Vec<usize>,
     /// how many rows were filtered out by this predicate
     rows_pruned: metrics::Count,
     /// how many rows passed this predicate
@@ -172,6 +158,7 @@ impl LiquidPredicate {
             physical_expr,
             physical_expr_physical_column_index: candidate.expr,
             projection_mask: projection,
+            column_ids: candidate.projection,
             rows_pruned,
             rows_matched,
             time,
@@ -201,8 +188,7 @@ impl LiquidPredicate {
 
     /// Get the column ids of the predicate.
     pub fn predicate_column_ids(&self) -> Vec<usize> {
-        let projection = self.projection();
-        get_predicate_column_id(projection)
+        self.column_ids.clone()
     }
 }
 

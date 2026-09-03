@@ -1,28 +1,30 @@
-use super::opener::LiquidParquetOpener;
+use super::LiquidMorselizer;
 use crate::cache::{ColumnSqueezeHints, LiquidCacheParquetRef};
 use ahash::{HashMap, HashMapExt};
-use arrow_schema::Schema;
 use bytes::Bytes;
 use datafusion::{
-    common::tree_node::TreeNodeRecursion,
-    config::TableParquetOptions,
+    common::{internal_err, tree_node::TreeNodeRecursion},
+    config::{ConfigOptions, TableParquetOptions},
     datasource::{
         listing::PartitionedFile,
         physical_plan::{
             FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory,
-            ParquetSource, parquet::PagePruningAccessPlanFilter,
+            ParquetSource, parquet::can_expr_be_pushed_down_with_schemas,
         },
         table_schema::TableSchema,
     },
     error::Result,
+    execution::object_store::ObjectStoreUrl,
     physical_expr::projection::ProjectionExprs,
+    physical_expr::utils::conjunction,
     physical_expr_adapter::DefaultPhysicalExprAdapterFactory,
-    physical_optimizer::pruning::{PruningPredicate, PruningPredicateBuilder},
     physical_plan::{
-        PhysicalExpr, apply_expression_roots,
-        metrics::{ExecutionPlanMetricsSet, MetricBuilder},
+        DisplayFormatType, PhysicalExpr, apply_expression_roots,
+        filter_pushdown::{FilterPushdownPropagation, PushedDown, PushedDownPredicate},
+        metrics::ExecutionPlanMetricsSet,
     },
 };
+use datafusion_datasource::morsel::Morselizer;
 use futures::{FutureExt, future::BoxFuture};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use parquet::{
@@ -31,6 +33,7 @@ use parquet::{
     file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
 };
 use std::{
+    fmt::{self, Formatter},
     ops::Range,
     sync::{Arc, LazyLock},
 };
@@ -41,11 +44,12 @@ static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
 #[derive(Debug)]
 pub(crate) struct CachedMetaReaderFactory {
     store: Arc<dyn ObjectStore>,
+    store_url: ObjectStoreUrl,
 }
 
 impl CachedMetaReaderFactory {
-    pub(crate) fn new(store: Arc<dyn ObjectStore>) -> Self {
-        Self { store }
+    pub(crate) fn new(store: Arc<dyn ObjectStore>, store_url: ObjectStoreUrl) -> Self {
+        Self { store, store_url }
     }
 
     pub(crate) fn create_liquid_reader(
@@ -60,6 +64,7 @@ impl CachedMetaReaderFactory {
         ParquetMetadataCacheReader {
             file_metrics: ParquetFileMetrics::new(partition_index, path.as_ref(), metrics),
             store: Arc::clone(&self.store),
+            store_url: self.store_url.clone(),
             file_size: partitioned_file.object_meta.size,
             metadata_size_hint,
             path,
@@ -86,7 +91,7 @@ impl ParquetFileReaderFactory for CachedMetaReaderFactory {
 }
 
 struct MetadataCache {
-    val: RwLock<HashMap<Path, Arc<ParquetMetaData>>>,
+    val: RwLock<HashMap<(ObjectStoreUrl, Path), Arc<ParquetMetaData>>>,
 }
 
 impl MetadataCache {
@@ -101,6 +106,7 @@ impl MetadataCache {
 pub struct ParquetMetadataCacheReader {
     file_metrics: ParquetFileMetrics,
     store: Arc<dyn ObjectStore>,
+    store_url: ObjectStoreUrl,
     file_size: u64,
     metadata_size_hint: Option<usize>,
     path: Path,
@@ -143,20 +149,20 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
         &mut self,
         options: Option<&ArrowReaderOptions>,
     ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        let path = self.path.clone();
+        let cache_key = (self.store_url.clone(), self.path.clone());
         let options = options.cloned();
         async move {
             // First check with read lock
             {
                 let cache = META_CACHE.val.read().await;
-                if let Some(meta) = cache.get(&path) {
+                if let Some(meta) = cache.get(&cache_key) {
                     return Ok(meta.clone());
                 }
             }
 
             // Upgrade to write lock and double-check
             let mut cache = META_CACHE.val.write().await;
-            match cache.entry(path.clone()) {
+            match cache.entry(cache_key) {
                 std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     let file_size = self.file_size;
@@ -183,8 +189,6 @@ impl AsyncFileReader for ParquetMetadataCacheReader {
 pub struct LiquidParquetSource {
     metrics: ExecutionPlanMetricsSet,
     predicate: Option<Arc<dyn PhysicalExpr>>,
-    pruning_predicate: Option<Arc<PruningPredicate>>,
-    page_pruning_predicate: Option<Arc<PagePruningAccessPlanFilter>>,
     table_parquet_options: TableParquetOptions,
     liquid_cache: LiquidCacheParquetRef,
     batch_size: Option<usize>,
@@ -229,40 +233,9 @@ impl LiquidParquetSource {
         &self.squeeze_hints
     }
 
-    /// Set predicate information, also sets pruning_predicate and page_pruning_predicate attributes
-    pub fn with_predicate(
-        mut self,
-        file_schema: Arc<Schema>,
-        predicate: Arc<dyn PhysicalExpr>,
-    ) -> Self {
-        let metrics = ExecutionPlanMetricsSet::new();
-        let predicate_creation_errors =
-            MetricBuilder::new(&metrics).global_counter("num_predicate_creation_errors");
-
-        self.metrics = metrics;
-        self.predicate = Some(Arc::clone(&predicate));
-
-        match PruningPredicateBuilder::new()
-            .with_file_schema(Arc::clone(&file_schema))
-            .try_build(Arc::clone(&predicate))
-        {
-            Ok(pruning_predicate) => {
-                if !pruning_predicate.always_true() {
-                    self.pruning_predicate = Some(Arc::new(pruning_predicate));
-                }
-            }
-            Err(e) => {
-                log::debug!("Could not create pruning predicate for: {e}");
-                predicate_creation_errors.add(1);
-            }
-        };
-
-        let page_pruning_predicate = Arc::new(PagePruningAccessPlanFilter::new(
-            &predicate,
-            Arc::clone(&file_schema),
-        ));
-        self.page_pruning_predicate = Some(page_pruning_predicate);
-
+    /// Set predicate information.
+    pub fn with_predicate(mut self, predicate: Arc<dyn PhysicalExpr>) -> Self {
+        self.predicate = Some(predicate);
         self
     }
 
@@ -271,7 +244,6 @@ impl LiquidParquetSource {
         let predicate = source.filter();
 
         let table_schema = source.table_schema().clone();
-        let file_schema = table_schema.file_schema().clone();
         let projection = source.projection().cloned().unwrap_or_else(|| {
             let table_schema = table_schema.table_schema();
             ProjectionExprs::from_indices(
@@ -287,14 +259,12 @@ impl LiquidParquetSource {
             projection,
             metrics: source.metrics().clone(),
             predicate: None,
-            pruning_predicate: None,
-            page_pruning_predicate: None,
             span: None,
             squeeze_hints: Arc::default(),
         };
 
         if let Some(predicate) = predicate {
-            v = v.with_predicate(file_schema, predicate);
+            v = v.with_predicate(predicate);
         }
 
         v
@@ -309,45 +279,61 @@ impl LiquidParquetSource {
 impl FileSource for LiquidParquetSource {
     fn create_file_opener(
         &self,
+        _object_store: Arc<dyn ObjectStore>,
+        _base_config: &FileScanConfig,
+        _partition: usize,
+    ) -> Result<Arc<dyn datafusion::datasource::physical_plan::FileOpener>> {
+        internal_err!(
+            "LiquidParquetSource::create_file_opener called but it supports the Morsel API, please use that instead"
+        )
+    }
+
+    fn create_morselizer(
+        &self,
         object_store: Arc<dyn ObjectStore>,
         base_config: &FileScanConfig,
         partition: usize,
-    ) -> Result<Arc<dyn datafusion::datasource::physical_plan::FileOpener>> {
+    ) -> Result<Box<dyn Morselizer>> {
         let expr_adapter_factory = base_config
             .expr_adapter_factory
             .clone()
             .unwrap_or_else(|| Arc::new(DefaultPhysicalExprAdapterFactory) as _);
 
-        let reader_factory = Arc::new(CachedMetaReaderFactory::new(object_store));
+        let reader_factory = Arc::new(CachedMetaReaderFactory::new(
+            object_store,
+            base_config.object_store_url.clone(),
+        ));
 
         let execution_span = self
             .span
             .clone()
             .map(|span| fastrace::Span::enter_with_parent(format!("opener_{partition}"), &span));
-        let opener = LiquidParquetOpener::new(
-            partition,
-            self.projection.clone(),
-            self.batch_size
-                .expect("Batch size must be set before creating LiquidParquetOpener"),
-            base_config.limit,
-            self.predicate.clone(),
-            self.table_schema.clone(),
-            self.metrics.clone(),
-            self.liquid_cache.clone(),
-            reader_factory,
-            self.reorder_filters(),
+        Ok(Box::new(LiquidMorselizer {
+            partition_index: partition,
+            projection: self.projection.clone(),
+            batch_size: self
+                .batch_size
+                .expect("Batch size must be set before creating LiquidMorselizer"),
+            predicate: self.predicate.clone(),
+            table_schema: self.table_schema.clone(),
+            metrics: self.metrics.clone(),
+            liquid_cache: self.liquid_cache.clone(),
+            parquet_file_reader_factory: reader_factory,
+            reorder_filters: self.reorder_filters(),
             expr_adapter_factory,
-            execution_span.map(Arc::new),
-            Arc::clone(&self.squeeze_hints),
-        );
-
-        Ok(Arc::new(opener))
+            span: execution_span.map(Arc::new),
+            squeeze_hints: Arc::clone(&self.squeeze_hints),
+        }))
     }
 
     fn with_batch_size(&self, batch_size: usize) -> Arc<dyn FileSource> {
         let mut conf = self.clone();
         conf.batch_size = Some(batch_size);
         Arc::new(conf)
+    }
+
+    fn filter(&self) -> Option<Arc<dyn PhysicalExpr>> {
+        self.predicate.clone()
     }
 
     fn table_schema(&self) -> &TableSchema {
@@ -373,6 +359,58 @@ impl FileSource for LiquidParquetSource {
 
     fn file_type(&self) -> &str {
         "liquid_parquet"
+    }
+
+    fn fmt_extra(&self, t: DisplayFormatType, f: &mut Formatter) -> fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                if let Some(predicate) = self.filter() {
+                    write!(f, ", predicate={predicate}")?;
+                }
+                Ok(())
+            }
+            DisplayFormatType::TreeRender => Ok(()),
+        }
+    }
+
+    fn try_pushdown_filters(
+        &self,
+        filters: Vec<Arc<dyn PhysicalExpr>>,
+        _config: &ConfigOptions,
+    ) -> Result<FilterPushdownPropagation<Arc<dyn FileSource>>> {
+        let filters: Vec<_> = filters
+            .into_iter()
+            .map(|filter| {
+                if can_expr_be_pushed_down_with_schemas(&filter, self.table_schema.file_schema()) {
+                    PushedDownPredicate::supported(filter)
+                } else {
+                    PushedDownPredicate::unsupported(filter)
+                }
+            })
+            .collect();
+
+        if filters
+            .iter()
+            .all(|filter| matches!(filter.discriminant, PushedDown::No))
+        {
+            return Ok(FilterPushdownPropagation::with_parent_pushdown_result(
+                vec![PushedDown::No; filters.len()],
+            ));
+        }
+
+        let supported = filters
+            .iter()
+            .filter_map(|filter| match filter.discriminant {
+                PushedDown::Yes => Some(Arc::clone(&filter.predicate)),
+                PushedDown::No => None,
+            });
+        let predicate = conjunction(self.predicate.iter().cloned().chain(supported));
+        let source = Arc::new(self.clone().with_predicate(predicate));
+
+        Ok(FilterPushdownPropagation::with_parent_pushdown_result(
+            filters.iter().map(|filter| filter.discriminant).collect(),
+        )
+        .with_updated_node(source))
     }
 
     fn apply_expressions(

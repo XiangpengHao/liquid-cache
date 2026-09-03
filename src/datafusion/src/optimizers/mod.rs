@@ -123,23 +123,33 @@ fn convert_parquet_scan(
 
 #[cfg(test)]
 mod tests {
-    use datafusion::{datasource::physical_plan::FileScanConfig, prelude::SessionContext};
+    use std::{fs::File, path::Path};
+
+    use arrow::{array::Int32Array, record_batch::RecordBatch};
+    use arrow_schema::{DataType, Field, Schema};
+    use datafusion::{
+        common::{ScalarValue, stats::Precision},
+        datasource::physical_plan::{FileScanConfig, FileSource},
+        logical_expr::Operator,
+        physical_expr::expressions::{BinaryExpr, Column, Literal},
+        physical_plan::{
+            PhysicalExpr, collect, display::DisplayableExecutionPlan, filter_pushdown::PushedDown,
+        },
+        prelude::SessionContext,
+    };
     use liquid_cache::{
         cache::{AlwaysHydrate, squeeze_policies::TranscodeSqueezeEvict},
         cache_policies::LiquidPolicy,
     };
+    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
     use crate::LiquidCacheParquet;
 
     use super::*;
 
-    async fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>) {
-        let expected_schema = plan.schema();
-        let tmp_dir = tempfile::tempdir().unwrap();
-        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
-            .await
-            .unwrap();
-        let liquid_cache = Arc::new(
+    async fn make_cache(path: &Path) -> LiquidCacheParquetRef {
+        let store = t4::mount(path.join("liquid_cache.t4")).await.unwrap();
+        Arc::new(
             LiquidCacheParquet::new(
                 8192,
                 1000000,
@@ -150,7 +160,32 @@ mod tests {
                 Box::new(AlwaysHydrate::new()),
             )
             .await,
-        );
+        )
+    }
+
+    fn liquid_source(plan: &Arc<dyn ExecutionPlan>) -> LiquidParquetSource {
+        let mut source = None;
+        plan.apply(|node| {
+            if let Some(plan) = node.downcast_ref::<DataSourceExec>() {
+                let config = plan.data_source().downcast_ref::<FileScanConfig>().unwrap();
+                source = Some(
+                    config
+                        .file_source()
+                        .downcast_ref::<LiquidParquetSource>()
+                        .unwrap()
+                        .clone(),
+                );
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+        source.unwrap()
+    }
+
+    async fn rewrite_plan_inner(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        let expected_schema = plan.schema();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let liquid_cache = make_cache(tmp_dir.path()).await;
         let rewritten = rewrite_data_source_plan(plan, &liquid_cache);
 
         rewritten
@@ -167,6 +202,8 @@ mod tests {
                 Ok(TreeNodeRecursion::Continue)
             })
             .unwrap();
+
+        rewritten
     }
 
     #[tokio::test]
@@ -184,6 +221,115 @@ mod tests {
             .await
             .unwrap();
         let plan = df.create_physical_plan().await.unwrap();
-        rewrite_plan_inner(plan.clone()).await;
+        let rewritten = rewrite_plan_inner(plan).await;
+
+        let displayed = DisplayableExecutionPlan::new(rewritten.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(displayed.contains("predicate="), "{displayed}");
+
+        rewritten
+            .apply(|node| {
+                if let Some(plan) = node.downcast_ref::<DataSourceExec>() {
+                    let statistics = plan.data_source().partition_statistics(None)?;
+                    assert!(!matches!(statistics.num_rows, Precision::Exact(_)));
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .unwrap();
+
+        // Supported filters are conjoined onto the predicate; unsupported ones
+        // are handed back to the parent.
+        let source = liquid_source(&rewritten);
+        let url_index = source.table_schema().file_schema().index_of("URL").unwrap();
+        let supported: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("URL", url_index)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some(
+                "https://example.com".into(),
+            )))),
+        ));
+        let unsupported: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("missing", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::Utf8(Some("value".into())))),
+        ));
+        let result = source
+            .try_pushdown_filters(
+                vec![supported, unsupported],
+                &datafusion::config::ConfigOptions::new(),
+            )
+            .unwrap();
+        assert!(matches!(
+            result.filters.as_slice(),
+            [PushedDown::Yes, PushedDown::No]
+        ));
+        let predicate = result.updated_node.unwrap().filter().unwrap().to_string();
+        assert!(predicate.contains(" AND "), "{predicate}");
+        assert!(predicate.contains("https://example.com"), "{predicate}");
+        assert!(!predicate.contains("missing"), "{predicate}");
+    }
+
+    fn write_bloom_file(path: &Path) {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let properties = WriterProperties::builder()
+            .set_bloom_filter_enabled(true)
+            .build();
+        let mut writer = ArrowWriter::try_new(
+            File::create(path).unwrap(),
+            schema.clone(),
+            Some(properties),
+        )
+        .unwrap();
+        for values in [[1, 2, 4], [1, 3, 4]] {
+            writer
+                .write(
+                    &RecordBatch::try_new(
+                        schema.clone(),
+                        vec![Arc::new(Int32Array::from(values.to_vec()))],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            writer.flush().unwrap();
+        }
+        writer.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn prunes_row_group_with_bloom_filter() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let parquet_path = tmp_dir.path().join("bloom.parquet");
+        write_bloom_file(&parquet_path);
+
+        let ctx = SessionContext::new();
+        ctx.register_parquet("t", parquet_path.to_str().unwrap(), Default::default())
+            .await
+            .unwrap();
+        let plan = ctx
+            .sql("SELECT * FROM t WHERE a = 2")
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+        let cache = make_cache(tmp_dir.path()).await;
+        let rewritten = rewrite_data_source_plan(plan, &cache);
+        let metrics = liquid_source(&rewritten).metrics().clone();
+
+        let batches = collect(rewritten, ctx.task_ctx()).await.unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+
+        let metric = metrics
+            .clone_inner()
+            .sum_by_name("row_groups_pruned_bloom_filter")
+            .unwrap();
+        let datafusion::physical_plan::metrics::MetricValue::PruningMetrics {
+            pruning_metrics, ..
+        } = metric
+        else {
+            panic!("unexpected metric: {metric:?}");
+        };
+        assert_eq!(pruning_metrics.pruned(), 1);
     }
 }
