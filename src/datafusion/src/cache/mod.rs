@@ -9,6 +9,7 @@ use arrow::array::{BooleanArray, RecordBatch};
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::{ArrowError, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::Column;
 use liquid_cache::cache::squeeze_policies::SqueezePolicy;
@@ -37,6 +38,26 @@ pub use id::{BatchID, ParquetArrayID};
 /// the client (Flight mode), and attached to the
 /// [`LiquidParquetSource`](crate::LiquidParquetSource) that opens the file.
 pub type ColumnSqueezeHints = HashMap<String, Arc<CacheExpression>>;
+
+/// The identity of a Parquet object within an object store.
+///
+/// Object paths are only unique within their object store, so both components
+/// are required to keep cached data from different stores isolated.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ParquetFileIdentity {
+    object_store_url: ObjectStoreUrl,
+    path: String,
+}
+
+impl ParquetFileIdentity {
+    /// Create an identity from an object store URL and an object path.
+    pub fn new(object_store_url: ObjectStoreUrl, path: String) -> Self {
+        Self {
+            object_store_url,
+            path,
+        }
+    }
+}
 
 /// One column of a row group: (file column index, field, squeeze hint, is-predicate).
 type CachedColumnSpec = (u64, Arc<Field>, Option<Arc<CacheExpression>>, bool);
@@ -323,8 +344,8 @@ pub(crate) type CachedFileRef = Arc<CachedFile>;
 /// The main cache structure.
 #[derive(Debug)]
 pub struct LiquidCacheParquet {
-    /// Map file path to file id.
-    files: Mutex<AHashMap<String, u64>>,
+    /// Map object-store-qualified file identity to file id.
+    files: Mutex<AHashMap<ParquetFileIdentity, u64>>,
 
     cache_store: Arc<LiquidCache>,
 
@@ -396,23 +417,23 @@ impl LiquidCacheParquet {
     /// Register a file in the cache.
     pub fn register_or_get_file(
         &self,
-        file_path: String,
+        file_identity: ParquetFileIdentity,
         full_file_schema: SchemaRef,
     ) -> CachedFileRef {
-        self.register_or_get_file_with_hints(file_path, full_file_schema, Arc::default())
+        self.register_or_get_file_with_hints(file_identity, full_file_schema, Arc::default())
     }
 
     /// Register a file in the cache, attaching typed squeeze hints derived from
     /// the query plan (keyed by file-schema column name).
     pub fn register_or_get_file_with_hints(
         &self,
-        file_path: String,
+        file_identity: ParquetFileIdentity,
         full_file_schema: SchemaRef,
         squeeze_hints: Arc<ColumnSqueezeHints>,
     ) -> CachedFileRef {
         let mut files = self.files.lock().unwrap();
         let file_id = *files
-            .entry(file_path.clone())
+            .entry(file_identity)
             .or_insert_with(|| self.current_file_id.fetch_add(1, Ordering::Relaxed));
         drop(files);
 
@@ -533,7 +554,10 @@ mod tests {
             Box::new(AlwaysHydrate::new()),
         )
         .await;
-        let file = cache.register_or_get_file("test".to_string(), schema);
+        let file = cache.register_or_get_file(
+            ParquetFileIdentity::new(ObjectStoreUrl::local_filesystem(), "test".to_string()),
+            schema,
+        );
         file.create_row_group(0, vec![])
     }
 
@@ -557,7 +581,10 @@ mod tests {
         )
         .await;
         cache
-            .register_or_get_file("test".to_string(), schema)
+            .register_or_get_file(
+                ParquetFileIdentity::new(ObjectStoreUrl::local_filesystem(), "test".to_string()),
+                schema,
+            )
             .create_row_group(0, vec![0, 1])
     }
 

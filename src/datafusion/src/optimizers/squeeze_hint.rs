@@ -223,9 +223,17 @@ impl HintAnalyzer {
                 let usages = lineage_for_expr(&expr, &child);
                 self.record(&usages);
             }
-            for aggr in agg.aggr_expr() {
+            for (aggr, filter) in agg.aggr_expr().iter().zip(agg.filter_expr()) {
                 for expr in aggr.expressions() {
                     let usages = lineage_for_expr(&expr, &child);
+                    self.record(&usages);
+                }
+                for order_by in aggr.order_bys() {
+                    let usages = lineage_for_expr(&order_by.expr, &child);
+                    self.record(&usages);
+                }
+                if let Some(filter) = filter {
+                    let usages = lineage_for_expr(filter, &child);
                     self.record(&usages);
                 }
             }
@@ -775,6 +783,30 @@ mod tests {
     async fn mixed_raw_and_extract_gets_no_hint() {
         // `date` escapes raw in the projection, so it cannot be squeezed.
         let hints = hints_for("SELECT date, EXTRACT(YEAR FROM date) AS y FROM t").await;
+        assert_eq!(hints.get("date"), None);
+    }
+
+    #[tokio::test]
+    async fn aggregate_filter_records_raw_column_use() {
+        let hints = hints_for(
+            "SELECT AVG(EXTRACT(YEAR FROM date)) \
+             FILTER (WHERE date = DATE '2021-01-01') FROM t",
+        )
+        .await;
+
+        // The aggregate argument needs only YEAR, but its filter needs the
+        // exact date, so squeezing the column to YEAR would change the result.
+        assert_eq!(hints.get("date"), None);
+    }
+
+    #[tokio::test]
+    async fn aggregate_order_by_records_raw_column_use() {
+        let hints =
+            hints_for("SELECT FIRST_VALUE(EXTRACT(MONTH FROM date) ORDER BY date DESC) FROM t")
+                .await;
+
+        // The aggregate value needs only MONTH, but chronological ordering
+        // needs the exact date.
         assert_eq!(hints.get("date"), None);
     }
 

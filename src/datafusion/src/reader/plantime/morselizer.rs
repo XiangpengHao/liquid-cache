@@ -40,8 +40,8 @@ use parquet::{
 use super::source::{CachedMetaReaderFactory, ParquetMetadataCacheReader};
 use crate::{
     cache::{
-        BatchID, ColumnSqueezeHints, InsertArrowArrayError, LiquidCacheParquetRef, PrefetchOutcome,
-        RowGroupSnapshots,
+        BatchID, ColumnSqueezeHints, InsertArrowArrayError, LiquidCacheParquetRef,
+        ParquetFileIdentity, PrefetchOutcome, RowGroupSnapshots,
     },
     reader::{
         plantime::row_filter::build_row_filter,
@@ -87,7 +87,10 @@ impl Morselizer for LiquidMorselizer {
         let file_name = partitioned_file.object_meta.location.to_string();
         let metrics = LiquidFileMetrics::new(self.partition_index, &file_name, &self.metrics);
         let metadata_size_hint = partitioned_file.metadata_size_hint;
-        let file_location = partitioned_file.object_meta.location.to_string();
+        let file_identity = ParquetFileIdentity::new(
+            self.parquet_file_reader_factory.object_store_url().clone(),
+            partitioned_file.object_meta.location.to_string(),
+        );
         let reader = self.parquet_file_reader_factory.create_liquid_reader(
             self.partition_index,
             partitioned_file.clone(),
@@ -157,7 +160,7 @@ impl Morselizer for LiquidMorselizer {
                 reorder_filters: self.reorder_filters,
                 liquid_cache: self.liquid_cache.clone(),
                 expr_adapter_factory: Arc::clone(&self.expr_adapter_factory),
-                file_location,
+                file_identity,
                 span,
                 squeeze_hints: Arc::clone(&self.squeeze_hints),
                 prefetch: self.prefetch,
@@ -207,7 +210,7 @@ struct PreparedLiquidOpen {
     reorder_filters: bool,
     liquid_cache: LiquidCacheParquetRef,
     expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
-    file_location: String,
+    file_identity: ParquetFileIdentity,
     span: Option<Arc<fastrace::Span>>,
     squeeze_hints: Arc<ColumnSqueezeHints>,
     prefetch: bool,
@@ -551,7 +554,7 @@ fn plan_row_group_morsels(planned: PlannedRowGroups) -> Result<Option<MorselPlan
         .prepared
         .liquid_cache
         .register_or_get_file_with_hints(
-            context.prepared.file_location.clone(),
+            context.prepared.file_identity.clone(),
             Arc::clone(&context.cache_full_schema),
             Arc::clone(&context.prepared.squeeze_hints),
         );
@@ -1109,7 +1112,13 @@ mod tests {
             squeeze_hints: Arc::default(),
             prefetch: true,
         };
-        let cached_file = cache.register_or_get_file(file_name, schema);
+        let cached_file = cache.register_or_get_file(
+            ParquetFileIdentity::new(
+                ObjectStoreUrl::parse(format!("test-{file_id}:///")).unwrap(),
+                file_name,
+            ),
+            schema,
+        );
         TestFilePlanner {
             planner: morselizer.plan_file(partitioned_file).unwrap(),
             cache,
@@ -1199,6 +1208,68 @@ mod tests {
 
         assert_eq!(metadata_a.file_metadata().num_rows(), 1);
         assert_eq!(metadata_b.file_metadata().num_rows(), 2);
+    }
+
+    #[tokio::test]
+    async fn data_cache_is_scoped_to_object_store() {
+        let schema = schema();
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let path_a = dir_a.path().join("data.parquet");
+        let path_b = dir_b.path().join("data.parquet");
+        write_single_row_group_file(&path_a, Arc::clone(&schema), vec![1, 2]);
+        write_single_row_group_file(&path_b, Arc::clone(&schema), vec![10, 20]);
+
+        let cache = create_test_cache(cache_dir.path(), usize::MAX, usize::MAX).await;
+        let metrics = ExecutionPlanMetricsSet::new();
+        let projection = ProjectionExprs::from_indices(&[0, 1], schema.as_ref());
+        let morselizer_a = LiquidMorselizer {
+            partition_index: 0,
+            projection: projection.clone(),
+            batch_size: 4,
+            predicate: None,
+            table_schema: TableSchema::from(Arc::clone(&schema)),
+            metrics: metrics.clone(),
+            parquet_file_reader_factory: Arc::new(CachedMetaReaderFactory::new(
+                Arc::new(LocalFileSystem::new_with_prefix(dir_a.path()).unwrap()),
+                ObjectStoreUrl::parse("data-cache-a:///").unwrap(),
+            )),
+            reorder_filters: false,
+            liquid_cache: Arc::clone(&cache),
+            expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
+            span: None,
+            squeeze_hints: Arc::default(),
+            prefetch: true,
+        };
+        let morselizer_b = LiquidMorselizer {
+            partition_index: 0,
+            projection,
+            batch_size: 4,
+            predicate: None,
+            table_schema: TableSchema::from(Arc::clone(&schema)),
+            metrics,
+            parquet_file_reader_factory: Arc::new(CachedMetaReaderFactory::new(
+                Arc::new(LocalFileSystem::new_with_prefix(dir_b.path()).unwrap()),
+                ObjectStoreUrl::parse("data-cache-b:///").unwrap(),
+            )),
+            reorder_filters: false,
+            liquid_cache: cache,
+            expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
+            span: None,
+            squeeze_hints: Arc::default(),
+            prefetch: true,
+        };
+
+        let file_a = PartitionedFile::new("data.parquet", std::fs::metadata(path_a).unwrap().len());
+        let file_b = PartitionedFile::new("data.parquet", std::fs::metadata(path_b).unwrap().len());
+        let rows_a =
+            collect_columns(drive_planner(morselizer_a.plan_file(file_a).unwrap()).await).await;
+        let rows_b =
+            collect_columns(drive_planner(morselizer_b.plan_file(file_b).unwrap()).await).await;
+
+        assert_eq!(rows_a, (vec![1, 2], vec![1001, 1002]));
+        assert_eq!(rows_b, (vec![10, 20], vec![1010, 1020]));
     }
 
     async fn collect_columns(morsels: Vec<Box<dyn Morsel>>) -> (Vec<i32>, Vec<i32>) {

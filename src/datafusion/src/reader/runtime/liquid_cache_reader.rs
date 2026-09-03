@@ -596,7 +596,14 @@ mod tests {
             Box::new(AlwaysHydrate::new()),
         )
         .await;
-        let file = cache.register_or_get_file("test".to_string(), schema.clone());
+        let file = cache.register_or_get_file(
+            crate::cache::ParquetFileIdentity::new(
+                datafusion::execution::object_store::ObjectStoreUrl::parse("test-runtime:///")
+                    .unwrap(),
+                "test".to_string(),
+            ),
+            schema.clone(),
+        );
         let row_group = file.create_row_group(0, vec![]);
         let column = row_group.get_column(0).unwrap();
 
