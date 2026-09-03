@@ -26,17 +26,27 @@ use crate::{LiquidCacheParquetRef, LiquidParquetSource, cache::ColumnSqueezeHint
 #[derive(Debug)]
 pub struct LocalModeOptimizer {
     cache: LiquidCacheParquetRef,
+    prefetch: bool,
 }
 
 impl LocalModeOptimizer {
     /// Create an optimizer with an existing cache instance
     pub fn new(cache: LiquidCacheParquetRef) -> Self {
-        Self { cache }
+        Self {
+            cache,
+            prefetch: true,
+        }
     }
 
     /// Create an optimizer with an existing cache instance
     pub fn with_cache(cache: LiquidCacheParquetRef) -> Self {
-        Self { cache }
+        Self::new(cache)
+    }
+
+    /// Enable or disable row-group prefetching.
+    pub fn with_prefetch(mut self, prefetch: bool) -> Self {
+        self.prefetch = prefetch;
+        self
     }
 }
 
@@ -48,8 +58,9 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
     ) -> Result<Arc<dyn ExecutionPlan>, datafusion::error::DataFusionError> {
         let analysis = HintAnalyzer::analyze(&plan);
         let cache = self.cache.clone();
+        let prefetch = self.prefetch;
         let mut convert = |node: &Arc<dyn ExecutionPlan>, hints: ColumnSqueezeHints| {
-            convert_parquet_scan(node, &cache, hints)
+            convert_parquet_scan(node, &cache, hints, prefetch)
         };
         Ok(squeeze_hint::rewrite_with_hints(
             plan,
@@ -79,7 +90,7 @@ pub fn rewrite_data_source_plan_with_hints(
     hints: &ColumnSqueezeHints,
 ) -> Arc<dyn ExecutionPlan> {
     plan.transform_up(
-        |node| match convert_parquet_scan(&node, cache, hints.clone()) {
+        |node| match convert_parquet_scan(&node, cache, hints.clone(), true) {
             Some(new_node) => Ok(Transformed::new(
                 new_node,
                 true,
@@ -106,6 +117,7 @@ fn convert_parquet_scan(
     node: &Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
     hints: ColumnSqueezeHints,
+    prefetch: bool,
 ) -> Option<Arc<dyn ExecutionPlan>> {
     let data_source_exec = node.downcast_ref::<DataSourceExec>()?;
     let (file_scan_config, parquet_source) =
@@ -113,7 +125,8 @@ fn convert_parquet_scan(
 
     let new_source =
         LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone())
-            .with_squeeze_hints(Arc::new(hints));
+            .with_squeeze_hints(Arc::new(hints))
+            .with_prefetch(prefetch);
 
     let mut new_config = file_scan_config.clone();
     new_config.file_source = Arc::new(new_source);

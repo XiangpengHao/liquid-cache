@@ -35,7 +35,7 @@ impl ArtIndex {
         Some(batch)
     }
 
-    pub(crate) fn is_cached(&self, entry_id: &EntryID) -> bool {
+    pub(crate) fn contains(&self, entry_id: &EntryID) -> bool {
         let guard = self.art.pin();
         self.art.get(*entry_id, &guard).is_some()
     }
@@ -99,15 +99,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_and_is_cached() {
+    fn test_get_and_contains() {
         let store = ArtIndex::new();
         let entry_id1: EntryID = EntryID::from(1);
         let entry_id2: EntryID = EntryID::from(2);
         let array1 = create_test_array(100);
 
         // Initially, entries should not be cached
-        assert!(!store.is_cached(&entry_id1));
-        assert!(!store.is_cached(&entry_id2));
+        assert!(!store.contains(&entry_id1));
+        assert!(!store.contains(&entry_id2));
         assert!(store.get(&entry_id1).is_none());
 
         // Insert an entry and verify it's cached
@@ -115,8 +115,8 @@ mod tests {
             store.insert(&entry_id1, array1.clone());
         }
 
-        assert!(store.is_cached(&entry_id1));
-        assert!(!store.is_cached(&entry_id2));
+        assert!(store.contains(&entry_id1));
+        assert!(!store.contains(&entry_id2));
 
         // Get should return the cached value
         match store.get(&entry_id1) {
@@ -137,10 +137,10 @@ mod tests {
         store.insert(&entry_id, array.clone());
 
         let entry_id: EntryID = EntryID::from(1);
-        assert!(store.is_cached(&entry_id));
+        assert!(store.contains(&entry_id));
 
         store.reset();
         let entry_id: EntryID = EntryID::from(1);
-        assert!(!store.is_cached(&entry_id));
+        assert!(!store.contains(&entry_id));
     }
 }

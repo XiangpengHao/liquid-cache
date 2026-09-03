@@ -196,6 +196,7 @@ pub struct LiquidParquetSource {
     table_schema: TableSchema,
     span: Option<Arc<fastrace::Span>>,
     squeeze_hints: Arc<ColumnSqueezeHints>,
+    prefetch: bool,
 }
 
 impl LiquidParquetSource {
@@ -226,6 +227,12 @@ impl LiquidParquetSource {
             squeeze_hints,
             ..self.clone()
         }
+    }
+
+    /// Enable or disable row-group prefetching.
+    pub fn with_prefetch(mut self, prefetch: bool) -> Self {
+        self.prefetch = prefetch;
+        self
     }
 
     /// The typed squeeze hints currently attached to this source.
@@ -261,6 +268,7 @@ impl LiquidParquetSource {
             predicate: None,
             span: None,
             squeeze_hints: Arc::default(),
+            prefetch: true,
         };
 
         if let Some(predicate) = predicate {
@@ -323,6 +331,7 @@ impl FileSource for LiquidParquetSource {
             expr_adapter_factory,
             span: execution_span.map(Arc::new),
             squeeze_hints: Arc::clone(&self.squeeze_hints),
+            prefetch: self.prefetch,
         }))
     }
 

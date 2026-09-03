@@ -69,6 +69,7 @@ pub struct LiquidCacheLocalBuilder {
     squeeze_policy: Box<dyn SqueezePolicy>,
     /// Hydration policy
     hydration_policy: Box<dyn HydrationPolicy>,
+    prefetch: bool,
     span: fastrace::Span,
 }
 
@@ -84,6 +85,7 @@ impl Default for LiquidCacheLocalBuilder {
             cache_policy: Box::new(LiquidPolicy::new()),
             squeeze_policy: Box::new(TranscodeSqueezeEvict),
             hydration_policy: Box::new(AlwaysHydrate::new()),
+            prefetch: true,
             span: fastrace::Span::enter_with_local_parent("liquid_cache_datafusion_local_builder"),
         }
     }
@@ -139,6 +141,12 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
+    /// Enable or disable row-group prefetching.
+    pub fn with_prefetch(mut self, prefetch: bool) -> Self {
+        self.prefetch = prefetch;
+        self
+    }
+
     /// Set fastrace span
     pub fn with_span(mut self, span: fastrace::Span) -> Self {
         self.span = span;
@@ -190,7 +198,7 @@ impl LiquidCacheLocalBuilder {
         .await;
         let cache_ref = Arc::new(cache);
 
-        let optimizer = LocalModeOptimizer::new(cache_ref.clone());
+        let optimizer = LocalModeOptimizer::new(cache_ref.clone()).with_prefetch(self.prefetch);
 
         let state = datafusion::execution::SessionStateBuilder::new()
             .with_config(config)

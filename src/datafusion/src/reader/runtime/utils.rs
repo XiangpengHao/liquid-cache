@@ -27,7 +27,7 @@ pub(crate) fn get_root_column_ids(
 
 /// Take the next batch from the selection queue.
 /// The returning selection will have exactly the batch size, or less if the selection is exhausted.
-pub(super) fn take_next_batch(
+pub(crate) fn take_next_batch(
     selection: &mut VecDeque<RowSelector>,
     batch_size: usize,
 ) -> Option<Vec<RowSelector>> {

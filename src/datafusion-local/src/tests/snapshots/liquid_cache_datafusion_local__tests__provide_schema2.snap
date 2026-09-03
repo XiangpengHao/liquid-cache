@@ -1,5 +1,6 @@
 ---
 source: src/datafusion-local/src/tests/mod.rs
+assertion_line: 428
 expression: snapshot
 ---
 query[0]: SELECT * from default where log like '%hhj%' order by _timestamp
@@ -190,7 +191,7 @@ RuntimeStatsSnapshot:
   eval_predicate: 0
   get_squeezed_success: 0
   get_squeezed_needs_io: 0
-  try_read_liquid_calls: 0
+  try_read_liquid_calls: 3
   hit_date32_expression_calls: 0
   read_io_count: 0
   write_io_count: 0

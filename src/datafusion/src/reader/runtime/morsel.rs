@@ -14,12 +14,14 @@ use parquet::{
 };
 
 use crate::{
-    cache::CachedFileRef,
-    reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader},
+    cache::{CachedFileRef, CachedRowGroupRef, LiquidCacheParquetRef, RowGroupSnapshots},
+    reader::plantime::{LiquidFileMetrics, LiquidRowFilter, ParquetMetadataCacheReader},
 };
 
 use super::{
-    liquid_cache_reader::{LiquidCacheReader, LiquidCacheReaderConfig, ParquetFallbackConfig},
+    liquid_cache_reader::{
+        LiquidCacheReader, LiquidCacheReaderConfig, ParquetFallback, ParquetFallbackConfig,
+    },
     utils::get_root_column_ids,
 };
 
@@ -35,15 +37,13 @@ pub(crate) struct LiquidRowGroupPlanner {
     pub(crate) projector: Arc<Projector>,
     pub(crate) replace_schema: bool,
     pub(crate) span: Option<Arc<fastrace::Span>>,
+    pub(crate) liquid_cache: LiquidCacheParquetRef,
+    pub(crate) metrics: LiquidFileMetrics,
 }
 
 impl LiquidRowGroupPlanner {
-    pub(crate) fn plan(
-        &self,
-        row_group_idx: usize,
-        selection: Option<RowSelection>,
-    ) -> Option<LiquidRowGroupMorsel> {
-        let metadata = self.metadata.row_group(row_group_idx);
+    fn cache_details(&self) -> CacheDetails {
+        let schema_descr = self.metadata.file_metadata().schema_descr();
         let mut predicate_projection: Option<ProjectionMask> = None;
         if let Some(filter) = &self.row_filter {
             for predicate in filter.predicates() {
@@ -55,6 +55,84 @@ impl LiquidRowGroupPlanner {
                 }
             }
         }
+        let mut cache_projection = self.projection.clone();
+        if let Some(predicate_projection) = &predicate_projection {
+            cache_projection.union(predicate_projection);
+        }
+        CacheDetails {
+            projection_column_ids: get_root_column_ids(schema_descr, &self.projection),
+            cache_column_ids: get_root_column_ids(schema_descr, &cache_projection),
+            predicate_column_ids: predicate_projection
+                .as_ref()
+                .map(|projection| get_root_column_ids(schema_descr, projection))
+                .unwrap_or_default(),
+            cache_projection,
+        }
+    }
+
+    fn fallback_config(
+        &self,
+        row_group_idx: usize,
+        details: &CacheDetails,
+        cache_batch_size: usize,
+    ) -> ParquetFallbackConfig {
+        ParquetFallbackConfig {
+            row_group_idx,
+            metadata: Arc::clone(&self.metadata),
+            input: self.input.clone(),
+            cache_projection: details.cache_projection.clone(),
+            cache_column_ids: details.cache_column_ids.clone(),
+            cache_batch_size,
+            row_count: self.metadata.row_group(row_group_idx).num_rows() as usize,
+        }
+    }
+
+    pub(crate) fn estimated_bytes(&self, row_group_idx: usize) -> usize {
+        let details = self.cache_details();
+        self.metadata
+            .row_group(row_group_idx)
+            .columns()
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| details.cache_projection.leaf_included(*idx))
+            .map(|(_, column)| column.uncompressed_size() as usize)
+            .sum()
+    }
+
+    pub(crate) fn prefetch_context(
+        &self,
+        row_group_idx: usize,
+        snapshots: Arc<RowGroupSnapshots>,
+    ) -> LiquidRowGroupPrefetchContext {
+        let details = self.cache_details();
+        let cached_row_group = self.cached_file.create_row_group_with_snapshots(
+            row_group_idx as u64,
+            details.predicate_column_ids.clone(),
+            snapshots,
+        );
+        let fallback = ParquetFallback::new(self.fallback_config(
+            row_group_idx,
+            &details,
+            cached_row_group.batch_size(),
+        ));
+        LiquidRowGroupPrefetchContext {
+            cached_row_group,
+            cache_column_ids: details.cache_column_ids,
+            predicate_column_ids: details.predicate_column_ids,
+            projection_column_ids: details.projection_column_ids,
+            row_filter: self.row_filter.clone(),
+            fallback,
+        }
+    }
+
+    pub(crate) fn plan(
+        &self,
+        row_group_idx: usize,
+        selection: Option<RowSelection>,
+        snapshots: Arc<RowGroupSnapshots>,
+    ) -> Option<LiquidRowGroupMorsel> {
+        let metadata = self.metadata.row_group(row_group_idx);
+        let details = self.cache_details();
 
         let selection = selection
             .unwrap_or_else(|| vec![RowSelector::select(metadata.num_rows() as usize)].into());
@@ -62,21 +140,13 @@ impl LiquidRowGroupPlanner {
             return None;
         }
 
-        let mut cache_projection = self.projection.clone();
-        if let Some(predicate_projection) = &predicate_projection {
-            cache_projection.union(predicate_projection);
-        }
-
         let schema_descr = self.metadata.file_metadata().schema_descr();
-        let cache_column_ids = get_root_column_ids(schema_descr, &cache_projection);
-        let predicate_column_ids = predicate_projection
-            .as_ref()
-            .map(|projection| get_root_column_ids(schema_descr, projection))
-            .unwrap_or_default();
         let projection_columns = get_root_column_ids(schema_descr, &self.projection);
-        let cached_row_group = self
-            .cached_file
-            .create_row_group(row_group_idx as u64, predicate_column_ids);
+        let cached_row_group = self.cached_file.create_row_group_with_snapshots(
+            row_group_idx as u64,
+            details.predicate_column_ids.clone(),
+            snapshots,
+        );
         let cache_batch_size = cached_row_group.batch_size();
 
         Some(LiquidRowGroupMorsel {
@@ -87,15 +157,7 @@ impl LiquidRowGroupPlanner {
                 cached_row_group,
                 projection_columns,
                 schema: Arc::clone(&self.stream_schema),
-                parquet_fallback: ParquetFallbackConfig {
-                    row_group_idx,
-                    metadata: Arc::clone(&self.metadata),
-                    input: self.input.clone(),
-                    cache_projection,
-                    cache_column_ids,
-                    cache_batch_size,
-                    row_count: metadata.num_rows() as usize,
-                },
+                parquet_fallback: self.fallback_config(row_group_idx, &details, cache_batch_size),
             },
             output_schema: Arc::clone(&self.output_schema),
             projector: Arc::clone(&self.projector),
@@ -103,6 +165,22 @@ impl LiquidRowGroupPlanner {
             span: self.span.clone(),
         })
     }
+}
+
+struct CacheDetails {
+    cache_projection: ProjectionMask,
+    cache_column_ids: Vec<usize>,
+    predicate_column_ids: Vec<usize>,
+    projection_column_ids: Vec<usize>,
+}
+
+pub(crate) struct LiquidRowGroupPrefetchContext {
+    pub(crate) cached_row_group: CachedRowGroupRef,
+    pub(crate) cache_column_ids: Vec<usize>,
+    pub(crate) predicate_column_ids: Vec<usize>,
+    pub(crate) projection_column_ids: Vec<usize>,
+    pub(crate) row_filter: Option<LiquidRowFilter>,
+    pub(crate) fallback: ParquetFallback,
 }
 
 pub(crate) fn build_projection_schema(

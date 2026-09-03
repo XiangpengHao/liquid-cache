@@ -1,8 +1,8 @@
-use std::{fmt, future::Future, sync::Arc};
+use std::{collections::VecDeque, fmt, future::Future, sync::Arc};
 
 use arrow_schema::SchemaRef;
 use datafusion::{
-    common::exec_err,
+    common::{exec_err, internal_err},
     datasource::{
         listing::{FileRange, PartitionedFile},
         physical_plan::{
@@ -23,27 +23,37 @@ use datafusion::{
     physical_optimizer::pruning::{FilePruner, PruningPredicate, build_pruning_predicate},
     physical_plan::metrics::{Count, ExecutionPlanMetricsSet, MetricBuilder},
 };
-use datafusion_datasource::morsel::{Morsel, MorselPlan, MorselPlanner, Morselizer};
+#[cfg(test)]
+use datafusion_datasource::morsel::Morsel;
+use datafusion_datasource::morsel::{MorselPlan, MorselPlanner, Morselizer};
 use futures::{FutureExt, future::BoxFuture};
 use log::debug;
 use parquet::{
     arrow::{
         ParquetRecordBatchStreamBuilder, ProjectionMask,
-        arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions},
+        arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection},
         parquet_column,
     },
     file::metadata::PageIndexPolicy,
 };
 
+use super::source::{CachedMetaReaderFactory, ParquetMetadataCacheReader};
 use crate::{
-    cache::{ColumnSqueezeHints, LiquidCacheParquetRef},
+    cache::{
+        BatchID, ColumnSqueezeHints, InsertArrowArrayError, LiquidCacheParquetRef, PrefetchOutcome,
+        RowGroupSnapshots,
+    },
     reader::{
         plantime::row_filter::build_row_filter,
-        runtime::{LiquidRowGroupPlanner, build_projection_schema, get_root_column_ids},
+        runtime::{
+            LiquidRowGroupPlanner, apply_predicates, build_projection_schema, get_root_column_ids,
+            take_next_batch,
+        },
     },
+    utils::row_selector_to_boolean_buffer,
 };
-
-use super::source::{CachedMetaReaderFactory, ParquetMetadataCacheReader};
+#[cfg(test)]
+use liquid_cache::cache::{CachedBatchType, EntryID, LiquidCache};
 
 pub(crate) struct LiquidMorselizer {
     pub(crate) partition_index: usize,
@@ -58,6 +68,7 @@ pub(crate) struct LiquidMorselizer {
     pub(crate) expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     pub(crate) span: Option<Arc<fastrace::Span>>,
     pub(crate) squeeze_hints: Arc<ColumnSqueezeHints>,
+    pub(crate) prefetch: bool,
 }
 
 impl fmt::Debug for LiquidMorselizer {
@@ -74,7 +85,7 @@ impl Morselizer for LiquidMorselizer {
         let file_range = partitioned_file.range.clone();
         let access_plan = partitioned_file.extensions.get_arc::<ParquetAccessPlan>();
         let file_name = partitioned_file.object_meta.location.to_string();
-        let file_metrics = ParquetFileMetrics::new(self.partition_index, &file_name, &self.metrics);
+        let metrics = LiquidFileMetrics::new(self.partition_index, &file_name, &self.metrics);
         let metadata_size_hint = partitioned_file.metadata_size_hint;
         let file_location = partitioned_file.object_meta.location.to_string();
         let reader = self.parquet_file_reader_factory.create_liquid_reader(
@@ -109,8 +120,6 @@ impl Morselizer for LiquidMorselizer {
                 .transpose()?;
         }
 
-        let predicate_creation_errors =
-            MetricBuilder::new(&self.metrics).global_counter("num_predicate_creation_errors");
         let file_pruner = predicate
             .as_ref()
             .filter(|predicate| {
@@ -122,7 +131,7 @@ impl Morselizer for LiquidMorselizer {
                     Arc::clone(predicate),
                     &logical_file_schema,
                     &partitioned_file,
-                    predicate_creation_errors.clone(),
+                    metrics.predicate_creation_errors.clone(),
                 )
             });
         let span = self.span.as_ref().map(|span| {
@@ -137,7 +146,7 @@ impl Morselizer for LiquidMorselizer {
                 file_range,
                 access_plan,
                 file_name,
-                file_metrics,
+                metrics,
                 file_pruner,
                 reader,
                 batch_size: self.batch_size,
@@ -145,15 +154,41 @@ impl Morselizer for LiquidMorselizer {
                 output_schema,
                 projection,
                 predicate,
-                predicate_creation_errors,
                 reorder_filters: self.reorder_filters,
                 liquid_cache: self.liquid_cache.clone(),
                 expr_adapter_factory: Arc::clone(&self.expr_adapter_factory),
                 file_location,
                 span,
                 squeeze_hints: Arc::clone(&self.squeeze_hints),
+                prefetch: self.prefetch,
             })),
         }))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct LiquidFileMetrics {
+    pub(crate) file_metrics: ParquetFileMetrics,
+    pub(crate) predicate_creation_errors: Count,
+    pub(crate) batches_prefetched: Count,
+    pub(crate) prefetch_skipped: Count,
+}
+
+impl LiquidFileMetrics {
+    pub(crate) fn new(
+        partition_index: usize,
+        file_name: &str,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> Self {
+        Self {
+            file_metrics: ParquetFileMetrics::new(partition_index, file_name, metrics),
+            predicate_creation_errors: MetricBuilder::new(metrics)
+                .global_counter("num_predicate_creation_errors"),
+            batches_prefetched: MetricBuilder::new(metrics)
+                .counter("batches_prefetched", partition_index),
+            prefetch_skipped: MetricBuilder::new(metrics)
+                .counter("prefetch_skipped", partition_index),
+        }
     }
 }
 
@@ -161,7 +196,7 @@ struct PreparedLiquidOpen {
     file_range: Option<FileRange>,
     access_plan: Option<Arc<ParquetAccessPlan>>,
     file_name: String,
-    file_metrics: ParquetFileMetrics,
+    metrics: LiquidFileMetrics,
     file_pruner: Option<FilePruner>,
     reader: ParquetMetadataCacheReader,
     batch_size: usize,
@@ -169,13 +204,13 @@ struct PreparedLiquidOpen {
     output_schema: SchemaRef,
     projection: ProjectionExprs,
     predicate: Option<Arc<dyn PhysicalExpr>>,
-    predicate_creation_errors: Count,
     reorder_filters: bool,
     liquid_cache: LiquidCacheParquetRef,
     expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     file_location: String,
     span: Option<Arc<fastrace::Span>>,
     squeeze_hints: Arc<ColumnSqueezeHints>,
+    prefetch: bool,
 }
 
 struct MetadataLoadedLiquidOpen {
@@ -243,6 +278,7 @@ impl LiquidOpenState {
                     && file_pruner.should_prune()?
                 {
                     prepared
+                        .metrics
                         .file_metrics
                         .files_ranges_pruned_statistics
                         .add_pruned(1);
@@ -250,6 +286,7 @@ impl LiquidOpenState {
                 }
 
                 prepared
+                    .metrics
                     .file_metrics
                     .files_ranges_pruned_statistics
                     .add_matched(1);
@@ -257,7 +294,8 @@ impl LiquidOpenState {
                     async move {
                         let options = ArrowReaderOptions::new()
                             .with_page_index_policy(PageIndexPolicy::Required);
-                        let metadata_load_time = prepared.file_metrics.metadata_load_time.clone();
+                        let metadata_load_time =
+                            prepared.metrics.file_metrics.metadata_load_time.clone();
                         let mut timer = metadata_load_time.timer();
                         let reader_metadata =
                             ArrowReaderMetadata::load_async(&mut prepared.reader, options.clone())
@@ -284,7 +322,7 @@ impl LiquidOpenState {
                     .expect("bloom filters are loaded only with a pruning predicate");
                 prepared.row_groups.prune_by_bloom_filters(
                     predicate,
-                    &prepared.context.prepared.file_metrics,
+                    &prepared.context.prepared.metrics.file_metrics,
                     &loaded.bloom_filters,
                 );
                 Ok(Self::PlanRowGroups(Box::new(prune_pages(prepared))))
@@ -296,7 +334,12 @@ impl LiquidOpenState {
 }
 
 fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<LiquidOpenState> {
-    let metadata_load_time = loaded.prepared.file_metrics.metadata_load_time.clone();
+    let metadata_load_time = loaded
+        .prepared
+        .metrics
+        .file_metrics
+        .metadata_load_time
+        .clone();
     let mut metadata_timer = metadata_load_time.timer();
     let physical_file_schema = Arc::clone(loaded.reader_metadata.schema());
     let cache_full_schema = Arc::clone(&physical_file_schema);
@@ -331,7 +374,7 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
     let (pruning_predicate, page_pruning_predicate) = build_pruning_predicates(
         loaded.prepared.predicate.as_ref(),
         &physical_file_schema,
-        &loaded.prepared.predicate_creation_errors,
+        &loaded.prepared.metrics.predicate_creation_errors,
     );
     metadata_timer.stop();
     let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
@@ -349,7 +392,7 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
                 &physical_file_schema,
                 loaded.reader_metadata.metadata(),
                 loaded.prepared.reorder_filters,
-                &loaded.prepared.file_metrics,
+                &loaded.prepared.metrics.file_metrics,
             ) {
                 Ok(filter) => filter,
                 Err(error) => {
@@ -379,7 +422,7 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
             builder.parquet_schema(),
             row_group_metadata,
             predicate,
-            &loaded.prepared.file_metrics,
+            &loaded.prepared.metrics.file_metrics,
         );
     }
 
@@ -411,7 +454,7 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
                 let bloom_filters = load_bloom_filters(
                     &mut prepared.context.builder,
                     predicate.as_ref(),
-                    &prepared.context.prepared.file_metrics,
+                    &prepared.context.prepared.metrics.file_metrics,
                     &prepared.row_groups,
                 )
                 .await;
@@ -443,7 +486,7 @@ fn prune_pages(prepared: PreparedRowGroups) -> PlannedRowGroups {
             &context.physical_file_schema,
             context.builder.parquet_schema(),
             context.builder.metadata().as_ref(),
-            &context.prepared.file_metrics,
+            &context.prepared.metrics.file_metrics,
         );
     }
     PlannedRowGroups {
@@ -503,6 +546,7 @@ fn plan_row_group_morsels(planned: PlannedRowGroups) -> Result<Option<MorselPlan
         context,
         access_plan,
     } = planned;
+    let prefetch = context.prepared.prefetch;
     let cached_file = context
         .prepared
         .liquid_cache
@@ -521,7 +565,7 @@ fn plan_row_group_morsels(planned: PlannedRowGroups) -> Result<Option<MorselPlan
         .projection
         .try_map_exprs(|expr| reassign_expr_columns(expr, &stream_schema))?;
     let projector = Arc::new(projection.make_projector(&stream_schema)?);
-    let row_group_planner = LiquidRowGroupPlanner {
+    let row_group_planner = Arc::new(LiquidRowGroupPlanner {
         metadata: Arc::clone(&metadata),
         input: context.prepared.reader.clone(),
         row_filter: context.row_filter,
@@ -533,23 +577,234 @@ fn plan_row_group_morsels(planned: PlannedRowGroups) -> Result<Option<MorselPlan
         projector,
         replace_schema,
         span: context.prepared.span,
-    };
+        liquid_cache: context.prepared.liquid_cache,
+        metrics: context.prepared.metrics.clone(),
+    });
 
     let row_group_indexes = access_plan.row_group_indexes();
     let row_group_metadata = metadata.row_groups();
     let mut selection = access_plan.into_overall_row_selection(row_group_metadata)?;
-    let mut morsels: Vec<Box<dyn Morsel>> = Vec::with_capacity(row_group_indexes.len());
+    let mut queue = VecDeque::with_capacity(row_group_indexes.len());
     for row_group_idx in row_group_indexes {
         let row_count = row_group_metadata[row_group_idx].num_rows() as usize;
         let row_group_selection = selection
             .as_mut()
             .map(|selection| selection.split_off(row_count));
-        if let Some(morsel) = row_group_planner.plan(row_group_idx, row_group_selection) {
-            morsels.push(Box::new(morsel));
+        let row_group_selection = row_group_selection.unwrap_or_else(|| {
+            vec![parquet::arrow::arrow_reader::RowSelector::select(row_count)].into()
+        });
+        if row_group_selection.row_count() > 0 {
+            queue.push_back((row_group_idx, row_group_selection));
         }
     }
 
-    Ok((!morsels.is_empty()).then(|| MorselPlan::new().with_morsels(morsels)))
+    if queue.is_empty() {
+        return Ok(None);
+    }
+
+    let chain = LiquidRowGroupChain {
+        planner: row_group_planner,
+        queue,
+        snapshots: Arc::default(),
+        prefetch,
+    };
+    let plan = if prefetch {
+        MorselPlan::new().with_pending_planner(prefetch_future(chain))
+    } else {
+        MorselPlan::new().with_planners(vec![Box::new(chain)])
+    };
+    Ok(Some(plan))
+}
+
+struct LiquidRowGroupChain {
+    planner: Arc<LiquidRowGroupPlanner>,
+    queue: VecDeque<(usize, RowSelection)>,
+    snapshots: Arc<RowGroupSnapshots>,
+    prefetch: bool,
+}
+
+impl fmt::Debug for LiquidRowGroupChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiquidRowGroupChain")
+            .field("remaining_row_groups", &self.queue.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl MorselPlanner for LiquidRowGroupChain {
+    fn plan(mut self: Box<Self>) -> Result<Option<MorselPlan>> {
+        let (row_group_idx, selection) = self
+            .queue
+            .pop_front()
+            .expect("a row group chain is never empty");
+        let snapshots = std::mem::take(&mut self.snapshots);
+        let Some(morsel) = self.planner.plan(row_group_idx, Some(selection), snapshots) else {
+            return internal_err!("selected row group {row_group_idx} produced no morsel");
+        };
+        let mut plan = MorselPlan::new().with_morsels(vec![Box::new(morsel)]);
+        if self.queue.is_empty() {
+            return Ok(Some(plan));
+        }
+
+        if !self.prefetch {
+            return Ok(Some(plan.with_planners(vec![self])));
+        }
+
+        let next_row_group = self.queue.front().unwrap().0;
+        let estimate = self.planner.estimated_bytes(next_row_group);
+        let headroom = self
+            .planner
+            .liquid_cache
+            .max_memory_bytes()
+            .saturating_sub(self.planner.liquid_cache.memory_usage_bytes());
+        if headroom >= estimate {
+            plan = plan.with_pending_planner(prefetch_future(*self));
+        } else {
+            self.planner.metrics.prefetch_skipped.add(1);
+            plan = plan.with_planners(vec![self]);
+        }
+        Ok(Some(plan))
+    }
+}
+
+async fn prefetch_future(chain: LiquidRowGroupChain) -> Result<Box<dyn MorselPlanner>> {
+    Ok(Box::new(prefetch_front(chain).await) as Box<dyn MorselPlanner>)
+}
+
+async fn prefetch_front(chain: LiquidRowGroupChain) -> LiquidRowGroupChain {
+    let (row_group_idx, selection) = chain.queue.front().expect("prefetch chain has work");
+    let mut selectors: VecDeque<_> = selection.clone().into();
+    let batch_size = chain.planner.cached_file.batch_size();
+    let selected_batches = std::iter::from_fn(|| take_next_batch(&mut selectors, batch_size))
+        .enumerate()
+        .filter_map(|(idx, selection)| {
+            let selection = row_selector_to_boolean_buffer(&selection);
+            (selection.count_set_bits() > 0).then_some((BatchID::from_raw(idx as u16), selection))
+        })
+        .collect::<Vec<_>>();
+    let estimate = chain.planner.estimated_bytes(*row_group_idx);
+    let per_batch_estimate = estimate / selected_batches.len().max(1);
+    let snapshots = Arc::clone(&chain.snapshots);
+    let mut context = chain
+        .planner
+        .prefetch_context(*row_group_idx, Arc::clone(&snapshots));
+
+    for (batch_id, input_selection) in selected_batches {
+        let mut produced_snapshots = false;
+        let predicate_summary = prefetch_columns(
+            &context.cached_row_group,
+            batch_id,
+            &context.predicate_column_ids,
+        )
+        .await;
+        produced_snapshots |= predicate_summary.any_snapshotted;
+
+        if predicate_summary.any_missing {
+            match materialize_prefetch_batch(&mut context, batch_id).await {
+                Ok(()) => produced_snapshots = true,
+                Err(error) => {
+                    debug!("Stopping row group {row_group_idx} prefetch: {error}");
+                    break;
+                }
+            }
+        }
+
+        let filtered_selection = if let Some(filter) = context.row_filter.as_mut() {
+            match apply_predicates(&context.cached_row_group, batch_id, input_selection, filter)
+                .await
+            {
+                Ok(selection) => selection,
+                Err(error) => {
+                    debug!("Stopping row group {row_group_idx} prefetch: {error}");
+                    break;
+                }
+            }
+        } else {
+            Some(input_selection)
+        };
+
+        if let Some(filtered_selection) = filtered_selection {
+            snapshots.insert_selection(batch_id, filtered_selection.clone());
+
+            if filtered_selection.count_set_bits() > 0 {
+                let projection_summary = prefetch_columns(
+                    &context.cached_row_group,
+                    batch_id,
+                    &context.projection_column_ids,
+                )
+                .await;
+                produced_snapshots |= projection_summary.any_snapshotted;
+                if projection_summary.any_missing {
+                    match materialize_prefetch_batch(&mut context, batch_id).await {
+                        Ok(()) => produced_snapshots = true,
+                        Err(error) => {
+                            debug!("Stopping row group {row_group_idx} prefetch: {error}");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if produced_snapshots {
+            chain.planner.metrics.batches_prefetched.add(1);
+        }
+        let headroom = chain
+            .planner
+            .liquid_cache
+            .max_memory_bytes()
+            .saturating_sub(chain.planner.liquid_cache.memory_usage_bytes());
+        if headroom < per_batch_estimate {
+            break;
+        }
+    }
+
+    chain
+}
+
+struct PrefetchColumnsSummary {
+    any_missing: bool,
+    any_snapshotted: bool,
+}
+
+async fn prefetch_columns(
+    row_group: &crate::cache::CachedRowGroupRef,
+    batch_id: BatchID,
+    column_ids: &[usize],
+) -> PrefetchColumnsSummary {
+    let mut summary = PrefetchColumnsSummary {
+        any_missing: false,
+        any_snapshotted: false,
+    };
+    for column_id in column_ids {
+        let column = row_group.get_column(*column_id as u64).unwrap();
+        match column.prefetch_snapshot(batch_id).await {
+            PrefetchOutcome::Snapshotted => summary.any_snapshotted = true,
+            PrefetchOutcome::Missing => summary.any_missing = true,
+            PrefetchOutcome::AlreadySnapshotted | PrefetchOutcome::Squeezed => {}
+        }
+    }
+    summary
+}
+
+async fn materialize_prefetch_batch(
+    context: &mut crate::reader::runtime::LiquidRowGroupPrefetchContext,
+    batch_id: BatchID,
+) -> std::result::Result<(), parquet::errors::ParquetError> {
+    let record_batch = context.fallback.fetch_batch(batch_id).await?;
+    for (position, column_id) in context.cache_column_ids.iter().enumerate() {
+        let column = context
+            .cached_row_group
+            .get_column(*column_id as u64)
+            .unwrap();
+        let array = Arc::clone(record_batch.column(position));
+        match column.insert(batch_id, Arc::clone(&array)).await {
+            Ok(()) | Err(InsertArrowArrayError::AlreadyCached) => {}
+            Err(InsertArrowArrayError::CacheFull) => {}
+        }
+        column.insert_snapshot(batch_id, array);
+    }
+    Ok(())
 }
 
 async fn load_bloom_filters(
@@ -685,7 +940,7 @@ mod tests {
 
     use crate::{
         cache::{BatchID, CachedFileRef, CachedRowGroupRef, LiquidCacheParquet},
-        reader::LiquidParquetSource,
+        reader::{LiquidParquetSource, extract_multi_column_or},
     };
 
     use super::*;
@@ -697,6 +952,13 @@ mod tests {
         _cache: Arc<LiquidCacheParquet>,
         cached_file: CachedFileRef,
         _tmp_dir: tempfile::TempDir,
+    }
+
+    struct TestFilePlanner {
+        planner: Box<dyn MorselPlanner>,
+        cache: Arc<LiquidCacheParquet>,
+        cached_file: CachedFileRef,
+        tmp_dir: tempfile::TempDir,
     }
 
     fn schema() -> SchemaRef {
@@ -806,7 +1068,7 @@ mod tests {
         )
     }
 
-    async fn plan_test_file(options: PlanOptions) -> PlannedTestFile {
+    async fn prepare_test_file(options: PlanOptions) -> TestFilePlanner {
         let schema = schema();
         let tmp_dir = tempfile::tempdir().unwrap();
         let file_id = NEXT_FILE_ID.fetch_add(1, Ordering::Relaxed);
@@ -845,14 +1107,43 @@ mod tests {
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
             span: None,
             squeeze_hints: Arc::default(),
+            prefetch: true,
         };
-        let morsels = drive_planner(morselizer.plan_file(partitioned_file).unwrap()).await;
         let cached_file = cache.register_or_get_file(file_name, schema);
+        TestFilePlanner {
+            planner: morselizer.plan_file(partitioned_file).unwrap(),
+            cache,
+            cached_file,
+            tmp_dir,
+        }
+    }
+
+    async fn plan_test_file(options: PlanOptions) -> PlannedTestFile {
+        let prepared = prepare_test_file(options).await;
+        let morsels = drive_planner(prepared.planner).await;
         PlannedTestFile {
             morsels,
-            _cache: cache,
-            cached_file,
-            _tmp_dir: tmp_dir,
+            _cache: prepared.cache,
+            cached_file: prepared.cached_file,
+            _tmp_dir: prepared.tmp_dir,
+        }
+    }
+
+    async fn advance_to_row_group_chain(
+        mut planner: Box<dyn MorselPlanner>,
+    ) -> Box<dyn MorselPlanner> {
+        loop {
+            let mut plan = planner.plan().unwrap().expect("file has row groups");
+            assert!(plan.take_morsels().is_empty());
+            if let Some(ready) = plan.take_ready_planners().pop() {
+                planner = ready;
+                continue;
+            }
+            let pending = plan.take_pending_planner().expect("planner has more work");
+            planner = pending.await.unwrap();
+            if format!("{planner:?}").contains("LiquidRowGroupChain") {
+                return planner;
+            }
         }
     }
 
@@ -860,6 +1151,14 @@ mod tests {
         Arc::new(BinaryExpr::new(
             Arc::new(Column::new(column_name, column_index)),
             Operator::Gt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(literal)))),
+        ))
+    }
+
+    fn eq_expr(column_name: &str, column_index: usize, literal: i32) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            Arc::new(Column::new(column_name, column_index)),
+            Operator::Eq,
             Arc::new(Literal::new(ScalarValue::Int32(Some(literal)))),
         ))
     }
@@ -947,13 +1246,23 @@ mod tests {
         }
     }
 
-    async fn is_cached(row_group: &CachedRowGroupRef, column_id: usize, batch_idx: u16) -> bool {
+    async fn contains(row_group: &CachedRowGroupRef, column_id: usize, batch_idx: u16) -> bool {
         row_group
             .get_column(column_id as u64)
             .unwrap()
             .get_arrow_array_test_only(BatchID::from_raw(batch_idx))
             .await
             .is_some()
+    }
+
+    fn kind_of(cache: &LiquidCache, id: &EntryID) -> Option<CachedBatchType> {
+        let mut kind = None;
+        cache.for_each_entry(|entry_id, entry| {
+            if entry_id == id {
+                kind = Some(CachedBatchType::from(entry));
+            }
+        });
+        kind
     }
 
     #[tokio::test]
@@ -978,6 +1287,185 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prefetch_hands_snapshots_to_next_morsel() {
+        let file = prepare_test_file(PlanOptions::default()).await;
+        let chain = advance_to_row_group_chain(file.planner).await;
+        let mut first_plan = chain.plan().unwrap().unwrap();
+        let mut morsels = first_plan.take_morsels();
+        assert_eq!(morsels.len(), 1);
+        let next = first_plan.take_pending_planner().unwrap().await.unwrap();
+
+        let row_group = file.cached_file.create_row_group(1, vec![]);
+        for column_id in 0..2 {
+            let id = row_group
+                .get_column(column_id)
+                .unwrap()
+                .entry_id(BatchID::from_raw(0))
+                .into();
+            assert_eq!(
+                kind_of(file.cache.storage(), &id),
+                Some(CachedBatchType::MemoryArrow)
+            );
+        }
+
+        morsels.extend(next.plan().unwrap().unwrap().take_morsels());
+        assert_eq!(
+            collect_columns(morsels).await.0,
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetched_multi_column_or_uses_snapshots() {
+        let predicate: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            eq_expr("a", 0, 3),
+            Operator::Or,
+            eq_expr("b", 1, 20),
+        ));
+        assert!(extract_multi_column_or(&predicate).is_some());
+        let file = prepare_test_file(PlanOptions {
+            predicate: Some(predicate),
+            ..Default::default()
+        })
+        .await;
+        file.cache.storage().stats();
+
+        let chain = advance_to_row_group_chain(file.planner).await;
+        let morsels = chain.plan().unwrap().unwrap().take_morsels();
+        assert_eq!(collect_columns(morsels).await, (vec![3], vec![13]));
+        assert_eq!(
+            file.cache.storage().stats().runtime.try_read_liquid_calls,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetch_fetches_absent_predicate_columns() {
+        let file = prepare_test_file(PlanOptions {
+            predicate: Some(gt_expr("a", 0, 7)),
+            projection_columns: vec![1],
+            single_row_group_values: Some((0..12).collect()),
+            ..Default::default()
+        })
+        .await;
+
+        let chain = advance_to_row_group_chain(file.planner).await;
+        let predicate = file
+            .cached_file
+            .create_row_group(0, vec![0])
+            .get_column(0)
+            .unwrap();
+        for batch_idx in 0..3 {
+            let entry_id = predicate.entry_id(BatchID::from_raw(batch_idx)).into();
+            assert_eq!(
+                kind_of(file.cache.storage(), &entry_id),
+                Some(CachedBatchType::MemoryArrow)
+            );
+        }
+
+        let morsels = chain.plan().unwrap().unwrap().take_morsels();
+        assert_eq!(
+            collect_columns(morsels).await.0,
+            vec![1008, 1009, 1010, 1011]
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetch_skips_projection_for_filtered_batches() {
+        let file = prepare_test_file(PlanOptions {
+            predicate: Some(gt_expr("a", 0, 7)),
+            projection_columns: vec![1],
+            single_row_group_values: Some((0..12).collect()),
+            ..Default::default()
+        })
+        .await;
+        let row_group = file.cached_file.create_row_group(0, vec![0]);
+        insert_batches(
+            &row_group,
+            0,
+            &[(0, &[0, 1, 2, 3]), (1, &[4, 5, 6, 7]), (2, &[8, 9, 10, 11])],
+        )
+        .await;
+        insert_batches(
+            &row_group,
+            1,
+            &[
+                (0, &[1000, 1001, 1002, 1003]),
+                (1, &[1004, 1005, 1006, 1007]),
+                (2, &[1008, 1009, 1010, 1011]),
+            ],
+        )
+        .await;
+        file.cache.flush_data().await.unwrap();
+
+        let chain = advance_to_row_group_chain(file.planner).await;
+        let projection = row_group.get_column(1).unwrap();
+        for batch_idx in 0..2 {
+            let entry_id = projection.entry_id(BatchID::from_raw(batch_idx)).into();
+            assert_eq!(
+                kind_of(file.cache.storage(), &entry_id),
+                Some(CachedBatchType::DiskArrow)
+            );
+        }
+        let surviving_entry = projection.entry_id(BatchID::from_raw(2)).into();
+        assert_eq!(
+            kind_of(file.cache.storage(), &surviving_entry),
+            Some(CachedBatchType::MemoryArrow)
+        );
+
+        let morsels = chain.plan().unwrap().unwrap().take_morsels();
+        assert_eq!(
+            collect_columns(morsels).await.0,
+            vec![1008, 1009, 1010, 1011]
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshots_survive_eviction() {
+        let file = prepare_test_file(PlanOptions::default()).await;
+        let chain = advance_to_row_group_chain(file.planner).await;
+        let mut first = chain.plan().unwrap().unwrap();
+        let next = first.take_pending_planner().unwrap().await.unwrap();
+        let second = next.plan().unwrap().unwrap().take_morsels();
+        file.cache.flush_data().await.unwrap();
+
+        let row_group = file.cached_file.create_row_group(1, vec![]);
+        assert_eq!(collect_columns(second).await.0, vec![4, 5, 6, 7]);
+        for column_id in 0..2 {
+            let id = row_group
+                .get_column(column_id)
+                .unwrap()
+                .entry_id(BatchID::from_raw(0))
+                .into();
+            assert_eq!(
+                kind_of(file.cache.storage(), &id),
+                Some(CachedBatchType::DiskArrow)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn headroom_gate_skips_prefetch() {
+        let file = prepare_test_file(PlanOptions {
+            max_memory_bytes: 1,
+            max_disk_bytes: 0,
+            ..Default::default()
+        })
+        .await;
+        let chain = advance_to_row_group_chain(file.planner).await;
+        let mut first = chain.plan().unwrap().unwrap();
+        assert!(first.take_pending_planner().is_none());
+        let next = first.take_ready_planners().pop().unwrap();
+
+        let mut morsels = first.take_morsels();
+        morsels.extend(next.plan().unwrap().unwrap().take_morsels());
+        assert_eq!(
+            collect_columns(morsels).await.0,
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+    }
+
+    #[tokio::test]
     async fn cache_full_keeps_inserted_batches_and_skips_failed_inserts() {
         let one_array_memory = Arc::new(Int32Array::from(vec![0, 1, 2, 3])).get_array_memory_size();
         let planned = plan_test_file(PlanOptions {
@@ -992,10 +1480,10 @@ mod tests {
         let (a, b) = collect_columns(planned.morsels).await;
         assert_eq!(a, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(b, vec![10, 11, 12, 13, 14, 15, 16, 17]);
-        assert!(is_cached(&row_group0, 0, 0).await);
-        assert!(is_cached(&row_group0, 1, 0).await);
-        assert!(is_cached(&row_group1, 0, 0).await);
-        assert!(!is_cached(&row_group1, 1, 0).await);
+        assert!(contains(&row_group0, 0, 0).await);
+        assert!(contains(&row_group0, 1, 0).await);
+        assert!(contains(&row_group1, 0, 0).await);
+        assert!(!contains(&row_group1, 1, 0).await);
     }
 
     #[tokio::test]
@@ -1013,10 +1501,10 @@ mod tests {
         let (a, b) = collect_columns(planned.morsels).await;
         assert_eq!(a, vec![3, 4, 5, 6, 7]);
         assert_eq!(b, vec![13, 14, 15, 16, 17]);
-        assert!(is_cached(&row_group0, 0, 0).await);
-        assert!(is_cached(&row_group0, 1, 0).await);
-        assert!(is_cached(&row_group1, 0, 0).await);
-        assert!(!is_cached(&row_group1, 1, 0).await);
+        assert!(contains(&row_group0, 0, 0).await);
+        assert!(contains(&row_group0, 1, 0).await);
+        assert!(contains(&row_group1, 0, 0).await);
+        assert!(!contains(&row_group1, 1, 0).await);
     }
 
     #[tokio::test]
@@ -1033,8 +1521,8 @@ mod tests {
         assert_eq!(a, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(b, vec![10, 11, 12, 13, 14, 15, 16, 17]);
         for row_group in [&row_group0, &row_group1] {
-            assert!(!is_cached(row_group, 0, 0).await);
-            assert!(!is_cached(row_group, 1, 0).await);
+            assert!(!contains(row_group, 0, 0).await);
+            assert!(!contains(row_group, 1, 0).await);
         }
     }
 
@@ -1055,28 +1543,25 @@ mod tests {
             collect_columns(planned.morsels).await.0,
             vec![3, 4, 5, 6, 7]
         );
-        assert!(is_cached(&row_group0, 0, 0).await);
-        assert!(is_cached(&row_group0, 1, 0).await);
-        assert!(is_cached(&row_group1, 0, 0).await);
-        assert!(!is_cached(&row_group1, 1, 0).await);
+        assert!(contains(&row_group0, 0, 0).await);
+        assert!(contains(&row_group0, 1, 0).await);
+        assert!(contains(&row_group1, 0, 0).await);
+        assert!(!contains(&row_group1, 1, 0).await);
     }
 
     #[tokio::test]
     async fn missing_column_falls_back_to_parquet() {
-        let planned = plan_test_file(PlanOptions {
-            ..Default::default()
-        })
-        .await;
-        let row_group0 = planned.cached_file.create_row_group(0, vec![]);
-        let row_group1 = planned.cached_file.create_row_group(1, vec![]);
+        let file = prepare_test_file(PlanOptions::default()).await;
+        let row_group0 = file.cached_file.create_row_group(0, vec![]);
+        let row_group1 = file.cached_file.create_row_group(1, vec![]);
         insert_batches(&row_group0, 0, &[(0, &[0, 1, 2, 3])]).await;
         insert_batches(&row_group1, 0, &[(0, &[4, 5, 6, 7])]).await;
 
-        let (a, b) = collect_columns(planned.morsels).await;
+        let (a, b) = collect_columns(drive_planner(file.planner).await).await;
         assert_eq!(a, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(b, vec![10, 11, 12, 13, 14, 15, 16, 17]);
-        assert!(is_cached(&row_group0, 1, 0).await);
-        assert!(is_cached(&row_group1, 1, 0).await);
+        assert!(contains(&row_group0, 1, 0).await);
+        assert!(contains(&row_group1, 1, 0).await);
     }
 
     #[tokio::test]
@@ -1084,21 +1569,21 @@ mod tests {
         let parquet_a = vec![
             100, 101, 102, 103, 4, 5, 6, 7, 200, 201, 202, 203, 12, 13, 14, 15,
         ];
-        let planned = plan_test_file(PlanOptions {
+        let file = prepare_test_file(PlanOptions {
             projection_columns: vec![0],
             single_row_group_values: Some(parquet_a),
             ..Default::default()
         })
         .await;
-        let row_group = planned.cached_file.create_row_group(0, vec![]);
+        let row_group = file.cached_file.create_row_group(0, vec![]);
         insert_batches(&row_group, 0, &[(0, &[0, 1, 2, 3]), (2, &[8, 9, 10, 11])]).await;
 
         assert_eq!(
-            collect_columns(planned.morsels).await.0,
+            collect_columns(drive_planner(file.planner).await).await.0,
             (0..16).collect::<Vec<_>>()
         );
         for batch_idx in 0..4 {
-            assert!(is_cached(&row_group, 0, batch_idx).await);
+            assert!(contains(&row_group, 0, batch_idx).await);
         }
     }
 

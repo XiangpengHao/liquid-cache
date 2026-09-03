@@ -15,7 +15,7 @@ mod utils;
 
 pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder, default_max_memory_bytes};
 pub use cached_batch::{CacheEntry, CachedBatchType};
-pub use core::LiquidCache;
+pub use core::{LiquidCache, PrefetchResult};
 pub use expressions::{CacheExpression, VariantRequest};
 #[cfg(test)]
 pub(crate) use io_context::TestSqueezeIo;
