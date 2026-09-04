@@ -426,7 +426,7 @@ async fn test_provide_schema2() {
     #[cfg(target_arch = "aarch64")]
     let snapshot = snapshot
         .replace("usage.memory_bytes: 999980", "usage.memory_bytes: 1000915")
-        .replace("usage.memory_bytes: 1035369", "usage.memory_bytes: 1036304");
+        .replace("usage.memory_bytes: 1035368", "usage.memory_bytes: 1036303");
 
     insta::assert_snapshot!(snapshot);
 }

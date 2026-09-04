@@ -428,6 +428,7 @@ pub fn parse_trace(input: &str) -> Vec<TraceEvent> {
                 && !line.starts_with("]")
                 && !line.starts_with("---")
                 && !line.starts_with("source:")
+                && !line.starts_with("assertion_line:")
                 && !line.starts_with("expression:")
         })
         .map(parse_event_line)

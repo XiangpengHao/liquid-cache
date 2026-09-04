@@ -4222,7 +4222,6 @@ dependencies = [
  "num-traits",
  "object_store",
  "parquet",
- "parquet-variant-compute",
  "rand 0.10.2",
  "serde",
  "serde_json",

@@ -30,7 +30,6 @@ congee = { workspace = true }
 t4 = { workspace = true }
 log = { workspace = true }
 parquet = { workspace = true }
-parquet-variant-compute = { workspace = true }
 fastrace = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
