@@ -15,7 +15,7 @@ use parquet::{
 
 use crate::{
     cache::{CachedFileRef, CachedRowGroupRef, LiquidCacheParquetRef, RowGroupSnapshots},
-    reader::plantime::{LiquidFileMetrics, LiquidRowFilter, ParquetMetadataCacheReader},
+    reader::plantime::{LiquidFileMetrics, LiquidFileReaderFactory, LiquidRowFilter},
 };
 
 use super::{
@@ -27,7 +27,7 @@ use super::{
 
 pub(crate) struct LiquidRowGroupPlanner {
     pub(crate) metadata: Arc<ParquetMetaData>,
-    pub(crate) input: ParquetMetadataCacheReader,
+    pub(crate) reader_factory: Arc<LiquidFileReaderFactory>,
     pub(crate) row_filter: Option<LiquidRowFilter>,
     pub(crate) cached_file: CachedFileRef,
     pub(crate) projection: ProjectionMask,
@@ -79,7 +79,7 @@ impl LiquidRowGroupPlanner {
         ParquetFallbackConfig {
             row_group_idx,
             metadata: Arc::clone(&self.metadata),
-            input: self.input.clone(),
+            reader_factory: Arc::clone(&self.reader_factory),
             cache_projection: details.cache_projection.clone(),
             cache_column_ids: details.cache_column_ids.clone(),
             cache_batch_size,
