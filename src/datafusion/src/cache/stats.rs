@@ -160,7 +160,7 @@ impl LiquidCacheParquet {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
+    use std::fs::File;
 
     use crate::cache::{ParquetFileIdentity, id::BatchID};
 
@@ -169,7 +169,6 @@ mod tests {
         array::{Array, AsArray},
         datatypes::UInt64Type,
     };
-    use bytes::Bytes;
     use liquid_cache::{
         cache::{AlwaysHydrate, Evict},
         cache_policies::LiquidPolicy,
@@ -235,14 +234,11 @@ mod tests {
             }
         }
 
-        let mut tmp_file = NamedTempFile::new()?;
+        let tmp_file = NamedTempFile::new()?;
         cache.write_stats(tmp_file.path())?;
 
         // Read and verify stats
-        let mut bytes = Vec::new();
-        tmp_file.read_to_end(&mut bytes)?;
-        let bytes = Bytes::from(bytes);
-        let reader = ParquetRecordBatchReader::try_new(bytes, 8192)?;
+        let reader = ParquetRecordBatchReader::try_new(File::open(tmp_file.path())?, 8192)?;
 
         let batch = reader.into_iter().next().unwrap()?;
         assert_eq!(batch.num_rows(), num_rows);

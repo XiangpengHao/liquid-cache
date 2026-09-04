@@ -16,7 +16,6 @@ datafusion-datasource = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
 ahash = { workspace = true }
-bytes = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["http"] }
 liquid-cache-common = { workspace = true }

@@ -17,7 +17,7 @@ use parquet::errors::ParquetError;
 use parquet::file::metadata::ParquetMetaData;
 
 use crate::cache::{BatchID, CachedRowGroupRef, InsertArrowArrayError};
-use crate::reader::plantime::{LiquidRowFilter, ParquetMetadataCacheReader};
+use crate::reader::plantime::{LiquidFileReaderFactory, LiquidRowFilter};
 use crate::reader::runtime::utils::take_next_batch;
 use crate::utils::{boolean_buffer_and_then, row_selector_to_boolean_buffer};
 
@@ -71,7 +71,7 @@ pub(crate) struct LiquidCacheReaderConfig {
 pub(crate) struct ParquetFallbackConfig {
     pub(crate) row_group_idx: usize,
     pub(crate) metadata: Arc<ParquetMetaData>,
-    pub(crate) input: ParquetMetadataCacheReader,
+    pub(crate) reader_factory: Arc<LiquidFileReaderFactory>,
     pub(crate) cache_projection: ProjectionMask,
     pub(crate) cache_column_ids: Vec<usize>,
     pub(crate) cache_batch_size: usize,
@@ -81,7 +81,7 @@ pub(crate) struct ParquetFallbackConfig {
 pub(crate) struct ParquetFallback {
     row_group_idx: usize,
     metadata: Arc<ParquetMetaData>,
-    input: ParquetMetadataCacheReader,
+    reader_factory: Arc<LiquidFileReaderFactory>,
     cache_projection: ProjectionMask,
     cache_column_ids: Vec<usize>,
     cache_batch_size: usize,
@@ -162,7 +162,7 @@ impl ParquetFallback {
         Self {
             row_group_idx: config.row_group_idx,
             metadata: config.metadata,
-            input: config.input,
+            reader_factory: config.reader_factory,
             cache_projection: config.cache_projection,
             cache_column_ids: config.cache_column_ids,
             cache_batch_size: config.cache_batch_size,
@@ -199,14 +199,16 @@ impl ParquetFallback {
         let row_selection =
             build_row_selection_from(batch_id, self.cache_batch_size, self.row_count);
 
-        let stream =
-            ParquetRecordBatchStreamBuilder::new_with_metadata(self.input.clone(), reader_metadata)
-                .with_projection(self.cache_projection.clone())
-                .with_row_groups(vec![self.row_group_idx])
-                .with_batch_size(self.cache_batch_size)
-                .with_row_selection(row_selection)
-                .build()?
-                .boxed();
+        let stream = ParquetRecordBatchStreamBuilder::new_with_metadata(
+            self.reader_factory.create()?,
+            reader_metadata,
+        )
+        .with_projection(self.cache_projection.clone())
+        .with_row_groups(vec![self.row_group_idx])
+        .with_batch_size(self.cache_batch_size)
+        .with_row_selection(row_selection)
+        .build()?
+        .boxed();
 
         self.stream = Some(stream);
         self.next_batch_id = batch_id;
@@ -496,13 +498,15 @@ mod tests {
     use super::*;
     use crate::{
         cache::LiquidCacheParquet,
-        reader::plantime::CachedMetaReaderFactory,
+        reader::plantime::LiquidFileReaderFactory,
         reader::{FilterCandidateBuilder, LiquidPredicate, LiquidRowFilter},
     };
     use arrow::array::{ArrayRef, Int32Array};
     use arrow::record_batch::RecordBatch;
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
-    use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::{
+        listing::PartitionedFile, physical_plan::parquet::DefaultParquetFileReaderFactory,
+    };
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::{
         logical_expr::Operator,
@@ -573,11 +577,13 @@ mod tests {
             std::fs::metadata(&parquet_path).unwrap().len(),
         );
         let metrics = ExecutionPlanMetricsSet::new();
-        let input = CachedMetaReaderFactory::new(
-            object_store,
-            datafusion::execution::object_store::ObjectStoreUrl::parse("test-runtime:///").unwrap(),
-        )
-        .create_liquid_reader(0, partitioned_file, None, &metrics);
+        let reader_factory = Arc::new(LiquidFileReaderFactory {
+            factory: Arc::new(DefaultParquetFileReaderFactory::new(object_store)),
+            partition_index: 0,
+            partitioned_file,
+            metadata_size_hint: None,
+            metrics,
+        });
         let projection = ProjectionMask::roots(
             reader_metadata.metadata().file_metadata().schema_descr(),
             [0],
@@ -622,7 +628,7 @@ mod tests {
             fallback: ParquetFallbackConfig {
                 row_group_idx: 0,
                 metadata: Arc::clone(reader_metadata.metadata()),
-                input,
+                reader_factory,
                 cache_projection: projection,
                 cache_column_ids: vec![0],
                 cache_batch_size: batch_size,

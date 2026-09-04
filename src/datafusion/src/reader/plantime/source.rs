@@ -1,20 +1,16 @@
 use super::LiquidMorselizer;
 use crate::cache::{ColumnLineages, LiquidCacheParquetRef};
-use ahash::{HashMap, HashMapExt};
-use bytes::Bytes;
 use datafusion::{
     common::{internal_err, tree_node::TreeNodeRecursion},
     config::{ConfigOptions, TableParquetOptions},
     datasource::{
-        listing::PartitionedFile,
         physical_plan::{
-            FileScanConfig, FileSource, ParquetFileMetrics, ParquetFileReaderFactory,
-            ParquetSource, parquet::can_expr_be_pushed_down_with_schemas,
+            FileScanConfig, FileSource, ParquetFileReaderFactory, ParquetSource,
+            parquet::{DefaultParquetFileReaderFactory, can_expr_be_pushed_down_with_schemas},
         },
         table_schema::TableSchema,
     },
     error::Result,
-    execution::object_store::ObjectStoreUrl,
     physical_expr::projection::ProjectionExprs,
     physical_expr::utils::conjunction,
     physical_expr_adapter::DefaultPhysicalExprAdapterFactory,
@@ -25,168 +21,11 @@ use datafusion::{
     },
 };
 use datafusion_datasource::morsel::Morselizer;
-use futures::{FutureExt, future::BoxFuture};
-use object_store::{ObjectStore, ObjectStoreExt, path::Path};
-use parquet::{
-    arrow::{arrow_reader::ArrowReaderOptions, async_reader::AsyncFileReader},
-    errors::ParquetError,
-    file::metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
-};
+use object_store::ObjectStore;
 use std::{
     fmt::{self, Formatter},
-    ops::Range,
-    sync::{Arc, LazyLock},
+    sync::Arc,
 };
-use tokio::sync::RwLock;
-
-static META_CACHE: LazyLock<MetadataCache> = LazyLock::new(MetadataCache::new);
-
-#[derive(Debug)]
-pub(crate) struct CachedMetaReaderFactory {
-    store: Arc<dyn ObjectStore>,
-    store_url: ObjectStoreUrl,
-}
-
-impl CachedMetaReaderFactory {
-    pub(crate) fn new(store: Arc<dyn ObjectStore>, store_url: ObjectStoreUrl) -> Self {
-        Self { store, store_url }
-    }
-
-    pub(crate) fn object_store_url(&self) -> &ObjectStoreUrl {
-        &self.store_url
-    }
-
-    pub(crate) fn create_liquid_reader(
-        &self,
-        partition_index: usize,
-        partitioned_file: PartitionedFile,
-        metadata_size_hint: Option<usize>,
-        metrics: &ExecutionPlanMetricsSet,
-    ) -> ParquetMetadataCacheReader {
-        let path = partitioned_file.object_meta.location.clone();
-
-        ParquetMetadataCacheReader {
-            file_metrics: ParquetFileMetrics::new(partition_index, path.as_ref(), metrics),
-            store: Arc::clone(&self.store),
-            store_url: self.store_url.clone(),
-            file_size: partitioned_file.object_meta.size,
-            metadata_size_hint,
-            path,
-        }
-    }
-}
-
-impl ParquetFileReaderFactory for CachedMetaReaderFactory {
-    fn create_reader(
-        &self,
-        partition_index: usize,
-        partitioned_file: PartitionedFile,
-        metadata_size_hint: Option<usize>,
-        metrics: &ExecutionPlanMetricsSet,
-    ) -> Result<Box<dyn AsyncFileReader + Send>> {
-        let reader = self.create_liquid_reader(
-            partition_index,
-            partitioned_file,
-            metadata_size_hint,
-            metrics,
-        );
-        Ok(Box::new(reader))
-    }
-}
-
-struct MetadataCache {
-    val: RwLock<HashMap<(ObjectStoreUrl, Path), Arc<ParquetMetaData>>>,
-}
-
-impl MetadataCache {
-    fn new() -> Self {
-        Self {
-            val: RwLock::new(HashMap::new()),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct ParquetMetadataCacheReader {
-    file_metrics: ParquetFileMetrics,
-    store: Arc<dyn ObjectStore>,
-    store_url: ObjectStoreUrl,
-    file_size: u64,
-    metadata_size_hint: Option<usize>,
-    path: Path,
-}
-
-fn to_parquet_err(error: object_store::Error) -> ParquetError {
-    ParquetError::External(Box::new(error))
-}
-
-impl AsyncFileReader for ParquetMetadataCacheReader {
-    fn get_byte_ranges(
-        &mut self,
-        ranges: Vec<Range<u64>>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
-        let total: u64 = ranges.iter().map(|r| r.end - r.start).sum();
-        self.file_metrics.bytes_scanned.add(total as usize);
-        async move {
-            self.store
-                .get_ranges(&self.path, &ranges)
-                .await
-                .map_err(to_parquet_err)
-        }
-        .boxed()
-    }
-
-    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        self.file_metrics
-            .bytes_scanned
-            .add((range.end - range.start) as usize);
-        async move {
-            self.store
-                .get_range(&self.path, range)
-                .await
-                .map_err(to_parquet_err)
-        }
-        .boxed()
-    }
-
-    fn get_metadata(
-        &mut self,
-        options: Option<&ArrowReaderOptions>,
-    ) -> BoxFuture<'_, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        let cache_key = (self.store_url.clone(), self.path.clone());
-        let options = options.cloned();
-        async move {
-            // First check with read lock
-            {
-                let cache = META_CACHE.val.read().await;
-                if let Some(meta) = cache.get(&cache_key) {
-                    return Ok(meta.clone());
-                }
-            }
-
-            // Upgrade to write lock and double-check
-            let mut cache = META_CACHE.val.write().await;
-            match cache.entry(cache_key) {
-                std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    let file_size = self.file_size;
-                    let meta = ParquetMetaDataReader::new()
-                        .with_arrow_reader_options(options.as_ref())
-                        .with_prefetch_hint(self.metadata_size_hint)
-                        .load_and_finish(&mut *self, file_size)
-                        .await?;
-                    let mut reader = ParquetMetaDataReader::new_with_metadata(meta.clone())
-                        .with_page_index_policy(PageIndexPolicy::Optional);
-                    reader.load_page_index(&mut *self).await?;
-                    let meta = Arc::new(reader.finish()?);
-                    entry.insert(meta.clone());
-                    Ok(meta)
-                }
-            }
-        }
-        .boxed()
-    }
-}
 
 /// The data source for LiquidCache
 #[derive(Clone)]
@@ -198,6 +37,7 @@ pub struct LiquidParquetSource {
     batch_size: Option<usize>,
     projection: ProjectionExprs,
     table_schema: TableSchema,
+    parquet_file_reader_factory: Option<Arc<dyn ParquetFileReaderFactory>>,
     span: Option<Arc<fastrace::Span>>,
     lineages: Arc<ColumnLineages>,
     prefetch: bool,
@@ -253,6 +93,7 @@ impl LiquidParquetSource {
     /// Create a new LiquidParquetSource from a ParquetSource
     pub fn from_parquet_source(source: ParquetSource, liquid_cache: LiquidCacheParquetRef) -> Self {
         let predicate = source.filter();
+        let parquet_file_reader_factory = source.parquet_file_reader_factory().cloned();
 
         let table_schema = source.table_schema().clone();
         let projection = source.projection().cloned().unwrap_or_else(|| {
@@ -269,6 +110,7 @@ impl LiquidParquetSource {
             liquid_cache,
             projection,
             metrics: source.metrics().clone(),
+            parquet_file_reader_factory,
             predicate: None,
             span: None,
             lineages: Arc::default(),
@@ -311,10 +153,10 @@ impl FileSource for LiquidParquetSource {
             .clone()
             .unwrap_or_else(|| Arc::new(DefaultPhysicalExprAdapterFactory) as _);
 
-        let reader_factory = Arc::new(CachedMetaReaderFactory::new(
-            object_store,
-            base_config.object_store_url.clone(),
-        ));
+        let parquet_file_reader_factory = self
+            .parquet_file_reader_factory
+            .clone()
+            .unwrap_or_else(|| Arc::new(DefaultParquetFileReaderFactory::new(object_store)));
 
         let execution_span = self
             .span
@@ -330,7 +172,8 @@ impl FileSource for LiquidParquetSource {
             table_schema: self.table_schema.clone(),
             metrics: self.metrics.clone(),
             liquid_cache: self.liquid_cache.clone(),
-            parquet_file_reader_factory: reader_factory,
+            parquet_file_reader_factory,
+            object_store_url: base_config.object_store_url.clone(),
             reorder_filters: self.reorder_filters(),
             expr_adapter_factory,
             span: execution_span.map(Arc::new),

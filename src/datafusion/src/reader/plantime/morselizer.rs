@@ -6,7 +6,7 @@ use datafusion::{
     datasource::{
         listing::{FileRange, PartitionedFile},
         physical_plan::{
-            ParquetFileMetrics,
+            ParquetFileMetrics, ParquetFileReaderFactory,
             parquet::{
                 BloomFilterStatistics, PagePruningAccessPlanFilter, ParquetAccessPlan,
                 RowGroupAccessPlanFilter,
@@ -15,6 +15,7 @@ use datafusion::{
         table_schema::TableSchema,
     },
     error::Result,
+    execution::object_store::ObjectStoreUrl,
     physical_expr::{
         DynamicFilterTracking, PhysicalExpr, PhysicalExprSimplifier, projection::ProjectionExprs,
         utils::reassign_expr_columns,
@@ -32,12 +33,13 @@ use parquet::{
     arrow::{
         ParquetRecordBatchStreamBuilder, ProjectionMask,
         arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions, RowSelection},
+        async_reader::AsyncFileReader,
         parquet_column,
     },
+    errors::ParquetError,
     file::metadata::PageIndexPolicy,
 };
 
-use super::source::{CachedMetaReaderFactory, ParquetMetadataCacheReader};
 use crate::{
     cache::{
         BatchID, ColumnLineages, InsertArrowArrayError, LiquidCacheParquetRef, ParquetFileIdentity,
@@ -62,13 +64,40 @@ pub(crate) struct LiquidMorselizer {
     pub(crate) predicate: Option<Arc<dyn PhysicalExpr>>,
     pub(crate) table_schema: TableSchema,
     pub(crate) metrics: ExecutionPlanMetricsSet,
-    pub(crate) parquet_file_reader_factory: Arc<CachedMetaReaderFactory>,
+    pub(crate) parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
+    pub(crate) object_store_url: ObjectStoreUrl,
     pub(crate) reorder_filters: bool,
     pub(crate) liquid_cache: LiquidCacheParquetRef,
     pub(crate) expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     pub(crate) span: Option<Arc<fastrace::Span>>,
     pub(crate) lineages: Arc<ColumnLineages>,
     pub(crate) prefetch: bool,
+}
+
+type ParquetInput = Box<dyn AsyncFileReader>;
+
+#[derive(Clone)]
+pub(crate) struct LiquidFileReaderFactory {
+    pub(crate) factory: Arc<dyn ParquetFileReaderFactory>,
+    pub(crate) partition_index: usize,
+    pub(crate) partitioned_file: PartitionedFile,
+    pub(crate) metadata_size_hint: Option<usize>,
+    pub(crate) metrics: ExecutionPlanMetricsSet,
+}
+
+impl LiquidFileReaderFactory {
+    pub(crate) fn create(&self) -> parquet::errors::Result<ParquetInput> {
+        let reader = self
+            .factory
+            .create_reader(
+                self.partition_index,
+                self.partitioned_file.clone(),
+                self.metadata_size_hint,
+                &self.metrics,
+            )
+            .map_err(|error| ParquetError::External(Box::new(error)))?;
+        Ok(reader)
+    }
 }
 
 impl fmt::Debug for LiquidMorselizer {
@@ -88,15 +117,16 @@ impl Morselizer for LiquidMorselizer {
         let metrics = LiquidFileMetrics::new(self.partition_index, &file_name, &self.metrics);
         let metadata_size_hint = partitioned_file.metadata_size_hint;
         let file_identity = ParquetFileIdentity::new(
-            self.parquet_file_reader_factory.object_store_url().clone(),
+            self.object_store_url.clone(),
             partitioned_file.object_meta.location.to_string(),
         );
-        let reader = self.parquet_file_reader_factory.create_liquid_reader(
-            self.partition_index,
-            partitioned_file.clone(),
+        let reader_factory = Arc::new(LiquidFileReaderFactory {
+            factory: Arc::clone(&self.parquet_file_reader_factory),
+            partition_index: self.partition_index,
+            partitioned_file: partitioned_file.clone(),
             metadata_size_hint,
-            &self.metrics,
-        );
+            metrics: self.metrics.clone(),
+        });
 
         let logical_file_schema = Arc::clone(self.table_schema.file_schema());
         let output_schema = Arc::new(
@@ -151,7 +181,7 @@ impl Morselizer for LiquidMorselizer {
                 file_name,
                 metrics,
                 file_pruner,
-                reader,
+                reader_factory,
                 batch_size: self.batch_size,
                 logical_file_schema,
                 output_schema,
@@ -201,7 +231,7 @@ struct PreparedLiquidOpen {
     file_name: String,
     metrics: LiquidFileMetrics,
     file_pruner: Option<FilePruner>,
-    reader: ParquetMetadataCacheReader,
+    reader_factory: Arc<LiquidFileReaderFactory>,
     batch_size: usize,
     logical_file_schema: SchemaRef,
     output_schema: SchemaRef,
@@ -232,7 +262,7 @@ struct RowGroupPlanningContext {
     reader_metadata: ArrowReaderMetadata,
     physical_file_schema: SchemaRef,
     cache_full_schema: SchemaRef,
-    builder: ParquetRecordBatchStreamBuilder<ParquetMetadataCacheReader>,
+    builder: ParquetRecordBatchStreamBuilder<ParquetInput>,
     projection_mask: ProjectionMask,
     row_filter: Option<super::LiquidRowFilter>,
     pruning_predicate: Option<Arc<PruningPredicate>>,
@@ -300,9 +330,9 @@ impl LiquidOpenState {
                         let metadata_load_time =
                             prepared.metrics.file_metrics.metadata_load_time.clone();
                         let mut timer = metadata_load_time.timer();
+                        let mut reader = prepared.reader_factory.create()?;
                         let reader_metadata =
-                            ArrowReaderMetadata::load_async(&mut prepared.reader, options.clone())
-                                .await?;
+                            ArrowReaderMetadata::load_async(&mut reader, options.clone()).await?;
                         timer.stop();
                         Ok(MetadataLoadedLiquidOpen {
                             prepared,
@@ -353,11 +383,6 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
         Arc::clone(loaded.reader_metadata.metadata()),
         loaded.options,
     )?;
-    debug_assert!(
-        Arc::strong_count(loaded.reader_metadata.metadata()) > 1,
-        "meta data must be cached already"
-    );
-
     let rewriter = loaded.prepared.expr_adapter_factory.create(
         Arc::clone(&loaded.prepared.logical_file_schema),
         Arc::clone(&physical_file_schema),
@@ -381,7 +406,7 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
     );
     metadata_timer.stop();
     let builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
-        loaded.prepared.reader.clone(),
+        loaded.prepared.reader_factory.create()?,
         loaded.reader_metadata.clone(),
     );
     let projection_mask = ProjectionMask::roots(
@@ -570,7 +595,7 @@ fn plan_row_group_morsels(planned: PlannedRowGroups) -> Result<Option<MorselPlan
     let projector = Arc::new(projection.make_projector(&stream_schema)?);
     let row_group_planner = Arc::new(LiquidRowGroupPlanner {
         metadata: Arc::clone(&metadata),
-        input: context.prepared.reader.clone(),
+        reader_factory: context.prepared.reader_factory,
         row_filter: context.row_filter,
         cached_file,
         projection: context.projection_mask,
@@ -811,7 +836,7 @@ async fn materialize_prefetch_batch(
 }
 
 async fn load_bloom_filters(
-    builder: &mut ParquetRecordBatchStreamBuilder<ParquetMetadataCacheReader>,
+    builder: &mut ParquetRecordBatchStreamBuilder<ParquetInput>,
     predicate: &PruningPredicate,
     file_metrics: &ParquetFileMetrics,
     row_groups: &RowGroupAccessPlanFilter,
@@ -921,9 +946,12 @@ mod tests {
         common::ScalarValue,
         datasource::{
             listing::PartitionedFile,
-            physical_plan::{FileScanConfigBuilder, FileSource, ParquetSource},
+            physical_plan::{
+                FileScanConfigBuilder, FileSource, ParquetSource,
+                parquet::{CachedParquetFileReaderFactory, DefaultParquetFileReaderFactory},
+            },
         },
-        execution::object_store::ObjectStoreUrl,
+        execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
         logical_expr::Operator,
         physical_expr::{
             PhysicalExpr,
@@ -938,8 +966,8 @@ mod tests {
         cache::{AlwaysHydrate, Evict},
         cache_policies::LiquidPolicy,
     };
-    use object_store::local::LocalFileSystem;
-    use parquet::arrow::{ArrowWriter, async_reader::AsyncFileReader};
+    use object_store::{ObjectStore, local::LocalFileSystem, path::Path};
+    use parquet::arrow::ArrowWriter;
 
     use crate::{
         cache::{BatchID, CachedFileRef, CachedRowGroupRef, LiquidCacheParquet},
@@ -1094,6 +1122,7 @@ mod tests {
         )
         .await;
         let metrics = ExecutionPlanMetricsSet::new();
+        let object_store_url = ObjectStoreUrl::parse(format!("test-{file_id}:///")).unwrap();
         let morselizer = LiquidMorselizer {
             partition_index: 0,
             projection: ProjectionExprs::from_indices(&options.projection_columns, schema.as_ref()),
@@ -1101,10 +1130,10 @@ mod tests {
             predicate: options.predicate,
             table_schema: TableSchema::from(Arc::clone(&schema)),
             metrics: metrics.clone(),
-            parquet_file_reader_factory: Arc::new(CachedMetaReaderFactory::new(
+            parquet_file_reader_factory: Arc::new(DefaultParquetFileReaderFactory::new(
                 object_store,
-                ObjectStoreUrl::parse(format!("test-{file_id}:///")).unwrap(),
             )),
+            object_store_url: object_store_url.clone(),
             reorder_filters: false,
             liquid_cache: cache.clone(),
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
@@ -1113,10 +1142,7 @@ mod tests {
             prefetch: true,
         };
         let cached_file = cache.register_or_get_file(
-            ParquetFileIdentity::new(
-                ObjectStoreUrl::parse(format!("test-{file_id}:///")).unwrap(),
-                file_name,
-            ),
+            ParquetFileIdentity::new(object_store_url, file_name),
             schema,
         );
         TestFilePlanner {
@@ -1156,6 +1182,59 @@ mod tests {
         }
     }
 
+    async fn metadata_cache_hits(cache_limit: usize) -> (Option<usize>, Option<usize>) {
+        let schema = schema();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let parquet_path = tmp_dir.path().join("data.parquet");
+        write_two_row_group_file(&parquet_path, Arc::clone(&schema));
+        let file = PartitionedFile::new(
+            "data.parquet",
+            std::fs::metadata(&parquet_path).unwrap().len(),
+        );
+        let object_store: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(tmp_dir.path()).unwrap());
+        let metadata_cache = RuntimeEnv::default()
+            .cache_manager
+            .get_file_metadata_cache();
+        metadata_cache.update_cache_limit(cache_limit);
+        let parquet_file_reader_factory = Arc::new(CachedParquetFileReaderFactory::new(
+            Arc::clone(&object_store),
+            Arc::clone(&metadata_cache),
+        ));
+        let parquet_source = ParquetSource::new(Arc::clone(&schema))
+            .with_parquet_file_reader_factory(parquet_file_reader_factory);
+        let liquid_cache = create_test_cache(tmp_dir.path(), usize::MAX, usize::MAX).await;
+        let source = LiquidParquetSource::from_parquet_source(parquet_source, liquid_cache);
+        let base_config = FileScanConfigBuilder::new(
+            ObjectStoreUrl::local_filesystem(),
+            Arc::new(source.clone()),
+        )
+        .with_file(file.clone())
+        .build();
+        let morselizer = source
+            .create_morselizer(object_store, &base_config, 0)
+            .unwrap();
+        let path = Path::from("data.parquet");
+
+        advance_to_row_group_chain(morselizer.plan_file(file.clone()).unwrap()).await;
+        let first_hits = metadata_cache
+            .list_entries()
+            .get(&path)
+            .map(|entry| entry.hits);
+        advance_to_row_group_chain(morselizer.plan_file(file).unwrap()).await;
+        let second_hits = metadata_cache
+            .list_entries()
+            .get(&path)
+            .map(|entry| entry.hits);
+        (first_hits, second_hits)
+    }
+
+    #[tokio::test]
+    async fn datafusion_metadata_cache_ablation() {
+        assert_eq!(metadata_cache_hits(usize::MAX).await, (Some(0), Some(1)));
+        assert_eq!(metadata_cache_hits(0).await, (None, None));
+    }
+
     fn gt_expr(column_name: &str, column_index: usize, literal: i32) -> Arc<dyn PhysicalExpr> {
         Arc::new(BinaryExpr::new(
             Arc::new(Column::new(column_name, column_index)),
@@ -1170,44 +1249,6 @@ mod tests {
             Operator::Eq,
             Arc::new(Literal::new(ScalarValue::Int32(Some(literal)))),
         ))
-    }
-
-    #[tokio::test]
-    async fn metadata_cache_is_scoped_to_object_store() {
-        let schema = schema();
-        let dir_a = tempfile::tempdir().unwrap();
-        let dir_b = tempfile::tempdir().unwrap();
-        let path_a = dir_a.path().join("data.parquet");
-        let path_b = dir_b.path().join("data.parquet");
-        write_single_row_group_file(&path_a, schema.clone(), vec![1]);
-        write_single_row_group_file(&path_b, schema, vec![1, 2]);
-        let metrics = ExecutionPlanMetricsSet::new();
-        let mut reader_a = CachedMetaReaderFactory::new(
-            Arc::new(LocalFileSystem::new_with_prefix(dir_a.path()).unwrap()),
-            ObjectStoreUrl::parse("store-a:///").unwrap(),
-        )
-        .create_liquid_reader(
-            0,
-            PartitionedFile::new("data.parquet", std::fs::metadata(path_a).unwrap().len()),
-            None,
-            &metrics,
-        );
-        let mut reader_b = CachedMetaReaderFactory::new(
-            Arc::new(LocalFileSystem::new_with_prefix(dir_b.path()).unwrap()),
-            ObjectStoreUrl::parse("store-b:///").unwrap(),
-        )
-        .create_liquid_reader(
-            0,
-            PartitionedFile::new("data.parquet", std::fs::metadata(path_b).unwrap().len()),
-            None,
-            &metrics,
-        );
-
-        let metadata_a = reader_a.get_metadata(None).await.unwrap();
-        let metadata_b = reader_b.get_metadata(None).await.unwrap();
-
-        assert_eq!(metadata_a.file_metadata().num_rows(), 1);
-        assert_eq!(metadata_b.file_metadata().num_rows(), 2);
     }
 
     #[tokio::test]
@@ -1231,10 +1272,10 @@ mod tests {
             predicate: None,
             table_schema: TableSchema::from(Arc::clone(&schema)),
             metrics: metrics.clone(),
-            parquet_file_reader_factory: Arc::new(CachedMetaReaderFactory::new(
-                Arc::new(LocalFileSystem::new_with_prefix(dir_a.path()).unwrap()),
-                ObjectStoreUrl::parse("data-cache-a:///").unwrap(),
-            )),
+            parquet_file_reader_factory: Arc::new(DefaultParquetFileReaderFactory::new(Arc::new(
+                LocalFileSystem::new_with_prefix(dir_a.path()).unwrap(),
+            ))),
+            object_store_url: ObjectStoreUrl::parse("data-cache-a:///").unwrap(),
             reorder_filters: false,
             liquid_cache: Arc::clone(&cache),
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
@@ -1249,10 +1290,10 @@ mod tests {
             predicate: None,
             table_schema: TableSchema::from(Arc::clone(&schema)),
             metrics,
-            parquet_file_reader_factory: Arc::new(CachedMetaReaderFactory::new(
-                Arc::new(LocalFileSystem::new_with_prefix(dir_b.path()).unwrap()),
-                ObjectStoreUrl::parse("data-cache-b:///").unwrap(),
-            )),
+            parquet_file_reader_factory: Arc::new(DefaultParquetFileReaderFactory::new(Arc::new(
+                LocalFileSystem::new_with_prefix(dir_b.path()).unwrap(),
+            ))),
+            object_store_url: ObjectStoreUrl::parse("data-cache-b:///").unwrap(),
             reorder_filters: false,
             liquid_cache: cache,
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
