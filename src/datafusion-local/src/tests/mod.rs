@@ -1,9 +1,6 @@
 use arrow_schema::{DataType, Field, Schema};
 use liquid_cache::{
-    cache::{
-        CacheStats,
-        squeeze_policies::{Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict},
-    },
+    cache::{CacheStats, Evict, EvictionPolicy, TranscodeEvict},
     cache_policies::LiquidPolicy,
 };
 use liquid_cache_datafusion::LiquidCacheParquetRef;
@@ -25,7 +22,6 @@ use crate::LiquidCacheLocalBuilder;
 mod date_optimizer;
 mod filter_limit;
 mod nested_filter;
-mod squeeze;
 mod variants;
 
 const TEST_FILE: &str = "../../examples/nano_hits.parquet";
@@ -83,11 +79,6 @@ impl fmt::Display for CacheStatsSummary {
             "entries.memory.liquid: {}",
             self.stats.memory_liquid_entries
         )?;
-        writeln!(
-            f,
-            "entries.memory.squeezed_liquid: {}",
-            self.stats.memory_squeezed_liquid_entries
-        )?;
         writeln!(f, "entries.disk.liquid: {}", self.stats.disk_liquid_entries)?;
         writeln!(f, "entries.disk.arrow: {}", self.stats.disk_arrow_entries)?;
         writeln!(f, "usage.memory_bytes: {}", self.stats.memory_usage_bytes)?;
@@ -98,7 +89,7 @@ impl fmt::Display for CacheStatsSummary {
 }
 
 async fn create_session_context_with_liquid_cache(
-    squeeze_policy: Box<dyn SqueezePolicy>,
+    eviction_policy: Box<dyn EvictionPolicy>,
     cache_size_bytes: usize,
     cache_dir: &Path,
 ) -> Result<(SessionContext, LiquidCacheParquetRef)> {
@@ -112,7 +103,7 @@ async fn create_session_context_with_liquid_cache(
         .with_prefetch(false)
         .with_max_memory_bytes(cache_size_bytes)
         .with_cache_dir(cache_dir.to_path_buf())
-        .with_squeeze_policy(squeeze_policy)
+        .with_eviction_policy(eviction_policy)
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .build(config)
         .await?;
@@ -181,12 +172,12 @@ async fn prefetch_matches_lazy_io() {
 
 async fn run_sql_with_cache(
     sql: &str,
-    squeeze_policy: Box<dyn SqueezePolicy>,
+    eviction_policy: Box<dyn EvictionPolicy>,
     cache_size_bytes: usize,
     cache_dir: &Path,
 ) -> QueryOutcome {
     let (ctx, cache) =
-        create_session_context_with_liquid_cache(squeeze_policy, cache_size_bytes, cache_dir)
+        create_session_context_with_liquid_cache(eviction_policy, cache_size_bytes, cache_dir)
             .await
             .unwrap();
 
@@ -217,14 +208,11 @@ async fn test_runner(sql: &str, reference: &str, cache_dir: &Path) {
     let cache_sizes = [10 * 1024, 1024 * 1024, usize::MAX]; // 10KB, 1MB, unlimited
 
     for cache_size in cache_sizes {
-        let squeeze_policies: Vec<Box<dyn SqueezePolicy>> = vec![
-            Box::new(TranscodeSqueezeEvict),
-            Box::new(Evict),
-            Box::new(TranscodeEvict),
-        ];
-        for squeeze_policy in squeeze_policies {
+        let eviction_policies: Vec<Box<dyn EvictionPolicy>> =
+            vec![Box::new(TranscodeEvict), Box::new(Evict)];
+        for eviction_policy in eviction_policies {
             let QueryOutcome { values, .. } =
-                run_sql_with_cache(sql, squeeze_policy, cache_size, cache_dir).await;
+                run_sql_with_cache(sql, eviction_policy, cache_size, cache_dir).await;
             assert_eq!(
                 values, reference,
                 "Results differ, cache_size: {cache_size}"
@@ -242,13 +230,7 @@ async fn test_url_prefix_filtering() {
         values,
         plan,
         stats,
-    } = run_sql_with_cache(
-        sql,
-        Box::new(TranscodeSqueezeEvict),
-        1024 * 1024,
-        cache_dir.path(),
-    )
-    .await;
+    } = run_sql_with_cache(sql, Box::new(TranscodeEvict), 1024 * 1024, cache_dir.path()).await;
 
     assert!(stats.has_cache_hits());
     assert!(stats.entries_reused());
@@ -271,13 +253,7 @@ async fn test_url_selection_and_ordering() {
         values,
         plan,
         stats,
-    } = run_sql_with_cache(
-        sql,
-        Box::new(TranscodeSqueezeEvict),
-        1024 * 300,
-        cache_dir.path(),
-    )
-    .await;
+    } = run_sql_with_cache(sql, Box::new(TranscodeEvict), 1024 * 300, cache_dir.path()).await;
 
     assert!(stats.has_cache_hits());
     assert!(stats.entries_reused());
@@ -300,13 +276,7 @@ async fn test_os_selection() {
         values,
         plan,
         stats,
-    } = run_sql_with_cache(
-        sql,
-        Box::new(TranscodeSqueezeEvict),
-        1024 * 1024,
-        cache_dir.path(),
-    )
-    .await;
+    } = run_sql_with_cache(sql, Box::new(TranscodeEvict), 1024 * 1024, cache_dir.path()).await;
 
     assert!(stats.has_cache_hits());
     assert!(stats.entries_reused());
@@ -330,13 +300,7 @@ async fn test_referer_filtering() {
         values,
         plan,
         stats,
-    } = run_sql_with_cache(
-        sql,
-        Box::new(TranscodeSqueezeEvict),
-        1024 * 1024,
-        cache_dir.path(),
-    )
-    .await;
+    } = run_sql_with_cache(sql, Box::new(TranscodeEvict), 1024 * 1024, cache_dir.path()).await;
 
     assert!(stats.has_cache_hits());
     assert!(stats.entries_reused());
@@ -360,13 +324,7 @@ async fn test_single_column_filter_projection() {
         values,
         plan,
         stats,
-    } = run_sql_with_cache(
-        sql,
-        Box::new(TranscodeSqueezeEvict),
-        1024 * 1024,
-        cache_dir.path(),
-    )
-    .await;
+    } = run_sql_with_cache(sql, Box::new(TranscodeEvict), 1024 * 1024, cache_dir.path()).await;
 
     assert!(stats.has_cache_hits());
     assert!(stats.entries_reused());
@@ -393,7 +351,7 @@ async fn test_provide_schema2() {
         .with_prefetch(false)
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_max_memory_bytes(1024 * 1024)
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(config)
         .await
         .unwrap();
@@ -482,13 +440,7 @@ async fn test_provide_schema_with_filter() {
         values,
         plan,
         stats,
-    } = run_sql_with_cache(
-        sql,
-        Box::new(TranscodeSqueezeEvict),
-        1024 * 1024,
-        cache_dir.path(),
-    )
-    .await;
+    } = run_sql_with_cache(sql, Box::new(TranscodeEvict), 1024 * 1024, cache_dir.path()).await;
 
     assert!(stats.has_cache_hits());
     assert!(stats.entries_reused());
@@ -501,7 +453,7 @@ async fn test_provide_schema_with_filter() {
     ));
 
     let (ctx, _) = LiquidCacheLocalBuilder::new()
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -545,7 +497,7 @@ async fn test_repartitioned_file_scan_cache_correctness() {
 
     let reference = run_sql_with_cache(
         sql,
-        Box::new(TranscodeSqueezeEvict),
+        Box::new(TranscodeEvict),
         1024 * 1024,
         reference_cache_dir.path(),
     )
@@ -559,7 +511,7 @@ async fn test_repartitioned_file_scan_cache_correctness() {
     let (ctx, cache) = LiquidCacheLocalBuilder::new()
         .with_max_memory_bytes(1024 * 1024)
         .with_cache_dir(parallel_cache_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .build(config)
         .await

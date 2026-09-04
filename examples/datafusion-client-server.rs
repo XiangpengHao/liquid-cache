@@ -2,7 +2,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use clap::{Parser, ValueEnum};
 use datafusion::{error::Result, execution::object_store::ObjectStoreUrl, prelude::*};
 use liquid_cache_datafusion_client::LiquidCacheClientBuilder;
-use liquid_cache_datafusion_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache_datafusion_local::storage::cache::TranscodeEvict;
 use liquid_cache_datafusion_local::storage::cache::{AlwaysHydrate, LiquidPolicy};
 use liquid_cache_datafusion_server::LiquidCacheService;
 use std::path::Path;
@@ -57,7 +57,7 @@ async fn run_server() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some(1024 * 1024 * 1024),          // max memory size 1GB
         Some(tempfile::tempdir()?.keep()), // disk cache dir
         Box::new(LiquidPolicy::new()),
-        Box::new(TranscodeSqueezeEvict),
+        Box::new(TranscodeEvict),
         Box::new(AlwaysHydrate::new()),
     )
     .await?;

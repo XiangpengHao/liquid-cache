@@ -1,6 +1,6 @@
 use datafusion::prelude::SessionConfig;
 use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
-use liquid_cache_datafusion_local::storage::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache_datafusion_local::storage::cache::TranscodeEvict;
 use liquid_cache_datafusion_local::storage::cache_policies::LiquidPolicy;
 use tempfile::TempDir;
 
@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_memory_bytes(1024 * 1024 * 1024) // 1GB
         .with_max_disk_bytes(1024 * 1024 * 1024 * 10) // 10GB
         .with_cache_dir(temp_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .build(SessionConfig::new())
         .await?;

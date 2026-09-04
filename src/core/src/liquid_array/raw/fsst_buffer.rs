@@ -9,11 +9,9 @@ use bytes;
 use fsst::{Compressor, Decompressor, Symbol};
 use std::io::Result;
 use std::io::{Error, ErrorKind};
-use std::ops::Range;
 use std::sync::Arc;
 
 use crate::liquid_array::fix_len_byte_array::ArrowFixedLenByteArrayType;
-use crate::liquid_array::{LiquidByteViewArray, SqueezeIoHandler};
 
 mod sealed {
     pub trait Sealed {}
@@ -21,7 +19,6 @@ mod sealed {
 
 /// Raw FSST buffer that stores compressed data using Arrow Buffer.
 /// Offsets are managed externally as a `u32` slice (including the final sentinel offset).
-#[derive(Clone)]
 pub(crate) struct RawFsstBuffer {
     values: Buffer,
     uncompressed_bytes: usize,
@@ -616,7 +613,7 @@ impl FsstArray {
 }
 /// FSST backing store for `LiquidByteViewArray` (in-memory or disk-only handle).
 pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
-    /// Get the uncompressed bytes of the FSST buffer (used for sizing / squeeze bookkeeping).
+    /// Get the uncompressed bytes of the FSST buffer.
     fn uncompressed_bytes(&self) -> usize;
 
     /// Get the in-memory size of the FSST backing (raw bytes + any in-memory indices).
@@ -624,7 +621,6 @@ pub trait FsstBacking: std::fmt::Debug + Clone + sealed::Sealed {
 }
 
 impl sealed::Sealed for FsstArray {}
-impl sealed::Sealed for DiskBuffer {}
 
 impl FsstArray {
     pub(crate) fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
@@ -673,90 +669,6 @@ impl FsstBacking for FsstArray {
         self.raw.get_memory_size()
             + self.compact_offsets.memory_usage()
             + std::mem::size_of::<Self>()
-    }
-}
-
-/// Disk buffer for FSST buffer.
-#[derive(Clone)]
-pub struct DiskBuffer {
-    uncompressed_bytes: usize,
-    io: Arc<dyn SqueezeIoHandler>,
-    disk_range: Range<u64>,
-    compressor: Arc<Compressor>,
-}
-
-impl std::fmt::Debug for DiskBuffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskBuffer")
-            .field("uncompressed_bytes", &self.uncompressed_bytes)
-            .field("disk_range", &self.disk_range)
-            .field("io", &self.io)
-            .field("compressor", &"<Compressor>")
-            .finish()
-    }
-}
-
-impl DiskBuffer {
-    pub(crate) fn new(
-        uncompressed_bytes: usize,
-        io: Arc<dyn SqueezeIoHandler>,
-        disk_range: Range<u64>,
-        compressor: Arc<Compressor>,
-    ) -> Self {
-        Self {
-            uncompressed_bytes,
-            io,
-            disk_range,
-            compressor,
-        }
-    }
-
-    pub(crate) fn squeeze_io(&self) -> &Arc<dyn SqueezeIoHandler> {
-        &self.io
-    }
-
-    pub(crate) fn disk_range(&self) -> Range<u64> {
-        self.disk_range.clone()
-    }
-
-    pub(crate) fn disk_range_len(&self) -> usize {
-        (self.disk_range.end - self.disk_range.start) as usize
-    }
-
-    pub(crate) fn compressor_arc(&self) -> Arc<Compressor> {
-        self.compressor.clone()
-    }
-}
-
-impl DiskBuffer {
-    pub(crate) async fn to_uncompressed(&self) -> (Buffer, OffsetBuffer<i32>) {
-        let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
-        let byte_view =
-            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
-        byte_view.fsst_buffer.to_uncompressed()
-    }
-
-    pub(crate) async fn to_uncompressed_selected(
-        &self,
-        selected: &[usize],
-    ) -> (Buffer, OffsetBuffer<i32>) {
-        let bytes = self.io.read(Some(self.disk_range.clone())).await.unwrap();
-        let byte_view =
-            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.compressor.clone());
-        let total_count = byte_view.prefix_keys.len();
-        self.io
-            .tracing_decompress_count(selected.len(), total_count);
-        byte_view.fsst_buffer.to_uncompressed_selected(selected)
-    }
-}
-
-impl FsstBacking for DiskBuffer {
-    fn uncompressed_bytes(&self) -> usize {
-        self.uncompressed_bytes
-    }
-
-    fn get_array_memory_size(&self) -> usize {
-        0
     }
 }
 

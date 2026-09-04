@@ -1,11 +1,11 @@
-//! Physical-plan lineage analysis for squeeze hints.
+//! Physical-plan lineage analysis for lineage expressions.
 //!
 //! This replaces the old logical [`LineageOptimizer`](super) + global
 //! `Arc::as_ptr` registry + field-metadata-string machinery. We analyze the
 //! *physical* plan directly: for every parquet scan we look at how each of its
 //! output columns is consumed by the operators above it (and by the scan's own
 //! pushed-down projection/filter), and we derive a typed [`CacheExpression`]
-//! per file column describing the cheapest faithful squeeze.
+//! per file column describing the safe cache expression.
 //!
 //! Working on the physical plan buys two things over the previous logical
 //! approach:
@@ -49,7 +49,7 @@ use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMerge
 use liquid_cache::cache::CacheExpression;
 use liquid_cache::liquid_array::Date32Field;
 
-use crate::cache::ColumnSqueezeHints;
+use crate::cache::ColumnLineages;
 
 /// Stable identity of a node within a single analysis pass: the data address of
 /// its `Arc`. Valid only for the lifetime of one [`HintAnalyzer::analyze`] call
@@ -93,7 +93,7 @@ struct ColumnStats {
     usages: Vec<Vec<Op>>,
 }
 
-/// Analyzes a physical plan and produces, per parquet scan, the typed squeeze
+/// Analyzes a physical plan and produces, per parquet scan, the typed lineage
 /// hint for each of its file columns.
 #[derive(Default)]
 pub(crate) struct HintAnalyzer {
@@ -103,18 +103,18 @@ pub(crate) struct HintAnalyzer {
     scan_columns: HashMap<NodePtr, Vec<(String, DataType)>>,
 }
 
-/// Squeeze hints derived from a physical plan, keyed by the analyzed scan
+/// Lineage expressions derived from a physical plan, keyed by the analyzed scan
 /// nodes. Valid only for the plan it was analyzed from (keyed by `Arc` identity).
 ///
 /// Local mode consumes this directly during the parquet-scan rewrite; the Flight
 /// client uses [`Self::for_fragment`] to extract the hints for the single scan
 /// inside each pushed-down fragment so they can be shipped to the cache server.
-pub struct SqueezeHintMap {
-    per_scan: HashMap<NodePtr, ColumnSqueezeHints>,
+pub struct LineageHints {
+    per_scan: HashMap<NodePtr, ColumnLineages>,
 }
 
-impl SqueezeHintMap {
-    /// Analyze a physical plan and derive per-scan squeeze hints.
+impl LineageHints {
+    /// Analyze a physical plan and derive per-scan lineage expressions.
     pub fn analyze(plan: &std::sync::Arc<dyn ExecutionPlan>) -> Self {
         Self {
             per_scan: HintAnalyzer::analyze(plan),
@@ -130,8 +130,8 @@ impl SqueezeHintMap {
     ///
     /// Pushed-down fragments are single-scan, so this returns that scan's hints;
     /// `fragment` must be a node from the same plan this map was analyzed from.
-    pub fn for_fragment(&self, fragment: &std::sync::Arc<dyn ExecutionPlan>) -> ColumnSqueezeHints {
-        let mut merged = ColumnSqueezeHints::default();
+    pub fn for_fragment(&self, fragment: &std::sync::Arc<dyn ExecutionPlan>) -> ColumnLineages {
+        let mut merged = ColumnLineages::default();
         fragment
             .apply(|node| {
                 if let Some(hints) = self.per_scan.get(&node_ptr(node)) {
@@ -147,11 +147,11 @@ impl SqueezeHintMap {
 }
 
 impl HintAnalyzer {
-    /// Analyze `plan` and return, keyed by scan node pointer, the squeeze hints
+    /// Analyze `plan` and return, keyed by scan node pointer, the lineage expressions
     /// for that scan's file columns.
     pub(crate) fn analyze(
         plan: &std::sync::Arc<dyn ExecutionPlan>,
-    ) -> HashMap<NodePtr, ColumnSqueezeHints> {
+    ) -> HashMap<NodePtr, ColumnLineages> {
         let mut analyzer = HintAnalyzer::default();
         let root = analyzer.visit(plan);
         // Columns that escape the top of the analyzed plan (returned to the
@@ -328,7 +328,7 @@ impl HintAnalyzer {
         // A pushed-down filter consumes columns directly at the scan (with
         // filter pushdown enabled, `WHERE col LIKE '%x%'` lives here rather than
         // in a FilterExec above). Record those usages so substring searches are
-        // detected and columns used in other predicates are not wrongly squeezed.
+        // detected and columns used in other predicates are not given a partial representation.
         if let Some(predicate) = parquet.filter() {
             let usages = lineage_for_expr(&predicate, &base);
             self.record(&usages);
@@ -396,8 +396,8 @@ impl HintAnalyzer {
         opaque(plan)
     }
 
-    fn finish(self) -> HashMap<NodePtr, ColumnSqueezeHints> {
-        let mut per_scan: HashMap<NodePtr, ColumnSqueezeHints> = HashMap::new();
+    fn finish(self) -> HashMap<NodePtr, ColumnLineages> {
+        let mut per_scan: HashMap<NodePtr, ColumnLineages> = HashMap::new();
 
         for ((scan, col), stats) in &self.stats {
             let Some(columns) = self.scan_columns.get(scan) else {
@@ -503,7 +503,7 @@ fn propagate_other(expr: &std::sync::Arc<dyn PhysicalExpr>, input: &LineageMap) 
     combined
 }
 
-/// Decide the squeeze hint for one file column from its observed op chains.
+/// Decide the lineage expression for one file column from its observed op chains.
 fn derive_hint(data_type: &DataType, usages: &[Vec<Op>]) -> Option<CacheExpression> {
     if usages.is_empty() {
         return None;
@@ -562,7 +562,7 @@ fn derive_variant(usages: &[Vec<Op>]) -> Option<CacheExpression> {
                     None => {
                         seen.insert(path.clone(), data_type.clone());
                         // A variant_get without an explicit type hint cannot be
-                        // squeezed to a typed column; only record typed paths.
+                        // represented as a typed column; only record typed paths.
                         if let Some(dt) = data_type {
                             requests.push((path.clone(), dt.clone()));
                         }
@@ -570,7 +570,7 @@ fn derive_variant(usages: &[Vec<Op>]) -> Option<CacheExpression> {
                 }
             }
             // Raw passthrough of a variant column does not invalidate the hint:
-            // the squeezed representation keeps a disk backing for full reads.
+            // the partial representation keeps a disk backing for full reads.
             None => continue,
             _ => return None,
         }
@@ -659,17 +659,17 @@ fn is_date_part_type(data_type: &DataType) -> bool {
 /// liquid-cache-backed equivalent. Returns `None` for non-parquet nodes.
 pub(crate) type ScanConverter<'a> = dyn FnMut(
         &std::sync::Arc<dyn ExecutionPlan>,
-        ColumnSqueezeHints,
+        ColumnLineages,
     ) -> Option<std::sync::Arc<dyn ExecutionPlan>>
     + 'a;
 
-/// Rewrite every parquet scan in `plan`, attaching the squeeze hints derived for
+/// Rewrite every parquet scan in `plan`, attaching the lineage expressions derived for
 /// it. `hints` resolves a scan's node pointer to its hints; scans absent from
-/// the map get [`ColumnSqueezeHints::default`].
+/// the map get [`ColumnLineages::default`].
 pub(crate) fn rewrite_with_hints(
     plan: std::sync::Arc<dyn ExecutionPlan>,
     convert: &mut ScanConverter<'_>,
-    hints: &HashMap<NodePtr, ColumnSqueezeHints>,
+    hints: &HashMap<NodePtr, ColumnLineages>,
 ) -> std::sync::Arc<dyn ExecutionPlan> {
     plan.transform_up(|node| {
         let ptr = node_ptr(&node);
@@ -727,7 +727,7 @@ mod tests {
         writer.close().unwrap();
     }
 
-    async fn hints_for(sql: &str) -> ColumnSqueezeHints {
+    async fn hints_for(sql: &str) -> ColumnLineages {
         let mut config = SessionConfig::new();
         // Mirror liquid cache: predicates are pushed into the parquet scan.
         config.options_mut().execution.parquet.pushdown_filters = true;
@@ -741,7 +741,7 @@ mod tests {
 
         let df = ctx.sql(sql).await.unwrap();
         let plan = df.create_physical_plan().await.unwrap();
-        let map = SqueezeHintMap::analyze(&plan);
+        let map = LineageHints::analyze(&plan);
         // Single-table queries: one scan, so the merged fragment hints are it.
         map.for_fragment(&plan)
     }
@@ -781,7 +781,7 @@ mod tests {
 
     #[tokio::test]
     async fn mixed_raw_and_extract_gets_no_hint() {
-        // `date` escapes raw in the projection, so it cannot be squeezed.
+        // `date` escapes raw in the projection, so it must remain available in full.
         let hints = hints_for("SELECT date, EXTRACT(YEAR FROM date) AS y FROM t").await;
         assert_eq!(hints.get("date"), None);
     }
@@ -795,7 +795,7 @@ mod tests {
         .await;
 
         // The aggregate argument needs only YEAR, but its filter needs the
-        // exact date, so squeezing the column to YEAR would change the result.
+        // exact date, so retaining only YEAR would change the result.
         assert_eq!(hints.get("date"), None);
     }
 

@@ -9,7 +9,7 @@ use arrow::buffer::BooleanBuffer;
 use super::cached_batch::CacheEntry;
 use super::core::LiquidCache;
 use super::io_context::{DefaultCacheMetadata, EntryMetadata};
-use super::policies::{CachePolicy, HydrationPolicy, SqueezePolicy, TranscodeSqueezeEvict};
+use super::policies::{CachePolicy, EvictionPolicy, HydrationPolicy, TranscodeEvict};
 use super::{CacheExpression, CacheFull, EntryID, LiquidExpr, LiquidPolicy};
 use crate::sync::Arc;
 
@@ -35,10 +35,10 @@ pub struct LiquidCacheBuilder {
     max_disk_bytes: usize,
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
-    squeeze_policy: Box<dyn SqueezePolicy>,
+    eviction_policy: Box<dyn EvictionPolicy>,
     metadata: Option<Arc<dyn EntryMetadata>>,
     store: Option<t4::Store>,
-    squeeze_victims_concurrently: bool,
+    evict_victims_concurrently: bool,
 }
 
 impl Default for LiquidCacheBuilder {
@@ -58,10 +58,10 @@ impl LiquidCacheBuilder {
             max_disk_bytes,
             cache_policy: Box::new(LiquidPolicy::new()),
             hydration_policy: Box::new(super::AlwaysHydrate::new()),
-            squeeze_policy: Box::new(TranscodeSqueezeEvict),
+            eviction_policy: Box::new(TranscodeEvict),
             metadata: None,
             store: None,
-            squeeze_victims_concurrently: !cfg!(test),
+            evict_victims_concurrently: !cfg!(test),
         }
     }
 
@@ -100,10 +100,10 @@ impl LiquidCacheBuilder {
         self
     }
 
-    /// Set the squeeze policy for the cache.
-    /// Default is [TranscodeSqueezeEvict].
-    pub fn with_squeeze_policy(mut self, policy: Box<dyn SqueezePolicy>) -> Self {
-        self.squeeze_policy = policy;
+    /// Set the eviction policy for the cache.
+    /// Default is [TranscodeEvict].
+    pub fn with_eviction_policy(mut self, policy: Box<dyn EvictionPolicy>) -> Self {
+        self.eviction_policy = policy;
         self
     }
 
@@ -121,9 +121,9 @@ impl LiquidCacheBuilder {
         self
     }
 
-    /// Set whether cache victims are squeezed concurrently.
-    pub fn with_squeeze_victims_concurrently(mut self, enabled: bool) -> Self {
-        self.squeeze_victims_concurrently = enabled;
+    /// Set whether cache victims are evicted concurrently.
+    pub fn with_evict_victims_concurrently(mut self, enabled: bool) -> Self {
+        self.evict_victims_concurrently = enabled;
         self
     }
 
@@ -149,12 +149,12 @@ impl LiquidCacheBuilder {
             self.batch_size,
             self.max_memory_bytes,
             self.max_disk_bytes,
-            self.squeeze_policy,
+            self.eviction_policy,
             self.cache_policy,
             self.hydration_policy,
             metadata,
             store,
-            self.squeeze_victims_concurrently,
+            self.evict_victims_concurrently,
         ))
     }
 }
@@ -177,7 +177,7 @@ pub struct Insert<'a> {
     pub(super) entry_id: EntryID,
     pub(super) batch: ArrayRef,
     pub(super) skip_gc: bool,
-    pub(super) squeeze_hint: Option<Arc<CacheExpression>>,
+    pub(super) lineage: Option<Arc<CacheExpression>>,
 }
 
 impl<'a> Insert<'a> {
@@ -187,7 +187,7 @@ impl<'a> Insert<'a> {
             entry_id,
             batch,
             skip_gc: false,
-            squeeze_hint: None,
+            lineage: None,
         }
     }
 
@@ -197,9 +197,9 @@ impl<'a> Insert<'a> {
         self
     }
 
-    /// Set a squeeze hint for the entry.
-    pub fn with_squeeze_hint(mut self, expression: Arc<CacheExpression>) -> Self {
-        self.squeeze_hint = Some(expression);
+    /// Set a lineage expression for the entry.
+    pub fn with_lineage(mut self, expression: Arc<CacheExpression>) -> Self {
+        self.lineage = Some(expression);
         self
     }
 
@@ -209,8 +209,8 @@ impl<'a> Insert<'a> {
         } else {
             maybe_gc_view_arrays(&self.batch).unwrap_or_else(|| self.batch.clone())
         };
-        if let Some(squeeze_hint) = self.squeeze_hint {
-            self.storage.add_squeeze_hint(&self.entry_id, squeeze_hint);
+        if let Some(lineage) = self.lineage {
+            self.storage.add_lineage(&self.entry_id, lineage);
         }
         let batch = CacheEntry::memory_arrow(batch);
         self.storage.insert_inner(self.entry_id, batch).await

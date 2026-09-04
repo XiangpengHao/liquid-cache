@@ -9,7 +9,7 @@ use datafusion::parquet::{
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
 use liquid_cache::cache::NoHydration;
-use liquid_cache::cache::squeeze_policies::{Evict, TranscodeEvict, TranscodeSqueezeEvict};
+use liquid_cache::cache::{Evict, TranscodeEvict};
 use liquid_cache::cache_policies::LiquidPolicy;
 use liquid_cache_datafusion::{LiquidCacheParquetRef, extract_execution_metrics};
 use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
@@ -190,7 +190,6 @@ pub enum InProcessBenchmarkMode {
     Arrow,
     #[default]
     Liquid,
-    LiquidNoSqueeze,
 }
 
 impl std::str::FromStr for InProcessBenchmarkMode {
@@ -202,10 +201,9 @@ impl std::str::FromStr for InProcessBenchmarkMode {
             "datafusion-default" | "datafusion" => InProcessBenchmarkMode::DataFusionDefault,
             "arrow" => InProcessBenchmarkMode::Arrow,
             "liquid" => InProcessBenchmarkMode::Liquid,
-            "liquid-no-squeeze" => InProcessBenchmarkMode::LiquidNoSqueeze,
             _ => {
                 return Err(format!(
-                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, datafusion-default, arrow, liquid, liquid-no-squeeze"
+                    "Invalid in-process benchmark mode: {s}, must be one of: parquet, datafusion-default, arrow, liquid"
                 ));
             }
         })
@@ -350,7 +348,7 @@ impl InProcessBenchmarkRunner {
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
-                    .with_squeeze_policy(Box::new(Evict))
+                    .with_eviction_policy(Box::new(Evict))
                     .build(session_config)
                     .await?;
                 (v.0, Some(v.1))
@@ -361,18 +359,7 @@ impl InProcessBenchmarkRunner {
                     .with_cache_dir(cache_dir)
                     .with_cache_policy(Box::new(LiquidPolicy::new()))
                     .with_hydration_policy(Box::new(NoHydration::new()))
-                    .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
-                    .build(session_config)
-                    .await?;
-                (v.0, Some(v.1))
-            }
-            InProcessBenchmarkMode::LiquidNoSqueeze => {
-                let v = LiquidCacheLocalBuilder::new()
-                    .with_max_memory_bytes(cache_size)
-                    .with_cache_dir(cache_dir)
-                    .with_cache_policy(Box::new(LiquidPolicy::new()))
-                    .with_hydration_policy(Box::new(NoHydration::new()))
-                    .with_squeeze_policy(Box::new(TranscodeEvict))
+                    .with_eviction_policy(Box::new(TranscodeEvict))
                     .build(session_config)
                     .await?;
                 (v.0, Some(v.1))

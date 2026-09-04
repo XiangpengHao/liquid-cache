@@ -7,9 +7,7 @@ use datafusion::{error::Result, physical_plan::ExecutionPlan};
 use fastrace::Span;
 use fastrace::future::FutureExt as _;
 use liquid_cache::cache::CacheStats;
-use liquid_cache::cache::squeeze_policies::{
-    Evict, SqueezePolicy, TranscodeEvict, TranscodeSqueezeEvict,
-};
+use liquid_cache::cache::{Evict, EvictionPolicy, TranscodeEvict};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_datafusion_server::{ApiResponse, ExecutionStats};
 use log::info;
@@ -302,15 +300,13 @@ pub enum BenchmarkMode {
     Arrow,
     #[default]
     Liquid,
-    LiquidNoSqueeze,
 }
 
 impl BenchmarkMode {
-    pub fn to_squeeze_policy(&self) -> Box<dyn SqueezePolicy> {
+    pub fn to_eviction_policy(&self) -> Box<dyn EvictionPolicy> {
         match self {
             BenchmarkMode::Arrow => Box::new(Evict),
-            BenchmarkMode::Liquid => Box::new(TranscodeSqueezeEvict),
-            BenchmarkMode::LiquidNoSqueeze => Box::new(TranscodeEvict),
+            BenchmarkMode::Liquid => Box::new(TranscodeEvict),
         }
     }
 }
@@ -323,7 +319,6 @@ impl Display for BenchmarkMode {
             match self {
                 BenchmarkMode::Arrow => "arrow",
                 BenchmarkMode::Liquid => "liquid",
-                BenchmarkMode::LiquidNoSqueeze => "liquid-no-squeeze",
             }
         )
     }
@@ -336,7 +331,6 @@ impl FromStr for BenchmarkMode {
         Ok(match s {
             "arrow" => BenchmarkMode::Arrow,
             "liquid" => BenchmarkMode::Liquid,
-            "liquid-no-squeeze" => BenchmarkMode::LiquidNoSqueeze,
             _ => return Err(format!("Invalid benchmark mode: {s}")),
         })
     }
@@ -468,10 +462,9 @@ impl Display for IterationResult {
             write_border_sep(f, INNER)?;
             let total_value = format!("{}", cache_stats.total_entries);
             let stats_value = format!(
-                "(A:{} L:{} S-L:{} D-L:{} D-A:{})",
+                "(A:{} L:{} D-L:{} D-A:{})",
                 cache_stats.memory_arrow_entries,
                 cache_stats.memory_liquid_entries,
-                cache_stats.memory_squeezed_liquid_entries,
                 cache_stats.disk_liquid_entries,
                 cache_stats.disk_arrow_entries
             );

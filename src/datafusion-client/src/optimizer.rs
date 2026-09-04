@@ -12,7 +12,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, execution_plan::replace_children_if_necessary},
 };
 
-use liquid_cache_datafusion::optimizers::SqueezeHintMap;
+use liquid_cache_datafusion::optimizers::LineageHints;
 
 use crate::client_exec::LiquidCacheClientExec;
 
@@ -47,7 +47,7 @@ impl PushdownOptimizer {
     fn optimize_plan(
         &self,
         plan: Arc<dyn ExecutionPlan>,
-        hints: &SqueezeHintMap,
+        hints: &LineageHints,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         // If this node is already a LiquidCacheClientExec, return it as is
         if plan.is::<LiquidCacheClientExec>() {
@@ -58,16 +58,16 @@ impl PushdownOptimizer {
         if let Some(candidate) = find_pushdown_candidate(&plan) {
             // If the current node is the one to be pushed down, wrap it
             if Arc::ptr_eq(&plan, &candidate) {
-                // The fragment is single-scan; collect that scan's squeeze
+                // The fragment is single-scan; collect that scan's lineage
                 // hints (derived from the full plan, which includes the
                 // client-side projections that won't be shipped) so the server
                 // can apply them when it rebuilds the LiquidParquetSource.
-                let squeeze_hints = hints.for_fragment(&plan);
+                let lineages = hints.for_fragment(&plan);
                 return Ok(Arc::new(LiquidCacheClientExec::new(
                     plan,
                     self.cache_server.clone(),
                     self.object_stores.clone(),
-                    squeeze_hints,
+                    lineages,
                 )));
             }
         }
@@ -148,11 +148,11 @@ impl PhysicalOptimizerRule for PushdownOptimizer {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // Derive squeeze hints from the full physical plan up front: the
+        // Derive lineage expressions from the full physical plan up front: the
         // lineage that justifies a hint (e.g. a `date_part` projection) often
         // lives above the node we push down, so it must be captured before the
         // plan is split into fragments.
-        let hints = SqueezeHintMap::analyze(&plan);
+        let hints = LineageHints::analyze(&plan);
         self.optimize_plan(plan, &hints)
     }
 

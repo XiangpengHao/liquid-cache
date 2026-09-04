@@ -10,7 +10,7 @@ use arrow::{
 };
 use arrow_schema::{Field, Fields, Schema};
 use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
-use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache::cache::TranscodeEvict;
 use parquet::{
     arrow::ArrowWriter,
     variant::{VariantArray, VariantType, json_to_variant},
@@ -135,7 +135,7 @@ async fn test_variant_parquet_naive_read() {
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -172,7 +172,7 @@ async fn test_variant_transcoding_falls_back_to_disk_arrow() {
         .with_batch_size(1)
         .with_max_memory_bytes(64)
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -236,7 +236,7 @@ async fn test_variant_get() {
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -268,7 +268,7 @@ async fn test_variant_predicate() {
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -300,7 +300,7 @@ async fn test_variant_get_fails_when_value_field_not_nullable() {
 
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -367,7 +367,7 @@ fn write_large_variant_parquet_file(dir: &Path, num_rows: usize) -> PathBuf {
 }
 
 #[tokio::test]
-async fn test_large_variant_squeeze() {
+async fn test_large_variant_under_memory_pressure() {
     let cache_dir = TempDir::new().unwrap();
     let parquet_dir = TempDir::new().unwrap();
     let num_rows = 1_000;
@@ -377,7 +377,7 @@ async fn test_large_variant_squeeze() {
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_max_memory_bytes(1024)
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -417,7 +417,7 @@ async fn variant_multi_queries() {
     let (ctx, _cache) = LiquidCacheLocalBuilder::new()
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_max_memory_bytes(1024)
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();
@@ -467,7 +467,7 @@ async fn variant_multi_queries_complex() {
         .with_cache_dir(cache_dir.path().to_path_buf())
         .with_max_memory_bytes(1024 * 600)
         .with_batch_size(8)
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .build(SessionConfig::new())
         .await
         .unwrap();

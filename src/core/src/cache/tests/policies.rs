@@ -1,5 +1,5 @@
 use crate::cache::{
-    AlwaysHydrate, EntryID, LiquidCacheBuilder, LiquidPolicy, TranscodeSqueezeEvict,
+    AlwaysHydrate, EntryID, LiquidCacheBuilder, LiquidPolicy, TranscodeEvict,
     utils::create_test_arrow_array,
 };
 
@@ -11,7 +11,7 @@ async fn default_policies() {
     let cache = LiquidCacheBuilder::new()
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .with_max_memory_bytes(capacity)
         .build()
         .await;
@@ -39,7 +39,7 @@ async fn insert_wont_fit_cache() {
     let cache = LiquidCacheBuilder::new()
         .with_cache_policy(Box::new(LiquidPolicy::new()))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .with_max_memory_bytes(capacity)
         .build()
         .await;

@@ -211,7 +211,7 @@ pub fn CacheStateView(simulator: Signal<CacheSimulator>) -> Element {
                                             div { class: "flex items-center gap-1 flex-wrap min-h-5",
                                                 match state.victim_status.get(&entry.entry_id) {
                                                     Some(VictimStatus::Selected) => rsx!( Badge { label: "victim".to_string(), tone: "warn", class: "".to_string() } ),
-                                                    Some(VictimStatus::Squeezed) => rsx!( Badge { label: "squeezed".to_string(), tone: "neutral", class: "".to_string() } ),
+                                                    Some(VictimStatus::Evicted) => rsx!( Badge { label: "evicted".to_string(), tone: "neutral", class: "".to_string() } ),
                                                     None => rsx! {},
                                                 }
                                                 if let Some(op) = state.current_operations.get(&entry.entry_id) {

@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }));
     }
-    let squeeze_policy = args.cache_mode.to_squeeze_policy();
+    let eviction_policy = args.cache_mode.to_eviction_policy();
 
     // LiquidCache server mode
     let ctx = LiquidCacheService::context()?;
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_memory_bytes,
         args.disk_cache_dir.clone(),
         Box::new(LiquidPolicy::new()),
-        squeeze_policy,
+        eviction_policy,
         Box::new(NoHydration::new()),
     )
     .await?;

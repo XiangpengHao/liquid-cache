@@ -55,14 +55,14 @@ pub(crate) async fn create_cache_store(
     max_memory_bytes: usize,
     policy: Box<dyn super::policies::CachePolicy>,
 ) -> Arc<super::core::LiquidCache> {
-    use crate::cache::{AlwaysHydrate, LiquidCacheBuilder, TranscodeSqueezeEvict};
+    use crate::cache::{AlwaysHydrate, LiquidCacheBuilder, TranscodeEvict};
 
     let batch_size = 128;
 
     let builder = LiquidCacheBuilder::new()
         .with_batch_size(batch_size)
         .with_max_memory_bytes(max_memory_bytes)
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .with_cache_policy(policy);
     builder.build().await

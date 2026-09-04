@@ -12,7 +12,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::Column;
-use liquid_cache::cache::squeeze_policies::SqueezePolicy;
+use liquid_cache::cache::EvictionPolicy;
 use liquid_cache::cache::{
     CacheEntry, CacheExpression, CachePolicy, EntryID, EventTrace, HydrationPolicy, LiquidCache,
     LiquidCacheBuilder,
@@ -32,12 +32,12 @@ pub(crate) use column::{InsertArrowArrayError, PrefetchOutcome};
 pub(crate) use id::ColumnAccessPath;
 pub use id::{BatchID, ParquetArrayID};
 
-/// Typed squeeze hints for a single file, keyed by file-schema column name.
+/// Typed lineage expressions for a single file, keyed by file-schema column name.
 ///
-/// Produced by the physical squeeze-hint analyzer (local mode) or shipped from
+/// Produced by the physical lineage analyzer (local mode) or shipped from
 /// the client (Flight mode), and attached to the
 /// [`LiquidParquetSource`](crate::LiquidParquetSource) that opens the file.
-pub type ColumnSqueezeHints = HashMap<String, Arc<CacheExpression>>;
+pub type ColumnLineages = HashMap<String, Arc<CacheExpression>>;
 
 /// The identity of a Parquet object within an object store.
 ///
@@ -59,7 +59,7 @@ impl ParquetFileIdentity {
     }
 }
 
-/// One column of a row group: (file column index, field, squeeze hint, is-predicate).
+/// One column of a row group: (file column index, field, lineage expression, is-predicate).
 type CachedColumnSpec = (u64, Arc<Field>, Option<Arc<CacheExpression>>, bool);
 
 #[derive(Default, Debug)]
@@ -268,7 +268,7 @@ pub struct CachedFile {
     cache_store: Arc<LiquidCache>,
     file_id: u64,
     file_schema: SchemaRef,
-    squeeze_hints: Arc<ColumnSqueezeHints>,
+    lineages: Arc<ColumnLineages>,
 }
 
 impl CachedFile {
@@ -276,13 +276,13 @@ impl CachedFile {
         cache_store: Arc<LiquidCache>,
         file_id: u64,
         file_schema: SchemaRef,
-        squeeze_hints: Arc<ColumnSqueezeHints>,
+        lineages: Arc<ColumnLineages>,
     ) -> Self {
         Self {
             cache_store,
             file_id,
             file_schema,
-            squeeze_hints,
+            lineages,
         }
     }
 
@@ -308,7 +308,7 @@ impl CachedFile {
             .enumerate()
             .map(|(idx, field)| {
                 let is_predicate_column = predicate_column_ids.contains(&idx);
-                let expression = self.squeeze_hints.get(field.name()).cloned();
+                let expression = self.lineages.get(field.name()).cloned();
                 (
                     idx as u64,
                     Arc::clone(field),
@@ -363,34 +363,34 @@ impl LiquidCacheParquet {
         max_disk_bytes: usize,
         store: t4::Store,
         cache_policy: Box<dyn CachePolicy>,
-        squeeze_policy: Box<dyn SqueezePolicy>,
+        eviction_policy: Box<dyn EvictionPolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
     ) -> Self {
-        Self::new_with_squeeze_victim_concurrency(
+        Self::new_with_eviction_concurrency(
             batch_size,
             max_memory_bytes,
             max_disk_bytes,
             store,
             cache_policy,
-            squeeze_policy,
+            eviction_policy,
             hydration_policy,
             !cfg!(test),
         )
         .await
     }
 
-    /// Create a new cache for parquet files with explicit victim squeeze concurrency.
+    /// Create a new cache for parquet files with explicit victim eviction concurrency.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_squeeze_victim_concurrency(
+    pub async fn new_with_eviction_concurrency(
         batch_size: usize,
         max_memory_bytes: usize,
         max_disk_bytes: usize,
         store: t4::Store,
         cache_policy: Box<dyn CachePolicy>,
-        squeeze_policy: Box<dyn SqueezePolicy>,
+        eviction_policy: Box<dyn EvictionPolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
-        squeeze_victims_concurrently: bool,
+        evict_victims_concurrently: bool,
     ) -> Self {
         assert!(batch_size.is_power_of_two());
         let metadata = Arc::new(ParquetCacheMetadata::new());
@@ -398,12 +398,12 @@ impl LiquidCacheParquet {
             .with_batch_size(batch_size)
             .with_max_memory_bytes(max_memory_bytes)
             .with_max_disk_bytes(max_disk_bytes)
-            .with_squeeze_policy(squeeze_policy)
+            .with_eviction_policy(eviction_policy)
             .with_cache_policy(cache_policy)
             .with_hydration_policy(hydration_policy)
             .with_metadata(metadata)
             .with_store(store)
-            .with_squeeze_victims_concurrently(squeeze_victims_concurrently)
+            .with_evict_victims_concurrently(evict_victims_concurrently)
             .build()
             .await;
 
@@ -423,13 +423,13 @@ impl LiquidCacheParquet {
         self.register_or_get_file_with_hints(file_identity, full_file_schema, Arc::default())
     }
 
-    /// Register a file in the cache, attaching typed squeeze hints derived from
+    /// Register a file in the cache, attaching typed lineage expressions derived from
     /// the query plan (keyed by file-schema column name).
     pub fn register_or_get_file_with_hints(
         &self,
         file_identity: ParquetFileIdentity,
         full_file_schema: SchemaRef,
-        squeeze_hints: Arc<ColumnSqueezeHints>,
+        lineages: Arc<ColumnLineages>,
     ) -> CachedFileRef {
         let mut files = self.files.lock().unwrap();
         let file_id = *files
@@ -441,7 +441,7 @@ impl LiquidCacheParquet {
             self.cache_store.clone(),
             file_id,
             full_file_schema,
-            squeeze_hints,
+            lineages,
         ))
     }
 
@@ -533,7 +533,7 @@ mod tests {
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::expressions::Column;
     use liquid_cache::cache::AlwaysHydrate;
-    use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
+    use liquid_cache::cache::TranscodeEvict;
     use liquid_cache::cache_policies::LiquidPolicy;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
@@ -550,7 +550,7 @@ mod tests {
             usize::MAX,
             store,
             Box::new(LiquidPolicy::new()),
-            Box::new(TranscodeSqueezeEvict),
+            Box::new(TranscodeEvict),
             Box::new(AlwaysHydrate::new()),
         )
         .await;
@@ -576,7 +576,7 @@ mod tests {
             usize::MAX,
             store,
             Box::new(LiquidPolicy::new()),
-            Box::new(TranscodeSqueezeEvict),
+            Box::new(TranscodeEvict),
             Box::new(AlwaysHydrate::new()),
         )
         .await;

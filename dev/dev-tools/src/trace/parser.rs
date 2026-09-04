@@ -45,10 +45,10 @@ pub enum TraceEvent {
         entry: u64,
         kind: CacheKind,
     },
-    SqueezeBegin {
+    EvictionBegin {
         victims: Vec<u64>,
     },
-    SqueezeVictim {
+    EvictionVictim {
         entry: u64,
     },
     IoWrite {
@@ -108,10 +108,10 @@ impl TraceEvent {
                     kind.display_name()
                 )
             }
-            TraceEvent::SqueezeBegin { victims } => {
+            TraceEvent::EvictionBegin { victims } => {
                 format!("Begin squeeze (victims: {:?})", victims)
             }
-            TraceEvent::SqueezeVictim { entry } => {
+            TraceEvent::EvictionVictim { entry } => {
                 format!("Squeeze victim {}", entry)
             }
             TraceEvent::IoWrite { entry, kind, bytes } => {
@@ -195,8 +195,8 @@ impl TraceEvent {
         match self {
             TraceEvent::InsertSuccess { .. } => "insert_success",
             TraceEvent::InsertFailed { .. } => "insert_failed",
-            TraceEvent::SqueezeBegin { .. } => "squeeze_begin",
-            TraceEvent::SqueezeVictim { .. } => "squeeze_victim",
+            TraceEvent::EvictionBegin { .. } => "eviction_begin",
+            TraceEvent::EvictionVictim { .. } => "eviction_victim",
             TraceEvent::IoWrite { .. } => "io_write",
             TraceEvent::IoReadSqueezedBacking { .. } => "io_r_squeezed",
             TraceEvent::IoReadArrow { .. } => "io_read_arrow",
@@ -285,13 +285,13 @@ fn parse_event_line(line: &str) -> TraceEvent {
                 .unwrap_or(0),
             kind: fields.get("kind").map(|s| CacheKind::from_str(s)).unwrap(),
         },
-        Some("squeeze_begin") => TraceEvent::SqueezeBegin {
+        Some("eviction_begin") => TraceEvent::EvictionBegin {
             victims: fields
                 .get("victims")
                 .map(|s| parse_victims(s))
                 .unwrap_or_default(),
         },
-        Some("squeeze_victim") => TraceEvent::SqueezeVictim {
+        Some("eviction_victim") => TraceEvent::EvictionVictim {
             entry: fields
                 .get("entry")
                 .and_then(|s| s.parse().ok())

@@ -85,21 +85,6 @@ impl Observer {
     }
 
     #[inline]
-    pub(crate) fn on_get_squeezed_success(&self) {
-        self.runtime.incr_get_squeezed_success();
-    }
-
-    #[inline]
-    pub(crate) fn on_get_squeezed_needs_io(&self) {
-        self.runtime.incr_get_squeezed_needs_io();
-    }
-
-    #[inline]
-    pub(crate) fn on_hit_date32_expression(&self) {
-        self.runtime.incr_hit_date32_expression();
-    }
-
-    #[inline]
     pub(crate) fn on_disk_reservation_failure(&self) {
         self.runtime.incr_disk_reservation_failures();
     }
@@ -111,27 +96,11 @@ impl Observer {
             InternalEvent::IoReadArrow { .. } | InternalEvent::IoReadLiquid { .. } => {
                 self.runtime.incr_read_io_count()
             }
-            InternalEvent::IoReadSqueezedBacking { .. } => {
-                self.runtime.incr_read_io_count();
-                self.runtime.incr_get_squeezed_needs_io();
-            }
-            InternalEvent::DecompressSqueezed {
-                decompressed,
-                total,
-                ..
-            } => {
-                self.runtime
-                    .track_decompress_squeezed_count(decompressed, total);
-            }
             _ => {}
         }
 
         if cfg!(debug_assertions) {
             self.event_tracer.record(event);
         }
-    }
-
-    pub(crate) fn runtime_stats(&self) -> &RuntimeStats {
-        &self.runtime
     }
 }

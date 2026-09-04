@@ -53,8 +53,8 @@ pub enum EntryOperation {
 pub enum VictimStatus {
     /// Entry is selected as victim but not yet processed
     Selected,
-    /// Entry has been processed as victim (squeezed)
-    Squeezed,
+    /// Entry has been processed as victim (evicted)
+    Evicted,
 }
 
 /// Represents the complete cache state at a point in time
@@ -63,9 +63,9 @@ pub struct CacheState {
     /// Map of entry_id -> CacheEntry
     pub entries: BTreeMap<u64, CacheEntry>,
     /// Current squeeze victims being processed
-    pub squeeze_victims: Vec<u64>,
+    pub eviction_victims: Vec<u64>,
     /// Whether we're currently in a squeeze operation
-    pub in_squeeze: bool,
+    pub in_eviction: bool,
     /// Disk I/O statistics
     pub io_stats: IoStats,
     /// Delta changes in I/O stats for the current event
@@ -82,8 +82,8 @@ impl CacheState {
     pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
-            squeeze_victims: Vec::new(),
-            in_squeeze: false,
+            eviction_victims: Vec::new(),
+            in_eviction: false,
             io_stats: IoStats::default(),
             io_stats_delta: IoStatsDelta::default(),
             current_operations: BTreeMap::new(),
@@ -213,9 +213,9 @@ impl CacheSimulator {
                 // Track failed insert as ghost entry
                 self.state.failed_inserts.insert(*entry, kind.clone());
             }
-            TraceEvent::SqueezeBegin { victims } => {
-                self.state.in_squeeze = true;
-                self.state.squeeze_victims = victims.clone();
+            TraceEvent::EvictionBegin { victims } => {
+                self.state.in_eviction = true;
+                self.state.eviction_victims = victims.clone();
                 // Mark all victims as selected
                 for victim in victims {
                     self.state
@@ -223,17 +223,17 @@ impl CacheSimulator {
                         .insert(*victim, VictimStatus::Selected);
                 }
             }
-            TraceEvent::SqueezeVictim { entry } => {
+            TraceEvent::EvictionVictim { entry } => {
                 // Remove from squeeze victims list
-                self.state.squeeze_victims.retain(|v| v != entry);
-                // Mark as squeezed
+                self.state.eviction_victims.retain(|v| v != entry);
+                // Mark as evicted
                 self.state
                     .victim_status
-                    .insert(*entry, VictimStatus::Squeezed);
+                    .insert(*entry, VictimStatus::Evicted);
 
-                // Check if squeeze is complete
-                if self.state.squeeze_victims.is_empty() {
-                    self.state.in_squeeze = false;
+                // Check if eviction is complete
+                if self.state.eviction_victims.is_empty() {
+                    self.state.in_eviction = false;
                 }
             }
             TraceEvent::IoWrite { entry, bytes, .. } => {

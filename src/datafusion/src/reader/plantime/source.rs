@@ -1,5 +1,5 @@
 use super::LiquidMorselizer;
-use crate::cache::{ColumnSqueezeHints, LiquidCacheParquetRef};
+use crate::cache::{ColumnLineages, LiquidCacheParquetRef};
 use ahash::{HashMap, HashMapExt};
 use bytes::Bytes;
 use datafusion::{
@@ -199,7 +199,7 @@ pub struct LiquidParquetSource {
     projection: ProjectionExprs,
     table_schema: TableSchema,
     span: Option<Arc<fastrace::Span>>,
-    squeeze_hints: Arc<ColumnSqueezeHints>,
+    lineages: Arc<ColumnLineages>,
     prefetch: bool,
 }
 
@@ -224,11 +224,11 @@ impl LiquidParquetSource {
         }
     }
 
-    /// Attach typed squeeze hints (keyed by file-schema column name) derived
+    /// Attach typed lineage expressions (keyed by file-schema column name) derived
     /// from the query plan. These flow to the cache when the file is opened.
-    pub fn with_squeeze_hints(&self, squeeze_hints: Arc<ColumnSqueezeHints>) -> Self {
+    pub fn with_lineages(&self, lineages: Arc<ColumnLineages>) -> Self {
         Self {
-            squeeze_hints,
+            lineages,
             ..self.clone()
         }
     }
@@ -239,9 +239,9 @@ impl LiquidParquetSource {
         self
     }
 
-    /// The typed squeeze hints currently attached to this source.
-    pub fn squeeze_hints(&self) -> &Arc<ColumnSqueezeHints> {
-        &self.squeeze_hints
+    /// The typed lineage expressions currently attached to this source.
+    pub fn lineages(&self) -> &Arc<ColumnLineages> {
+        &self.lineages
     }
 
     /// Set predicate information.
@@ -271,7 +271,7 @@ impl LiquidParquetSource {
             metrics: source.metrics().clone(),
             predicate: None,
             span: None,
-            squeeze_hints: Arc::default(),
+            lineages: Arc::default(),
             prefetch: true,
         };
 
@@ -334,7 +334,7 @@ impl FileSource for LiquidParquetSource {
             reorder_filters: self.reorder_filters(),
             expr_adapter_factory,
             span: execution_span.map(Arc::new),
-            squeeze_hints: Arc::clone(&self.squeeze_hints),
+            lineages: Arc::clone(&self.lineages),
             prefetch: self.prefetch,
         }))
     }

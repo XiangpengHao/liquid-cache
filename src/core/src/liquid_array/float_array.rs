@@ -1,3 +1,4 @@
+use bytes::Bytes;
 ///
 /// Acknowledgement:
 /// The ALP compression implemented in this file is based on the Rust implementation available at https://github.com/spiraldb/alp
@@ -5,42 +6,27 @@
 use std::{
     any::Any,
     fmt::Debug,
-    num::NonZero,
     ops::{Mul, Shl, Shr},
     sync::Arc,
 };
 
 use arrow::{
-    array::{
-        Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, BooleanArray,
-        PrimitiveArray,
-    },
-    buffer::{BooleanBuffer, ScalarBuffer},
+    array::{Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, PrimitiveArray},
+    buffer::ScalarBuffer,
     datatypes::{
         ArrowNativeType, Float32Type, Float64Type, Int32Type, Int64Type, UInt32Type, UInt64Type,
     },
 };
 use arrow_schema::DataType;
-use datafusion_common::ScalarValue;
-use datafusion_expr_common::columnar_value::ColumnarValue;
-use datafusion_expr_common::operator::Operator as DFOperator;
-use datafusion_physical_expr::expressions::{BinaryExpr, Literal};
-use datafusion_physical_expr_common::datum::apply_cmp;
 use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, Float, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::cache::LiquidExpr;
 use crate::liquid_array::LiquidArray;
+use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::ipc::{PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
-use crate::liquid_array::{
-    LiquidSqueezedArray, LiquidSqueezedArrayRef, NeedsBacking, Operator, SqueezeResult,
-    SqueezedBacking, eval_predicate_on_array, ipc::LiquidIPCHeader,
-};
 use crate::utils::get_bit_width;
-use crate::{cache::CacheExpression, liquid_array::SqueezeIoHandler};
-use bytes::Bytes;
 
 mod private {
     use arrow::{
@@ -56,13 +42,6 @@ mod private {
 }
 
 const NUM_SAMPLES: usize = 1024; // we use FASTLANES to encode array, the sample size needs to be at least 1024 to get a good estimate of the best exponents
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FloatSqueezePolicy {
-    /// Quantize values into buckets (good for coarse filtering; requires disk to recover values).
-    #[default]
-    Quantize = 0,
-}
 
 /// LiquidFloatType is a sealed trait that represents all the float types supported by Liquid.
 /// Implementors are Float32Type and Float64Type. TODO(): What about Float16Type, decimal types?
@@ -236,7 +215,6 @@ pub struct LiquidFloatArray<T: LiquidFloatType> {
     patch_indices: Vec<u64>,
     patch_values: Vec<T::Native>,
     reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
-    squeeze_policy: FloatSqueezePolicy,
 }
 
 impl<T> LiquidFloatArray<T>
@@ -266,11 +244,6 @@ where
     pub fn from_arrow_array(arrow_array: arrow::array::PrimitiveArray<T>) -> LiquidFloatArray<T> {
         let best_exponents = get_best_exponents::<T>(&arrow_array);
         encode_arrow_array(&arrow_array, &best_exponents)
-    }
-
-    /// Get current squeeze policy for this array
-    pub fn squeeze_policy(&self) -> FloatSqueezePolicy {
-        self.squeeze_policy
     }
 }
 
@@ -333,60 +306,6 @@ where
 
     fn to_best_arrow_array(&self) -> ArrayRef {
         self.to_arrow_array()
-    }
-
-    fn squeeze(
-        &self,
-        io: Arc<dyn SqueezeIoHandler>,
-        _expression_hint: Option<&CacheExpression>,
-    ) -> Option<(super::LiquidSqueezedArrayRef, bytes::Bytes)> {
-        let orig_bw = self.bit_packed.bit_width()?;
-        if orig_bw.get() < 8 {
-            return None;
-        }
-
-        // New squeezed bit width is half of the original
-        let new_bw = orig_bw.get() / 2;
-
-        let full_bytes = Bytes::from(self.to_bytes_inner());
-        let disk_range = 0u64..(full_bytes.len() as u64);
-
-        let (_dt, values, nulls) = self.bit_packed.to_primitive().into_parts();
-
-        match self.squeeze_policy {
-            FloatSqueezePolicy::Quantize => {
-                let shift = orig_bw.get() - new_bw;
-                let quantized_min = self.reference_value.shr(shift);
-                // let quantized_max = values
-                let quantized_values: ScalarBuffer<
-                    <T::UnsignedIntType as ArrowPrimitiveType>::Native,
-                > = ScalarBuffer::from_iter(values.iter().map(|&v| {
-                    let signed_val: <T::SignedIntType as ArrowPrimitiveType>::Native = v.as_();
-                    let v_signed = self.reference_value.add_wrapping(signed_val);
-                    let v_quantized: <T::SignedIntType as ArrowPrimitiveType>::Native =
-                        v_signed.shr(shift);
-                    v_quantized.sub_wrapping(quantized_min).as_()
-                }));
-                let quantized_array =
-                    PrimitiveArray::<<T as LiquidFloatType>::UnsignedIntType>::new(
-                        quantized_values,
-                        nulls.clone(),
-                    );
-                let quantized_bitpacked =
-                    BitPackedArray::from_primitive(quantized_array, NonZero::new(new_bw).unwrap());
-                let hybrid = LiquidFloatQuantizedArray::<T> {
-                    exponent: self.exponent,
-                    quantized: quantized_bitpacked,
-                    reference_value: self.reference_value,
-                    bucket_width: shift,
-                    disk_range,
-                    io,
-                    patch_indices: self.patch_indices.clone(),
-                    patch_values: self.patch_values.clone(),
-                };
-                Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
-            }
-        }
     }
 }
 
@@ -595,7 +514,6 @@ where
             patch_indices,
             patch_values,
             reference_value,
-            squeeze_policy: FloatSqueezePolicy::Quantize,
         }
     }
 }
@@ -625,7 +543,6 @@ fn encode_arrow_array<T: LiquidFloatType>(
             patch_indices: Vec::new(),
             patch_values: Vec::new(),
             reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native::ZERO,
-            squeeze_policy: FloatSqueezePolicy::Quantize,
         };
     }
 
@@ -708,7 +625,6 @@ fn encode_arrow_array<T: LiquidFloatType>(
         patch_indices,
         patch_values,
         reference_value: min,
-        squeeze_policy: FloatSqueezePolicy::Quantize,
     }
 }
 
@@ -739,324 +655,10 @@ fn get_best_exponents<T: LiquidFloatType>(arrow_array: &PrimitiveArray<T>) -> Ex
     best_exponents
 }
 
-#[derive(Debug)]
-struct LiquidFloatQuantizedArray<T: LiquidFloatType> {
-    exponent: Exponents,
-    quantized: BitPackedArray<T::UnsignedIntType>,
-    reference_value: <T::SignedIntType as ArrowPrimitiveType>::Native,
-    bucket_width: u8, // Width of each bucket (in bits)
-    disk_range: std::ops::Range<u64>,
-    io: Arc<dyn SqueezeIoHandler>,
-    patch_indices: Vec<u64>,
-    patch_values: Vec<T::Native>,
-}
-
-impl<T> LiquidFloatQuantizedArray<T>
-where
-    T: LiquidFloatType,
-{
-    #[allow(dead_code)]
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.quantized.len()
-    }
-
-    fn new_from_filtered(
-        &self,
-        filtered: PrimitiveArray<<T as LiquidFloatType>::UnsignedIntType>,
-    ) -> Self {
-        let bit_width = self
-            .quantized
-            .bit_width()
-            .expect("quantized bit width must exist");
-        let quantized = BitPackedArray::from_primitive(filtered, bit_width);
-        Self {
-            exponent: self.exponent,
-            quantized,
-            reference_value: self.reference_value,
-            bucket_width: self.bucket_width,
-            io: self.io.clone(),
-            patch_indices: self.patch_indices.clone(),
-            patch_values: self.patch_values.clone(),
-            disk_range: self.disk_range.clone(),
-        }
-    }
-
-    fn filter_inner(&self, selection: &BooleanBuffer) -> Self {
-        let q_prim: PrimitiveArray<T::UnsignedIntType> = self.quantized.to_primitive();
-        let selection = BooleanArray::new(selection.clone(), None);
-        let filtered = arrow::compute::kernels::filter::filter(&q_prim, &selection).unwrap();
-        let filtered = filtered.as_primitive::<T::UnsignedIntType>().clone();
-        self.new_from_filtered(filtered)
-    }
-
-    async fn hydrate_full_arrow(&self) -> ArrayRef {
-        let bytes = self
-            .io
-            .read(Some(self.disk_range.clone()))
-            .await
-            .expect("read squeezed backing");
-        let liquid = crate::liquid_array::ipc::read_from_bytes(
-            bytes,
-            &crate::liquid_array::ipc::LiquidIPCContext::new(None),
-        );
-        liquid.to_arrow_array()
-    }
-
-    #[inline]
-    fn handle_eq(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k < lo || k > hi { Some(false) } else { None }
-    }
-
-    #[inline]
-    fn handle_neq(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k < lo || k > hi { Some(true) } else { None }
-    }
-
-    #[inline]
-    fn handle_lt(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k <= lo {
-            Some(false)
-        } else if hi < k {
-            Some(true)
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn handle_lteq(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k < lo {
-            Some(false)
-        } else if hi <= k {
-            Some(true)
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn handle_gt(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k < lo {
-            Some(true)
-        } else if hi <= k {
-            Some(false)
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn handle_gteq(lo: T::Native, hi: T::Native, k: T::Native) -> Option<bool> {
-        if k <= lo {
-            Some(true)
-        } else if hi < k {
-            Some(false)
-        } else {
-            None
-        }
-    }
-
-    fn try_eval_predicate_inner(
-        &self,
-        op: &Operator,
-        literal: &Literal,
-    ) -> SqueezeResult<Option<BooleanArray>> {
-        // Extract scalar value as T::Native
-        let k_opt: Option<T::Native> = match literal.value() {
-            ScalarValue::Int8(Some(v)) => T::Native::from_i8(*v),
-            ScalarValue::Int16(Some(v)) => T::Native::from_i16(*v),
-            ScalarValue::Int32(Some(v)) => T::Native::from_i32(*v),
-            ScalarValue::Int64(Some(v)) => T::Native::from_i64(*v),
-            ScalarValue::UInt8(Some(v)) => T::Native::from_u8(*v),
-            ScalarValue::UInt16(Some(v)) => T::Native::from_u16(*v),
-            ScalarValue::UInt32(Some(v)) => T::Native::from_u32(*v),
-            ScalarValue::UInt64(Some(v)) => T::Native::from_u64(*v),
-            ScalarValue::Date32(Some(v)) => T::Native::from_i32(*v),
-            ScalarValue::Date64(Some(v)) => T::Native::from_i64(*v),
-            ScalarValue::Float32(Some(v)) => T::Native::from_f32(*v),
-            ScalarValue::Float64(Some(v)) => T::Native::from_f64(*v),
-            _ => None,
-        };
-        let Some(k) = k_opt else { return Ok(None) };
-        let q_prim = self.quantized.to_primitive();
-        let (_dt, values, _nulls) = q_prim.into_parts();
-
-        let mut out_vals: Vec<bool> = Vec::with_capacity(values.len());
-        let mut next_patch_index = 0;
-        let mut ignore_patches = false;
-        if self.patch_indices.is_empty() {
-            ignore_patches = true;
-        }
-        let comp_fn = match op {
-            Operator::Eq => Self::handle_eq,
-            Operator::NotEq => Self::handle_neq,
-            Operator::Lt => Self::handle_lt,
-            Operator::LtEq => Self::handle_lteq,
-            Operator::Gt => Self::handle_gt,
-            Operator::GtEq => Self::handle_gteq,
-        };
-        // TODO(): This might not be very vectorization-friendly right now. Figure out optimizations
-        for (i, &b) in values.iter().enumerate() {
-            if let Some(nulls) = self.quantized.nulls()
-                && !nulls.is_valid(i)
-            {
-                out_vals.push(false);
-                continue;
-            }
-            if !ignore_patches && i as u64 == self.patch_indices[next_patch_index] {
-                next_patch_index += 1;
-                if next_patch_index == self.patch_indices.len() {
-                    ignore_patches = true;
-                }
-                out_vals.push(false);
-                continue;
-            }
-
-            let val: <T::SignedIntType as ArrowPrimitiveType>::Native = b.as_();
-            let lo = (val << self.bucket_width).add_wrapping(self.reference_value);
-            let hi = ((val.add_wrapping(1i32.into())) << self.bucket_width)
-                .add_wrapping(self.reference_value);
-            let val_lower = T::decode_single(&lo, &self.exponent);
-            let val_higher = T::decode_single(&hi, &self.exponent);
-
-            let decided = comp_fn(val_lower, val_higher, k);
-            if let Some(v) = decided {
-                out_vals.push(v);
-            } else {
-                return Err(NeedsBacking);
-            }
-        }
-
-        // Handle patches separately
-        // TODO(): Vectorize this
-        for (idx, patch_idx) in self.patch_indices.iter().enumerate() {
-            let patch_value = self.patch_values[idx];
-            out_vals[*patch_idx as usize] = match op {
-                Operator::Eq => patch_value == k,
-                Operator::NotEq => patch_value != k,
-                Operator::Lt => patch_value < k,
-                Operator::LtEq => patch_value <= k,
-                Operator::Gt => patch_value > k,
-                Operator::GtEq => patch_value >= k,
-            }
-        }
-
-        let bool_buf = arrow::buffer::BooleanBuffer::from_iter(out_vals);
-        let out = BooleanArray::new(bool_buf, self.quantized.nulls().cloned());
-        Ok(Some(out))
-    }
-}
-
-#[async_trait::async_trait]
-impl<T> LiquidSqueezedArray for LiquidFloatQuantizedArray<T>
-where
-    T: LiquidFloatType,
-{
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn get_array_memory_size(&self) -> usize {
-        self.quantized.get_array_memory_size()
-            + size_of::<Exponents>()
-            + self.patch_indices.capacity() * size_of::<u64>()
-            + self.patch_values.capacity() * size_of::<T::Native>()
-            + size_of::<<T::SignedIntType as ArrowPrimitiveType>::Native>()
-    }
-
-    fn len(&self) -> usize {
-        LiquidFloatQuantizedArray::<T>::len(self)
-    }
-
-    async fn to_arrow_array(&self) -> ArrayRef {
-        self.hydrate_full_arrow().await
-    }
-
-    fn data_type(&self) -> LiquidDataType {
-        LiquidDataType::Float
-    }
-
-    fn original_arrow_data_type(&self) -> DataType {
-        T::DATA_TYPE.clone()
-    }
-
-    fn disk_backing(&self) -> SqueezedBacking {
-        SqueezedBacking::Liquid((self.disk_range.end - self.disk_range.start) as usize)
-    }
-
-    async fn try_eval_predicate(
-        &self,
-        liquid_expr: &LiquidExpr,
-        filter: &BooleanBuffer,
-    ) -> BooleanArray {
-        // Apply selection first to reduce input rows
-        let filtered = self.filter_inner(filter);
-        let expr = liquid_expr.physical_expr();
-
-        if let Some(binary_expr) = expr.downcast_ref::<BinaryExpr>()
-            && let Some(literal) = binary_expr.right().downcast_ref::<Literal>()
-        {
-            let op = binary_expr.op();
-            let supported_op = Operator::from_datafusion(op);
-            if let Some(supported_op) = supported_op {
-                match filtered.try_eval_predicate_inner(&supported_op, literal) {
-                    Ok(Some(mask)) => return mask,
-                    Ok(None) => {
-                        let fallback = self.filter(filter).await;
-                        return eval_predicate_on_array(fallback, liquid_expr);
-                    }
-                    Err(NeedsBacking) => {}
-                }
-
-                // Fallback: hydrate full Arrow and evaluate predicate on filtered rows.
-                use arrow::array::cast::AsArray;
-
-                let full = self.hydrate_full_arrow().await;
-                let selection_array = BooleanArray::new(filter.clone(), None);
-                let filtered_arr = arrow::compute::filter(&full, &selection_array)
-                    .expect("selection must match array length");
-                let filtered_len = filtered_arr.len();
-
-                let lhs = ColumnarValue::Array(filtered_arr);
-                let rhs = ColumnarValue::Scalar(literal.value().clone());
-                let result = match op {
-                    DFOperator::NotEq => apply_cmp(DFOperator::NotEq, &lhs, &rhs),
-                    DFOperator::Eq => apply_cmp(DFOperator::Eq, &lhs, &rhs),
-                    DFOperator::Lt => apply_cmp(DFOperator::Lt, &lhs, &rhs),
-                    DFOperator::LtEq => apply_cmp(DFOperator::LtEq, &lhs, &rhs),
-                    DFOperator::Gt => apply_cmp(DFOperator::Gt, &lhs, &rhs),
-                    DFOperator::GtEq => apply_cmp(DFOperator::GtEq, &lhs, &rhs),
-                    _ => {
-                        let fallback = self.filter(filter).await;
-                        return eval_predicate_on_array(fallback, liquid_expr);
-                    }
-                };
-                let result = result.expect("validated LiquidExpr comparison must evaluate");
-                return result
-                    .into_array(filtered_len)
-                    .expect("comparison output must be an array")
-                    .as_boolean()
-                    .clone();
-            }
-        }
-        let fallback = self.filter(filter).await;
-        eval_predicate_on_array(fallback, liquid_expr)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use datafusion_expr_common::operator::Operator;
-    use datafusion_physical_expr::PhysicalExpr;
-    use futures::executor::block_on;
-    use rand::{RngExt as _, SeedableRng as _, distr::uniform::SampleUniform, rngs::StdRng};
 
-    use crate::cache::TestSqueezeIo;
+    use arrow::buffer::BooleanBuffer;
 
     use super::*;
 
@@ -1207,231 +809,5 @@ mod tests {
 
         // Run for f64
         run_compression_test::<Float64Type>("f64", |i| i as f64);
-    }
-
-    //  --------- Hybrid (squeeze) tests ----------
-    fn make_f_array_with_range<T>(
-        len: usize,
-        base_min: T::Native,
-        range: T::Native,
-        null_prob: f32,
-        rng: &mut StdRng,
-    ) -> PrimitiveArray<T>
-    where
-        T: LiquidFloatType,
-        <T as arrow::array::ArrowPrimitiveType>::Native: SampleUniform,
-        PrimitiveArray<T>: From<Vec<Option<<T as ArrowPrimitiveType>::Native>>>,
-    {
-        let mut vals: Vec<Option<T::Native>> = Vec::with_capacity(len);
-        for _ in 0..len {
-            if rng.random_bool(null_prob as f64) {
-                vals.push(None);
-            } else {
-                vals.push(Some(rng.random_range(base_min..(base_min + range))));
-            }
-        }
-        PrimitiveArray::<T>::from(vals)
-    }
-
-    #[test]
-    fn hybrid_squeeze_unsqueezable_small_range() {
-        let mut rng = StdRng::seed_from_u64(0x51_71);
-        let arr = make_f_array_with_range::<Float32Type>(64, 10_000.0, 100.0, 0.1, &mut rng);
-        let liquid = LiquidFloatArray::<Float32Type>::from_arrow_array(arr);
-        assert!(
-            liquid
-                .squeeze(Arc::new(TestSqueezeIo::default()), None)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn hybrid_squeeze_full_read_roundtrip_f32() {
-        let mut rng = StdRng::seed_from_u64(0x51_72);
-        let arr = make_f_array_with_range::<Float32Type>(
-            2000,
-            -50_000.0,
-            (1 << 16) as f32,
-            0.1,
-            &mut rng,
-        );
-        let liq = LiquidFloatArray::<Float32Type>::from_arrow_array(arr.clone());
-        let bytes_baseline = liq.to_bytes();
-        let io = Arc::new(TestSqueezeIo::default());
-        let (hybrid, bytes) = liq.squeeze(io.clone(), None).expect("squeezable");
-        io.set_bytes(bytes.clone());
-        // ensure we can recover the original by hydrating from full bytes
-        let recovered = LiquidFloatArray::<Float32Type>::from_bytes(bytes.clone());
-        assert_eq!(
-            recovered.to_arrow_array().as_primitive::<Float32Type>(),
-            &arr
-        );
-        assert_eq!(bytes_baseline, recovered.to_bytes());
-
-        let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
-        let mask = BooleanBuffer::from(vec![true; arr.len()]);
-        let build_expr = |op: Operator, k: f32| -> Arc<dyn PhysicalExpr> {
-            let lit = Arc::new(Literal::new(ScalarValue::Float32(Some(k))));
-            Arc::new(BinaryExpr::new(lit.clone(), op, lit))
-        };
-
-        // Expect resolvable results without IO
-        let resolvable_cases: Vec<(Operator, f32, bool)> = vec![
-            (Operator::Eq, min - 1.0, false),   // eq false everywhere
-            (Operator::NotEq, min - 1.0, true), // neq true everywhere
-            (Operator::Lt, min, false),         // lt false everywhere
-            (Operator::LtEq, min - 1.0, false), // lte false everywhere
-            (Operator::Gt, min - 1.0, true),    // gt true everywhere
-            (Operator::GtEq, min, true),        // gte true everywhere
-        ];
-
-        for (op, k, expected_const) in resolvable_cases {
-            let expr = build_expr(op, k);
-            io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(
-                &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
-                &mask,
-            ));
-            let expected = {
-                let vals: Vec<Option<bool>> = (0..arr.len())
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            None
-                        } else {
-                            Some(expected_const)
-                        }
-                    })
-                    .collect();
-                BooleanArray::from(vals)
-            };
-            assert_eq!(io.reads(), 0);
-            assert_eq!(got, expected);
-        }
-
-        // Unresolvable for Eq: pick a present value (ensures ambiguous bucket)
-        let k_present = (0..arr.len())
-            .find_map(|i| {
-                if arr.is_null(i) {
-                    None
-                } else {
-                    Some(arr.value(i))
-                }
-            })
-            .unwrap();
-        let expr_eq_present = build_expr(Operator::Eq, k_present);
-        io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(
-            &crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()),
-            &mask,
-        ));
-        let expected = {
-            let vals: Vec<Option<bool>> = (0..arr.len())
-                .map(|i| {
-                    if arr.is_null(i) {
-                        None
-                    } else {
-                        Some(arr.value(i) == k_present)
-                    }
-                })
-                .collect();
-            BooleanArray::from(vals)
-        };
-        assert!(io.reads() > 0);
-        assert_eq!(got, expected);
-    }
-
-    #[test]
-    fn hybrid_squeeze_full_read_roundtrip_f64() {
-        let mut rng = StdRng::seed_from_u64(0x51_72);
-        let arr = make_f_array_with_range::<Float64Type>(
-            2000,
-            -50_000.0f64,
-            (1 << 16) as f64,
-            0.1,
-            &mut rng,
-        );
-        let liq = LiquidFloatArray::<Float64Type>::from_arrow_array(arr.clone());
-        let bytes_baseline = liq.to_bytes();
-        let io = Arc::new(TestSqueezeIo::default());
-        let (hybrid, bytes) = liq.squeeze(io.clone(), None).expect("squeezable");
-        io.set_bytes(bytes.clone());
-        // ensure we can recover the original by hydrating from full bytes
-        let recovered = LiquidFloatArray::<Float64Type>::from_bytes(bytes.clone());
-        assert_eq!(
-            recovered.to_arrow_array().as_primitive::<Float64Type>(),
-            &arr
-        );
-        assert_eq!(bytes_baseline, recovered.to_bytes());
-
-        let min = arrow::compute::kernels::aggregate::min(&arr).unwrap();
-        let mask = BooleanBuffer::from(vec![true; arr.len()]);
-        let build_expr = |op: Operator, k: f64| -> Arc<dyn PhysicalExpr> {
-            let lit = Arc::new(Literal::new(ScalarValue::Float64(Some(k))));
-            Arc::new(BinaryExpr::new(lit.clone(), op, lit))
-        };
-
-        // Expect resolvable results without IO
-        let resolvable_cases: Vec<(Operator, f64, bool)> = vec![
-            (Operator::Eq, min - 1.0, false),   // eq false everywhere
-            (Operator::NotEq, min - 1.0, true), // neq true everywhere
-            (Operator::Lt, min, false),         // lt false everywhere
-            (Operator::LtEq, min - 1.0, false), // lte false everywhere
-            (Operator::Gt, min - 1.0, true),    // gt true everywhere
-            (Operator::GtEq, min, true),        // gte true everywhere
-        ];
-
-        for (op, k, expected_const) in resolvable_cases {
-            let expr = build_expr(op, k);
-            io.reset_reads();
-            let got = block_on(hybrid.try_eval_predicate(
-                &crate::cache::LiquidExpr::new_unchecked(expr.clone()),
-                &mask,
-            ));
-            let expected = {
-                let vals: Vec<Option<bool>> = (0..arr.len())
-                    .map(|i| {
-                        if arr.is_null(i) {
-                            None
-                        } else {
-                            Some(expected_const)
-                        }
-                    })
-                    .collect();
-                BooleanArray::from(vals)
-            };
-            assert_eq!(io.reads(), 0);
-            assert_eq!(got, expected);
-        }
-
-        // Unresolvable for Eq: pick a present value (ensures ambiguous bucket)
-        let k_present = (0..arr.len())
-            .find_map(|i| {
-                if arr.is_null(i) {
-                    None
-                } else {
-                    Some(arr.value(i))
-                }
-            })
-            .unwrap();
-        let expr_eq_present = build_expr(Operator::Eq, k_present);
-        io.reset_reads();
-        let got = block_on(hybrid.try_eval_predicate(
-            &crate::cache::LiquidExpr::new_unchecked(expr_eq_present.clone()),
-            &mask,
-        ));
-        let expected = {
-            let vals: Vec<Option<bool>> = (0..arr.len())
-                .map(|i| {
-                    if arr.is_null(i) {
-                        None
-                    } else {
-                        Some(arr.value(i) == k_present)
-                    }
-                })
-                .collect();
-            BooleanArray::from(vals)
-        };
-        assert!(io.reads() > 0);
-        assert_eq!(got, expected);
     }
 }

@@ -56,14 +56,14 @@ impl ColumnExpressionTracker {
 }
 
 impl EntryMetadata for ParquetCacheMetadata {
-    fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
+    fn add_lineage(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
         let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
         let mut guard = self.expression_hints.write().unwrap();
         let expression_tracker = guard.entry(column_path).or_default();
         expression_tracker.record(expression.clone());
     }
 
-    fn squeeze_hint(&self, entry_id: &EntryID) -> Option<Arc<CacheExpression>> {
+    fn lineage(&self, entry_id: &EntryID) -> Option<Arc<CacheExpression>> {
         let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
         let guard = self.expression_hints.read().unwrap();
         guard
@@ -96,31 +96,31 @@ mod tests {
     }
 
     #[test]
-    fn squeeze_hint_tracks_majority() {
+    fn lineage_tracks_majority() {
         let meta = make_meta();
         let e = entry(1, 2, 3);
         let month = Arc::new(CacheExpression::extract_date32(Date32Field::Month));
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
 
-        meta.add_squeeze_hint(&e, month.clone());
-        meta.add_squeeze_hint(&e, month.clone());
-        meta.add_squeeze_hint(&e, year.clone());
+        meta.add_lineage(&e, month.clone());
+        meta.add_lineage(&e, month.clone());
+        meta.add_lineage(&e, year.clone());
 
-        let majority = meta.squeeze_hint(&e).expect("hint");
+        let majority = meta.lineage(&e).expect("hint");
         assert_eq!(majority, month);
     }
 
     #[test]
-    fn squeeze_hint_prefers_recent_on_tie() {
+    fn lineage_prefers_recent_on_tie() {
         let meta = make_meta();
         let e = entry(9, 9, 9);
         let year = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
         let day = Arc::new(CacheExpression::extract_date32(Date32Field::Day));
 
-        meta.add_squeeze_hint(&e, year.clone());
-        meta.add_squeeze_hint(&e, day.clone());
+        meta.add_lineage(&e, year.clone());
+        meta.add_lineage(&e, day.clone());
 
-        let majority = meta.squeeze_hint(&e).expect("hint");
+        let majority = meta.lineage(&e).expect("hint");
         assert_eq!(majority, day);
     }
 }

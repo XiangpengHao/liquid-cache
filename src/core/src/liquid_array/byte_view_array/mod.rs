@@ -7,21 +7,16 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer, OffsetBuffer};
 use arrow::compute::cast;
 use arrow_schema::DataType;
-use bytes::Bytes;
 use std::any::Any;
 use std::sync::Arc;
 
 #[cfg(test)]
 use std::cell::Cell;
 
-use crate::cache::{CacheExpression, LiquidExpr};
-use crate::liquid_array::byte_view_array::fingerprint::build_fingerprints;
+use crate::cache::LiquidExpr;
 use crate::liquid_array::raw::FsstArray;
-use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstBacking, PrefixKey};
-use crate::liquid_array::{
-    LiquidArray, LiquidDataType, LiquidSqueezedArray, LiquidSqueezedArrayRef, SqueezeIoHandler,
-    SqueezedBacking, eval_predicate_on_array,
-};
+use crate::liquid_array::raw::fsst_buffer::{FsstBacking, PrefixKey};
+use crate::liquid_array::{LiquidArray, LiquidDataType, eval_predicate_on_array};
 
 mod comparisons;
 mod conversions;
@@ -295,41 +290,6 @@ impl LiquidByteViewArray<FsstArray> {
     }
 }
 
-impl LiquidByteViewArray<DiskBuffer> {
-    /// Check if the FSST buffer is currently stored on disk
-    pub fn is_fsst_buffer_on_disk(&self) -> bool {
-        true
-    }
-
-    /// Convert to Arrow DictionaryArray
-    pub async fn to_dict_arrow(&self) -> DictionaryArray<UInt16Type> {
-        if self.should_decompress_keyed() {
-            self.to_dict_arrow_decompress_keyed().await
-        } else {
-            self.to_dict_arrow_decompress_all().await
-        }
-    }
-
-    async fn to_dict_arrow_decompress_all(&self) -> DictionaryArray<UInt16Type> {
-        let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed().await;
-        self.to_dict_arrow_inner(self.dictionary_keys.clone(), values_buffer, offsets_buffer)
-    }
-
-    async fn to_dict_arrow_decompress_keyed(&self) -> DictionaryArray<UInt16Type> {
-        let (selected, new_keys) =
-            helpers::build_dict_selection(&self.dictionary_keys, self.prefix_keys.len());
-        let (values_buffer, offsets_buffer) =
-            self.fsst_buffer.to_uncompressed_selected(&selected).await;
-        self.to_dict_arrow_inner(new_keys, values_buffer, offsets_buffer)
-    }
-
-    /// Convert to Arrow array with original type
-    pub async fn to_arrow_array(&self) -> ArrayRef {
-        let dict = self.to_dict_arrow().await;
-        cast(&dict, &self.original_arrow_type.to_arrow_type()).unwrap()
-    }
-}
-
 impl LiquidArray for LiquidByteViewArray<FsstArray> {
     fn as_any(&self) -> &dyn Any {
         self
@@ -362,7 +322,7 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
     }
 
     fn to_bytes(&self) -> Vec<u8> {
-        self.to_bytes_inner().expect("InMemoryFsstBuffer")
+        self.to_bytes_inner()
     }
 
     fn original_arrow_data_type(&self) -> DataType {
@@ -371,131 +331,10 @@ impl LiquidArray for LiquidByteViewArray<FsstArray> {
 
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::ByteViewArray
-    }
-
-    fn squeeze(
-        &self,
-        io: Arc<dyn SqueezeIoHandler>,
-        squeeze_hint: Option<&CacheExpression>,
-    ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
-        squeeze_hint?;
-
-        let string_fingerprints = if matches!(squeeze_hint, Some(CacheExpression::SubstringSearch))
-        {
-            self.string_fingerprints.clone().or_else(|| {
-                let (values_buffer, offsets_buffer) = self.fsst_buffer.to_uncompressed();
-                Some(build_fingerprints(&values_buffer, &offsets_buffer))
-            })
-        } else {
-            None
-        };
-
-        // Serialize full IPC bytes first
-        let bytes = match self.to_bytes_inner() {
-            Ok(b) => b,
-            Err(_) => return None,
-        };
-
-        // Build the hybrid (disk-backed FSST) view
-        let disk_range = 0u64..(bytes.len() as u64);
-        let compressor = self.fsst_buffer.compressor_arc();
-        let disk = DiskBuffer::new(
-            self.fsst_buffer.uncompressed_bytes(),
-            io,
-            disk_range,
-            compressor,
-        );
-        let hybrid = LiquidByteViewArray::<DiskBuffer> {
-            dictionary_keys: self.dictionary_keys.clone(),
-            prefix_keys: self.prefix_keys.clone(),
-            fsst_buffer: disk,
-            original_arrow_type: self.original_arrow_type,
-            shared_prefix: self.shared_prefix.clone(),
-            string_fingerprints,
-        };
-
-        let bytes = Bytes::from(bytes);
-        Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, bytes))
     }
 
     fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
         let filtered = helpers::filter_inner(self, selection);
         filtered.to_arrow_array()
-    }
-}
-
-#[async_trait::async_trait]
-impl LiquidSqueezedArray for LiquidByteViewArray<DiskBuffer> {
-    /// Get the underlying any type.
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    /// Get the memory size of the Liquid array.
-    fn get_array_memory_size(&self) -> usize {
-        self.get_detailed_memory_usage().total()
-    }
-
-    /// Get the length of the Liquid array.
-    fn len(&self) -> usize {
-        self.dictionary_keys.len()
-    }
-
-    /// Check if the Liquid array is empty.
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Convert the Liquid array to an Arrow array.
-    async fn to_arrow_array(&self) -> ArrayRef {
-        let bytes = self
-            .fsst_buffer
-            .squeeze_io()
-            .read(Some(self.fsst_buffer.disk_range()))
-            .await
-            .expect("read squeezed backing");
-        let hydrated =
-            LiquidByteViewArray::<FsstArray>::from_bytes(bytes, self.fsst_buffer.compressor_arc());
-        LiquidByteViewArray::<FsstArray>::to_arrow_array(&hydrated)
-    }
-
-    /// Get the logical data type of the Liquid array.
-    fn data_type(&self) -> LiquidDataType {
-        LiquidDataType::ByteViewArray
-    }
-
-    fn original_arrow_data_type(&self) -> DataType {
-        self.original_arrow_type.to_arrow_type()
-    }
-
-    fn disk_backing(&self) -> SqueezedBacking {
-        SqueezedBacking::Liquid(self.fsst_buffer.disk_range_len())
-    }
-
-    /// Filter the Liquid array with a boolean array and return an **arrow array**.
-    async fn filter(&self, selection: &BooleanBuffer) -> ArrayRef {
-        let select_any = selection.count_set_bits() > 0;
-        if !select_any {
-            return arrow::array::new_empty_array(&self.original_arrow_data_type());
-        }
-        let filtered = helpers::filter_inner(self, selection);
-        filtered.to_arrow_array().await
-    }
-
-    /// Try to evaluate a predicate on the Liquid array with a filter.
-    /// Returns `Ok(None)` if the predicate is not supported.
-    ///
-    /// Note that the filter is a boolean buffer, not a boolean array, i.e., filter can't be nullable.
-    /// The returned boolean mask is nullable if the the original array is nullable.
-    async fn try_eval_predicate(&self, expr: &LiquidExpr, filter: &BooleanBuffer) -> BooleanArray {
-        // Reuse generic filter path first to reduce input rows if any
-        let filtered = helpers::filter_inner(self, filter);
-        if let Some(mask) =
-            helpers::try_eval_predicate_on_disk(expr.physical_expr(), &filtered).await
-        {
-            mask
-        } else {
-            eval_predicate_on_array(filtered.to_arrow_array().await, expr)
-        }
     }
 }
