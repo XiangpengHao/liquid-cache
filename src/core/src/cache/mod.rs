@@ -10,13 +10,12 @@ mod io_context;
 mod liquid_expr;
 mod observer;
 pub mod policies;
-mod transcode;
 mod utils;
 
 pub use builders::{EvaluatePredicate, Get, Insert, LiquidCacheBuilder, default_max_memory_bytes};
 pub use cached_batch::{CacheEntry, CachedBatchType};
 pub use core::{LiquidCache, PrefetchResult};
-pub use expressions::{CacheExpression, VariantRequest};
+pub use expressions::{CacheExpression, Date32Field, VariantRequest};
 pub use io_context::{DefaultCacheMetadata, EntryMetadata};
 pub use liquid_expr::LiquidExpr;
 pub use observer::EventTrace;
@@ -26,8 +25,7 @@ pub use policies::{
     AlwaysHydrate, CachePolicy, Evict, EvictionPolicy, HydrationPolicy, HydrationRequest,
     LiquidPolicy, MaterializedEntry, NoHydration, TranscodeEvict,
 };
-pub use transcode::{transcode_liquid_inner, transcode_liquid_inner_with_hint};
-pub use utils::{EntryID, LiquidCompressorStates};
+pub use utils::EntryID;
 
 /// The cache could not reserve enough disk budget for a write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

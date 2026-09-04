@@ -123,7 +123,6 @@ impl CachedColumn {
         let liquid_expr = LiquidExpr::try_new(
             Arc::clone(predicate.physical_expr()),
             self.field.data_type(),
-            self.expression.as_deref(),
         );
 
         if let Some(liquid_expr) = liquid_expr
@@ -170,7 +169,7 @@ impl CachedColumn {
         &self,
         expr: Arc<dyn datafusion::physical_plan::PhysicalExpr>,
     ) -> Option<LiquidExpr> {
-        LiquidExpr::try_new(expr, self.field.data_type(), self.expression.as_deref())
+        LiquidExpr::try_new(expr, self.field.data_type())
     }
 
     pub(crate) fn liquid_expr_for_predicate(

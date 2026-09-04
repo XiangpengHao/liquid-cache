@@ -331,7 +331,11 @@ impl FromStr for BenchmarkMode {
         Ok(match s {
             "arrow" => BenchmarkMode::Arrow,
             "liquid" => BenchmarkMode::Liquid,
-            _ => return Err(format!("Invalid benchmark mode: {s}")),
+            _ => {
+                return Err(format!(
+                    "Invalid benchmark mode: {s}, must be one of: arrow, liquid"
+                ));
+            }
         })
     }
 }

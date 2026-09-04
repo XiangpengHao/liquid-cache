@@ -237,10 +237,12 @@ async fn test_url_prefix_filtering() {
 
     let reference = values.clone();
 
-    insta::assert_snapshot!(format!(
-        "plan: \n{}\nvalues: \n{}\nstats:\n{}",
-        plan, values, stats
-    ));
+    insta::with_settings!({ filters => vec![(r"usage\.(memory|disk)_bytes: \d+", "usage.${1}_bytes: [bytes]")] }, {
+        insta::assert_snapshot!(format!(
+            "plan: \n{}\nvalues: \n{}\nstats:\n{}",
+            plan, values, stats
+        ));
+    });
     test_runner(sql, &reference, cache_dir.path()).await;
 }
 
@@ -260,10 +262,12 @@ async fn test_url_selection_and_ordering() {
 
     let reference = values.clone();
 
-    insta::assert_snapshot!(format!(
-        "plan: \n{}\nvalues: \n{}\nstats:\n{}",
-        plan, values, stats
-    ));
+    insta::with_settings!({ filters => vec![(r"usage\.(memory|disk)_bytes: \d+", "usage.${1}_bytes: [bytes]")] }, {
+        insta::assert_snapshot!(format!(
+            "plan: \n{}\nvalues: \n{}\nstats:\n{}",
+            plan, values, stats
+        ));
+    });
     test_runner(sql, &reference, cache_dir.path()).await;
 }
 
@@ -283,10 +287,12 @@ async fn test_os_selection() {
 
     let reference = values.clone();
 
-    insta::assert_snapshot!(format!(
-        "plan: \n{}\nvalues: \n{}\nstats:\n{}",
-        plan, values, stats
-    ));
+    insta::with_settings!({ filters => vec![(r"usage\.(memory|disk)_bytes: \d+", "usage.${1}_bytes: [bytes]")] }, {
+        insta::assert_snapshot!(format!(
+            "plan: \n{}\nvalues: \n{}\nstats:\n{}",
+            plan, values, stats
+        ));
+    });
 
     test_runner(sql, &reference, cache_dir.path()).await;
 }
@@ -307,10 +313,12 @@ async fn test_referer_filtering() {
 
     let reference = values.clone();
 
-    insta::assert_snapshot!(format!(
-        "plan: \n{}\nvalues: \n{}\nstats:\n{}",
-        plan, values, stats
-    ));
+    insta::with_settings!({ filters => vec![(r"usage\.(memory|disk)_bytes: \d+", "usage.${1}_bytes: [bytes]")] }, {
+        insta::assert_snapshot!(format!(
+            "plan: \n{}\nvalues: \n{}\nstats:\n{}",
+            plan, values, stats
+        ));
+    });
 
     test_runner(sql, &reference, cache_dir.path()).await;
 }
@@ -331,10 +339,12 @@ async fn test_single_column_filter_projection() {
 
     let reference = values.clone();
 
-    insta::assert_snapshot!(format!(
-        "plan: \n{}\nvalues: \n{}\nstats:\n{}",
-        plan, values, stats
-    ));
+    insta::with_settings!({ filters => vec![(r"usage\.(memory|disk)_bytes: \d+", "usage.${1}_bytes: [bytes]")] }, {
+        insta::assert_snapshot!(format!(
+            "plan: \n{}\nvalues: \n{}\nstats:\n{}",
+            plan, values, stats
+        ));
+    });
 
     test_runner(sql, &reference, cache_dir.path()).await;
 }
@@ -421,14 +431,9 @@ async fn test_provide_schema2() {
         }
     }
 
-    // FSST breaks equal-gain symbol ties using target-specific HashMap iteration order.
-    // Canonicalize the known AArch64 totals to x86_64 while leaving unexpected totals visible.
-    #[cfg(target_arch = "aarch64")]
-    let snapshot = snapshot
-        .replace("usage.memory_bytes: 999980", "usage.memory_bytes: 1000915")
-        .replace("usage.memory_bytes: 1035368", "usage.memory_bytes: 1036303");
-
-    insta::assert_snapshot!(snapshot);
+    insta::with_settings!({ filters => vec![(r"usage\.(memory|disk)_bytes: \d+", "usage.${1}_bytes: [bytes]")] }, {
+        insta::assert_snapshot!(snapshot);
+    });
 }
 
 #[tokio::test]
@@ -447,10 +452,12 @@ async fn test_provide_schema_with_filter() {
 
     let reference = values.clone();
 
-    insta::assert_snapshot!(format!(
-        "plan: \n{}\nvalues: \n{}\nstats:\n{}",
-        plan, values, stats
-    ));
+    insta::with_settings!({ filters => vec![(r"usage\.(memory|disk)_bytes: \d+", "usage.${1}_bytes: [bytes]")] }, {
+        insta::assert_snapshot!(format!(
+            "plan: \n{}\nvalues: \n{}\nstats:\n{}",
+            plan, values, stats
+        ));
+    });
 
     let (ctx, _) = LiquidCacheLocalBuilder::new()
         .with_eviction_policy(Box::new(TranscodeEvict))

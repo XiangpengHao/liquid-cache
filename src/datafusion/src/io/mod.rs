@@ -4,13 +4,12 @@ use std::{
 };
 
 use ahash::AHashMap;
-use liquid_cache::cache::{CacheExpression, EntryID, EntryMetadata, LiquidCompressorStates};
+use liquid_cache::cache::{CacheExpression, EntryID, EntryMetadata};
 
 use crate::cache::{ColumnAccessPath, ParquetArrayID};
 
 #[derive(Debug, Default)]
 pub(crate) struct ParquetCacheMetadata {
-    compressor_states: RwLock<AHashMap<ColumnAccessPath, Arc<LiquidCompressorStates>>>,
     expression_hints: RwLock<AHashMap<ColumnAccessPath, ColumnExpressionTracker>>,
 }
 
@@ -70,21 +69,12 @@ impl EntryMetadata for ParquetCacheMetadata {
             .get(&column_path)
             .and_then(ColumnExpressionTracker::majority)
     }
-
-    fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        let column_path = ColumnAccessPath::from(ParquetArrayID::from(*entry_id));
-        let mut states = self.compressor_states.write().unwrap();
-        states
-            .entry(column_path)
-            .or_insert_with(|| Arc::new(LiquidCompressorStates::new()))
-            .clone()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use liquid_cache::liquid_array::Date32Field;
+    use liquid_cache::cache::Date32Field;
 
     fn entry(file: u64, rg: u64, col: u64) -> EntryID {
         let id = ParquetArrayID::new(file, rg, col, crate::cache::BatchID::from_raw(0));

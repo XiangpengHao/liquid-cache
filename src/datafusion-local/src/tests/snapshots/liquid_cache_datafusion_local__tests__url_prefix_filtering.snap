@@ -55,12 +55,12 @@ entries.memory.arrow: 2
 entries.memory.liquid: 2
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 1018212
-usage.disk_bytes: 139416
+usage.memory_bytes: [bytes]
+usage.disk_bytes: [bytes]
 RuntimeStatsSnapshot:
-  get: 4
-  get_with_selection: 4
-  eval_predicate: 0
+  get: 0
+  get_with_selection: 0
+  eval_predicate: 4
   try_read_liquid_calls: 0
   read_io_count: 1
   write_io_count: 0

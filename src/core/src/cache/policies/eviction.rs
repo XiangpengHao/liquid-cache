@@ -1,12 +1,12 @@
 //! Policies for moving cache entries to cheaper storage under memory pressure.
 
+use std::sync::Arc;
+
 use arrow::array::Array;
 use bytes::Bytes;
 
-use crate::cache::{
-    CacheExpression, LiquidCompressorStates, cached_batch::CacheEntry,
-    transcode_liquid_inner_with_hint, utils::arrow_to_bytes,
-};
+use crate::cache::{CacheExpression, cached_batch::CacheEntry, utils::arrow_to_bytes};
+use crate::liquid_array::LiquidArray;
 
 /// The next storage representation selected for a cache entry.
 #[derive(Debug, Clone)]
@@ -24,13 +24,8 @@ pub enum EvictionOutcome {
 
 /// Chooses the next representation for an entry under memory pressure.
 pub trait EvictionPolicy: std::fmt::Debug + Send + Sync {
-    /// Move the entry one step toward cheaper storage.
-    fn evict(
-        &self,
-        entry: &CacheEntry,
-        compressor: &LiquidCompressorStates,
-        expression: Option<&CacheExpression>,
-    ) -> EvictionOutcome;
+    /// Move the entry one step toward cheaper storage; lineage is available for encoding decisions.
+    fn evict(&self, entry: &CacheEntry, lineage: Option<&CacheExpression>) -> EvictionOutcome;
 }
 
 /// Evict memory entries directly to disk.
@@ -38,12 +33,7 @@ pub trait EvictionPolicy: std::fmt::Debug + Send + Sync {
 pub struct Evict;
 
 impl EvictionPolicy for Evict {
-    fn evict(
-        &self,
-        entry: &CacheEntry,
-        _compressor: &LiquidCompressorStates,
-        _expression: Option<&CacheExpression>,
-    ) -> EvictionOutcome {
+    fn evict(&self, entry: &CacheEntry, _lineage: Option<&CacheExpression>) -> EvictionOutcome {
         persist(entry)
     }
 }
@@ -53,22 +43,15 @@ impl EvictionPolicy for Evict {
 pub struct TranscodeEvict;
 
 impl EvictionPolicy for TranscodeEvict {
-    fn evict(
-        &self,
-        entry: &CacheEntry,
-        compressor: &LiquidCompressorStates,
-        expression: Option<&CacheExpression>,
-    ) -> EvictionOutcome {
+    fn evict(&self, entry: &CacheEntry, _lineage: Option<&CacheExpression>) -> EvictionOutcome {
         match entry {
-            CacheEntry::MemoryArrow(array) => {
-                match transcode_liquid_inner_with_hint(array, compressor, expression) {
-                    Ok(liquid) => EvictionOutcome::Replace {
-                        entry: CacheEntry::memory_liquid(liquid),
-                        bytes_to_write: None,
-                    },
-                    Err(_) => persist(entry),
-                }
-            }
+            CacheEntry::MemoryArrow(array) => match LiquidArray::from_arrow_array(array) {
+                Ok(liquid) => EvictionOutcome::Replace {
+                    entry: CacheEntry::memory_liquid(Arc::new(liquid)),
+                    bytes_to_write: None,
+                },
+                Err(_) => persist(entry),
+            },
             _ => persist(entry),
         }
     }

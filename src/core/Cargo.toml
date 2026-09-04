@@ -18,12 +18,8 @@ liquid-cache-common = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-expr-common = { workspace = true }
 datafusion-physical-expr = { workspace = true }
-datafusion-physical-expr-common = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
-fastlanes = "0.7.0"
-num-traits = "0.2.19"
-fsst-rs = "0.6.0"
 ahash = { workspace = true }
 tempfile = { workspace = true }
 congee = { workspace = true }
@@ -34,18 +30,34 @@ fastrace = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+vortex-array = { workspace = true }
+vortex-arrow = { workspace = true }
+vortex-btrblocks = { workspace = true }
+vortex-ipc = { workspace = true }
+vortex-buffer = { workspace = true }
+vortex-mask = { workspace = true }
+vortex-session = { workspace = true }
+vortex-error = { workspace = true }
+vortex-fastlanes = { workspace = true }
+vortex-fsst = { workspace = true }
+vortex-alp = { workspace = true }
+vortex-runend = { workspace = true }
+vortex-sparse = { workspace = true }
+vortex-zigzag = { workspace = true }
+vortex-datetime-parts = { workspace = true }
+vortex-decimal-byte-parts = { workspace = true }
+vortex-bytebool = { workspace = true }
+vortex-sequence = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 shuttle = "0.9.1"
 tokio-test = "0.4"
 tracing-subscriber = "0.3.23"
-rand = "0.10.1"
 serde.workspace = true
 serde_json = { workspace = true }
 mimalloc = "0.1.52"
 clap = { version = "4.6.1", features = ["derive"] }
-divan = "0.1.21"
 insta = { workspace = true }
 datafusion = { workspace = true }
 
@@ -53,62 +65,6 @@ datafusion = { workspace = true }
 shuttle = ["t4/shuttle"]
 
 [[bench]]
-name = "fsst_view_study"
-path = "study/fsst_view.rs"
-harness = false
-
-[[bench]]
-name = "fsst_selectivity"
-path = "study/fsst_selectivity.rs"
-harness = false
-
-[[bench]]
-name = "fsstarray"
-path = "bench/fsstarray.rs"
-harness = false
-
-[[bench]]
-name = "byte_view_compare"
-path = "bench/byte_view_compare.rs"
-harness = false
-
-[[bench]]
-name = "bitpacking"
-path = "bench/bitpacking.rs"
-harness = false
-
-[[bench]]
-name = "liquid_float_array"
-harness = false
-path = "bench/liquid_float_array.rs"
-
-[[bench]]
 name = "cache_storage"
 path = "study/cache_storage.rs"
-harness = false
-
-[[bench]]
-name = "linear_integer_study"
-path = "study/linear_integer.rs"
-harness = false
-
-
-[[bench]]
-name = "primitive_encoding"
-path = "bench/primitive_encoding.rs"
-harness = false
-
-[[bench]]
-name = "string_fingerprint_study"
-path = "study/string-fingerprint.rs"
-harness = false
-
-[[bench]]
-name = "filter_selectivity_ambiguity"
-path = "study/filter_selectivity_ambiguity.rs"
-harness = false
-
-[[bench]]
-name = "prefix_differentiability"
-path = "study/prefix_differentiability.rs"
 harness = false

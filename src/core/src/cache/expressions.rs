@@ -5,7 +5,18 @@ use std::sync::Arc;
 
 use arrow_schema::DataType;
 
-use crate::liquid_array::Date32Field;
+/// A date or timestamp component observed by lineage analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Date32Field {
+    /// Year component.
+    Year,
+    /// Month component.
+    Month,
+    /// Day component.
+    Day,
+    /// Day of week, where Sunday is zero.
+    DayOfWeek,
+}
 
 /// A typed variant path requested by a query.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
@@ -58,8 +69,6 @@ pub enum CacheExpression {
     },
     /// A column used for predicate evaluation.
     PredicateColumn,
-    /// A column used primarily for substring search (LIKE '%foo%').
-    SubstringSearch,
 }
 
 impl std::fmt::Display for CacheExpression {
@@ -79,9 +88,6 @@ impl std::fmt::Display for CacheExpression {
             }
             Self::PredicateColumn => {
                 write!(f, "PredicateColumn")
-            }
-            Self::SubstringSearch => {
-                write!(f, "SubstringSearch")
             }
         }
     }
@@ -136,11 +142,6 @@ impl CacheExpression {
         Self::VariantGet {
             requests: Arc::from(requests.into_boxed_slice()),
         }
-    }
-
-    /// Build a substring-search expression hint.
-    pub fn substring_search() -> Self {
-        Self::SubstringSearch
     }
 
     /// Return the requested `Date32` component when this is an extract
@@ -236,7 +237,6 @@ enum CacheExprDto {
     Date { fields: Vec<Date32Field> },
     Variant { requests: Vec<VariantReqDto> },
     Predicate,
-    Substring,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -261,7 +261,6 @@ impl From<&CacheExpression> for CacheExprDto {
                     .collect(),
             },
             CacheExpression::PredicateColumn => CacheExprDto::Predicate,
-            CacheExpression::SubstringSearch => CacheExprDto::Substring,
         }
     }
 }
@@ -284,7 +283,6 @@ impl CacheExpression {
                 })
             }
             CacheExprDto::Predicate => Some(CacheExpression::PredicateColumn),
-            CacheExprDto::Substring => Some(CacheExpression::SubstringSearch),
         }
     }
 }
@@ -334,14 +332,10 @@ mod tests {
     }
 
     #[test]
-    fn predicate_and_substring_roundtrip() {
-        for expr in [
-            CacheExpression::PredicateColumn,
-            CacheExpression::substring_search(),
-        ] {
-            let decoded = CacheExpression::from_metadata_value(&expr.to_metadata_value()).unwrap();
-            assert_eq!(decoded, expr);
-        }
+    fn predicate_roundtrip() {
+        let expr = CacheExpression::PredicateColumn;
+        let decoded = CacheExpression::from_metadata_value(&expr.to_metadata_value()).unwrap();
+        assert_eq!(decoded, expr);
     }
 
     #[test]

@@ -11,18 +11,18 @@ cargo install cargo-fuzz
 ## Run
 
 ```bash
-cargo fuzz run fsst_view -- -jobs=12
+cargo fuzz run liquid_array -- -jobs=12
 ```
 
 ## Coverage
 
 ```bash
-cargo fuzz coverage fsst_view
+cargo fuzz coverage liquid_array
 ```
 
 ```bash
-llvm-cov show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/fsst_view \
-  --instr-profile fuzz/coverage/fsst_view/coverage.profdata \
+llvm-cov show target/x86_64-unknown-linux-gnu/coverage/x86_64-unknown-linux-gnu/release/liquid_array \
+  --instr-profile fuzz/coverage/liquid_array/coverage.profdata \
   --format html \
   --ignore-filename-regex "\.cargo" \
   > index.html

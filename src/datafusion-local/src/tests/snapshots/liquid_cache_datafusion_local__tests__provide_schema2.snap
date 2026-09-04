@@ -25,8 +25,8 @@ entries.memory.arrow: 5
 entries.memory.liquid: 1
 entries.disk.liquid: 2
 entries.disk.arrow: 0
-usage.memory_bytes: 1000915
-usage.disk_bytes: 35000
+usage.memory_bytes: [bytes]
+usage.disk_bytes: [bytes]
 RuntimeStatsSnapshot:
   get: 4
   get_with_selection: 4
@@ -174,8 +174,8 @@ entries.memory.arrow: 5
 entries.memory.liquid: 1
 entries.disk.liquid: 2
 entries.disk.arrow: 0
-usage.memory_bytes: 1000915
-usage.disk_bytes: 35000
+usage.memory_bytes: [bytes]
+usage.disk_bytes: [bytes]
 RuntimeStatsSnapshot:
   get: 5
   get_with_selection: 5
@@ -213,8 +213,8 @@ entries.memory.arrow: 5
 entries.memory.liquid: 3
 entries.disk.liquid: 0
 entries.disk.arrow: 0
-usage.memory_bytes: 1036303
-usage.disk_bytes: 35000
+usage.memory_bytes: [bytes]
+usage.disk_bytes: [bytes]
 RuntimeStatsSnapshot:
   get: 4
   get_with_selection: 4

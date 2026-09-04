@@ -1,6 +1,6 @@
 # liquid-cache
 
-Storage layer providing byte caching and liquid array data structures.
+Storage layer providing byte caching with a Vortex-backed encoded cache tier.
 
 This library provides one way to insert into the cache and three ways to read from it:
 - read as Arrow array
@@ -88,7 +88,6 @@ let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
 let liquid_expr = liquid_cache::cache::LiquidExpr::try_new(
     expr,
     &DataType::Utf8,
-    Some(&liquid_cache::cache::CacheExpression::PredicateColumn),
 )
 .unwrap();
 
