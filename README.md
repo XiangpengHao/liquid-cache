@@ -16,19 +16,16 @@
 [![TPC-DS](https://img.shields.io/badge/TPC--DS-passing-brightgreen)](https://github.com/XiangpengHao/liquid-cache/actions/workflows/ci.yml)
 </div>
 
-LiquidCache understands both your **data** and your **query**.
-- It transcodes storage **data** into an optimized, cache-only format, so you can keep using your favorite formats without worrying about performance.
-- It keeps the data that matters in memory and uses modern SSDs efficiently. For example, if your **query** groups by `year`, LiquidCache stores only the year in memory and keeps the full timestamp on disk.
+LiquidCache understands both **data** and **queries**.
 
-LiquidCache is a research project [funded](https://xiangpeng.systems/fund/) by [InfluxData](https://www.influxdata.com/), [SpiralDB](https://spiraldb.com/), and [Bauplan](https://www.bauplanlabs.com).
-
-You may want to consider [Foyer](https://github.com/foyer-rs/foyer) if you're looking for a black-box cache: easier to setup, but not as "smart" as LiquidCache.
+- It caches data in an optimized, cache-only **data format**, so you can keep using existing storage formats without sacrificing performance.
+- It keeps **query-relevant** data in memory and efficiently spills the rest to SSDs. For example, if a query groups by `year`, LiquidCache stores only the `year` in memory and keeps the full `timestamp` on disk.
 
 ## Quick start
 
 This quick start uses the core cache API from `src/core`.
-Add these dependencies to your project: `liquid-cache`, `arrow`, and `datafusion`.
-The example below shows insert, get, get with selection, and get with predicate pushdown.
+Add `liquid-cache`, `arrow`, and `datafusion` to your project dependencies.
+The example below demonstrates insertion, retrieval, selection pushdown, and predicate pushdown.
 
 ```rust
 use arrow::array::{BooleanArray, UInt64Array};
@@ -91,18 +88,18 @@ tokio_test::block_on(async {
 
 ## Performance troubleshooting
 
-### LiquidCache uses DIRECT I/O
+### LiquidCache uses direct I/O
 
 By default, LiquidCache bypasses the OS page cache using [O_DIRECT](https://man7.org/linux/man-pages/man2/open.2.html#:~:text=O_DIRECT) on Linux and `F_NOCACHE` on macOS. This avoids double-caching and bounds memory usage.
 
-This also means LiquidCache can *appear slower* than other caches when most data fits in OS page cache, which is common in dev environments but unrealistic in production.
+This also means LiquidCache can *appear slower* than other caches when most of the data fits in the OS page cache, not a realistic scenario in production.
 
-
-### Use LiquidCache with DataFusion
+### Using LiquidCache with DataFusion
 
 LiquidCache requires a few non-default DataFusion configurations:
 
-**ListingTable:**
+**With `ListingTable`:**
+
 ```rust
 let (ctx, _) = LiquidCacheLocalBuilder::new().build(config).await?;
 
@@ -132,44 +129,33 @@ let (ctx, _) = LiquidCacheLocalBuilder::new()
 
 ### x86-64 optimization
 
-LiquidCache is optimized for x86-64 with specific [instructions](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). On ARM (e.g., Apple Silicon), fallback implementations are used. Contributions are welcome.
-
+LiquidCache includes specific [x86-64 optimizations](https://github.com/XiangpengHao/liquid-cache/blob/f8d5b77829fa7996a56c031eb25503f7b0b0428d/src/liquid_parquet/src/utils.rs#L229-L327). On ARM platforms such as Apple Silicon, it uses fallback implementations. Contributions are welcome.
 
 ## Development
 
-See [dev/README.md](./dev/README.md)
+See [dev/README.md](./dev/README.md).
 
 ## Benchmark
 
-See [benchmark/README.md](./benchmark/README.md)
+See [benchmark/README.md](./benchmark/README.md).
 
 ## FAQ
 
-#### Can I use LiquidCache in production today?
+#### Is LiquidCache production-ready?
 
-Not yet. Production readiness is our goal, but we are still implementing features and polishing the system.
-LiquidCache began as a research project exploring new approaches to cost-effective caching. Like most research projects, it takes time to mature—we welcome your help.
+Almost. LiquidCache began as a research project exploring new approaches to cost-effective caching. Like most research projects, it needs time to mature, and we welcome your help.
 
-#### How does LiquidCache work?
+#### How can I contribute?
 
-See our [paper](/dev/doc/liquid-cache-vldb.pdf) for details. We are also working on a technical blog to introduce LiquidCache in a more accessible way.
-
-#### How can I get involved?
-
-We are always looking for contributors. Feedback and improvements are welcome—explore the issue list and contribute where you can.
-If you want to get involved in the research side, [reach out](https://xiangpeng.systems/work-with-me/).
+- We use LLMs to help write code. Please have an LLM review your code before submitting it.
+- Be accountable for the code you propose, and help maintainers be accountable for the code they merge.
+- A PR should take no more than 10 minutes to review, as measured by cognitive burden rather than lines of code.
 
 #### Who is behind LiquidCache?
 
-LiquidCache is a research project funded by:
-- [SpiralDB](https://spiraldb.com/)
-- [InfluxData](https://www.influxdata.com/)
-- [Bauplan](https://www.bauplanlabs.com)
-- Taxpayers of the state of Wisconsin and the federal government. 
+LiquidCache grew out of [Xiangpeng Hao's PhD dissertation](https://typst.app/project/rWaXOvnkXMDr0nCjkCgbpp), which was generously supported by [SpiralDB](https://spiraldb.com/), [InfluxData](https://www.influxdata.com/), [Bauplan](https://www.bauplanlabs.com), and taxpayer funding from the state of Wisconsin and the federal government.
 
 LiquidCache is and will remain open source and free to use.
-
-Your support for science is greatly appreciated!
 
 ## License
 
