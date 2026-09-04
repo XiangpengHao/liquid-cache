@@ -16,7 +16,7 @@ use super::{
     utils::CacheConfig,
 };
 use crate::cache::policies::{EvictionOutcome, EvictionPolicy};
-use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
+use crate::cache::utils::arrow_to_bytes;
 use crate::cache::{CacheExpression, LiquidExpr, index::ArtIndex, utils::EntryID};
 use crate::cache::{CacheFull, CacheStats, EventTrace};
 use crate::sync::Arc;
@@ -226,11 +226,6 @@ impl LiquidCache {
         &self.observer
     }
 
-    /// Get the compressor states of the cache.
-    pub fn compressor_states(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        self.metadata.get_compressor(entry_id)
-    }
-
     /// Add a lineage expression for an entry.
     pub fn add_lineage(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
         self.metadata.add_lineage(entry_id, expression);
@@ -296,11 +291,7 @@ impl LiquidCache {
     ) -> Result<CacheEntry, CacheFull> {
         match &batch {
             batch @ CacheEntry::MemoryArrow(_) => {
-                let outcome = self.eviction_policy.evict(
-                    batch,
-                    self.metadata.get_compressor(&entry_id).as_ref(),
-                    None,
-                );
+                let outcome = self.eviction_policy.evict(batch, None);
                 let EvictionOutcome::Replace {
                     entry: new_batch,
                     bytes_to_write,
@@ -507,13 +498,11 @@ impl LiquidCache {
             return Ok(());
         };
         self.trace(InternalEvent::EvictionVictim { entry: victim });
-        let compressor = self.metadata.get_compressor(&victim);
-        let lineage_arc = self.metadata.lineage(&victim);
-        let lineage = lineage_arc.as_deref();
         loop {
-            let outcome =
-                self.eviction_policy
-                    .evict(victim_entry.as_ref(), compressor.as_ref(), lineage);
+            let outcome = self.eviction_policy.evict(
+                victim_entry.as_ref(),
+                self.metadata.lineage(&victim).as_deref(),
+            );
 
             match outcome {
                 EvictionOutcome::Replace {
@@ -744,15 +733,9 @@ impl LiquidCache {
             entry: *entry_id,
             bytes: bytes.len(),
         });
-        let compressor_states = self.metadata.get_compressor(entry_id);
-        let compressor = compressor_states.fsst_compressor();
-
-        Some(
-            (crate::liquid_array::ipc::read_from_bytes(
-                Bytes::from(bytes),
-                &crate::liquid_array::ipc::LiquidIPCContext::new(compressor),
-            )) as _,
-        )
+        Some(Arc::new(crate::liquid_array::LiquidArray::from_bytes(
+            Bytes::from(bytes),
+        )))
     }
 
     pub(crate) async fn eval_predicate_internal(
@@ -867,11 +850,7 @@ mod tests {
     use super::*;
     use crate::cache::{
         CacheEntry, CachePolicy, LiquidCacheBuilder, LiquidPolicy, TranscodeEvict,
-        transcode_liquid_inner,
-        utils::{
-            LiquidCompressorStates, arrow_to_bytes, create_cache_store, create_test_array,
-            create_test_arrow_array,
-        },
+        utils::{arrow_to_bytes, create_cache_store, create_test_array, create_test_arrow_array},
     };
     use crate::sync::thread;
     use arrow::array::{Array, ArrayRef, Int32Array};
@@ -1110,8 +1089,8 @@ mod tests {
         let store = create_cache_store(1 << 20, Box::new(LiquidPolicy::new())).await;
         let entry_id = EntryID::from(322usize);
         let arrow_array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
-        let compressor = LiquidCompressorStates::new();
-        let liquid = transcode_liquid_inner(&arrow_array, &compressor).unwrap();
+        let liquid =
+            Arc::new(crate::liquid_array::LiquidArray::from_arrow_array(&arrow_array).unwrap());
 
         store
             .insert_inner(entry_id, CacheEntry::memory_liquid(liquid.clone()))

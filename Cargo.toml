@@ -66,8 +66,26 @@ uuid = { version = "1.23.3", features = ["v4"] }
 fastrace = "0.7"
 fastrace-tonic = "0.2"
 congee = "0.4.1"
-insta = "1.47.2"
+insta = { version = "1.47.2", features = ["filters"] }
 t4 = "0.1.9"
+vortex-array = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-arrow = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-btrblocks = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-ipc = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-buffer = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-mask = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-session = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-error = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-fastlanes = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-fsst = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-alp = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-runend = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-sparse = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-zigzag = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-datetime-parts = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-decimal-byte-parts = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-bytebool = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
+vortex-sequence = { git = "https://github.com/vortex-data/vortex", rev = "265b7053ac80c3ee9ddccf1fb66f85effa902c62", default-features = false }
 
 [profile.dev.package]
 insta.opt-level = 3

@@ -38,7 +38,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::expressions::{CastExpr, Column, LikeExpr, Literal};
+use datafusion::physical_plan::expressions::{CastExpr, Column, Literal};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
@@ -46,8 +46,7 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
-use liquid_cache::cache::CacheExpression;
-use liquid_cache::liquid_array::Date32Field;
+use liquid_cache::cache::{CacheExpression, Date32Field};
 
 use crate::cache::ColumnLineages;
 
@@ -69,7 +68,6 @@ enum Op {
         path: String,
         data_type: Option<DataType>,
     },
-    Substring,
     /// Any other consumption (arithmetic, comparison, cast, unknown op, …).
     Other,
 }
@@ -460,20 +458,6 @@ fn lineage_for_expr(expr: &std::sync::Arc<dyn PhysicalExpr>, input: &LineageMap)
         return propagate_other(expr, input);
     }
 
-    if let Some(like) = expr.downcast_ref::<LikeExpr>() {
-        if !like.case_insensitive()
-            && let Some(pattern) = literal_utf8(like.pattern())
-            && is_substring_pattern(pattern.as_bytes())
-        {
-            let mut usages = lineage_for_expr(like.expr(), input);
-            for usage in &mut usages {
-                usage.ops.push(Op::Substring);
-            }
-            return usages;
-        }
-        return propagate_other(expr, input);
-    }
-
     if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let mut usages = lineage_for_expr(cast.expr(), input);
         for usage in &mut usages {
@@ -512,9 +496,6 @@ fn derive_hint(data_type: &DataType, usages: &[Vec<Op>]) -> Option<CacheExpressi
         return Some(expr);
     }
     if let Some(expr) = derive_variant(usages) {
-        return Some(expr);
-    }
-    if let Some(expr) = derive_substring(data_type, usages) {
         return Some(expr);
     }
     None
@@ -583,23 +564,6 @@ fn derive_variant(usages: &[Vec<Op>]) -> Option<CacheExpression> {
     }
 }
 
-fn derive_substring(data_type: &DataType, usages: &[Vec<Op>]) -> Option<CacheExpression> {
-    if !is_string_type(data_type) {
-        return None;
-    }
-    let mut saw_substring = false;
-    for chain in usages {
-        if chain.iter().any(|op| matches!(op, Op::Substring)) {
-            saw_substring = true;
-            continue;
-        }
-        if !chain.is_empty() {
-            return None;
-        }
-    }
-    saw_substring.then(CacheExpression::substring_search)
-}
-
 fn literal_utf8(expr: &std::sync::Arc<dyn PhysicalExpr>) -> Option<String> {
     let literal = expr.downcast_ref::<Literal>()?;
     match literal.value() {
@@ -626,28 +590,6 @@ fn literal_date_field(expr: &std::sync::Arc<dyn PhysicalExpr>) -> Option<Date32F
         "month" => Some(Date32Field::Month),
         "day" => Some(Date32Field::Day),
         _ => None,
-    }
-}
-
-fn is_substring_pattern(pattern: &[u8]) -> bool {
-    if pattern.len() < 2 {
-        return false;
-    }
-    if pattern[0] != b'%' || pattern[pattern.len() - 1] != b'%' {
-        return false;
-    }
-    let inner = &pattern[1..pattern.len() - 1];
-    if inner.is_empty() {
-        return false;
-    }
-    !inner.iter().any(|b| *b == b'%' || *b == b'_')
-}
-
-fn is_string_type(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => true,
-        DataType::Dictionary(_, value_type) => is_string_type(value_type.as_ref()),
-        _ => false,
     }
 }
 
@@ -808,25 +750,5 @@ mod tests {
         // The aggregate value needs only MONTH, but chronological ordering
         // needs the exact date.
         assert_eq!(hints.get("date"), None);
-    }
-
-    #[tokio::test]
-    async fn substring_search_in_filter() {
-        let hints = hints_for("SELECT date FROM t WHERE url LIKE '%example%'").await;
-        assert_eq!(
-            hints.get("url").map(|e| e.as_ref()),
-            Some(&CacheExpression::substring_search())
-        );
-    }
-
-    #[tokio::test]
-    async fn anchored_like_is_not_substring() {
-        let hints = hints_for("SELECT date FROM t WHERE url LIKE 'https://%'").await;
-        // A prefix LIKE is not a substring search; no substring hint.
-        assert!(
-            hints
-                .get("url")
-                .is_none_or(|e| !matches!(e.as_ref(), CacheExpression::SubstringSearch))
-        );
     }
 }

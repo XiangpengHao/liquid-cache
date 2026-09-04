@@ -2,10 +2,7 @@ use std::fmt::Debug;
 
 use ahash::AHashMap;
 
-use crate::cache::{
-    CacheExpression,
-    utils::{EntryID, LiquidCompressorStates},
-};
+use crate::cache::{CacheExpression, utils::EntryID};
 use crate::sync::{Arc, RwLock};
 
 /// Per-entry metadata used by the cache.
@@ -26,9 +23,6 @@ pub trait EntryMetadata: Debug + Send + Sync {
     fn lineage(&self, _entry_id: &EntryID) -> Option<Arc<CacheExpression>> {
         None
     }
-
-    /// Get the compressor for an entry.
-    fn get_compressor(&self, entry_id: &EntryID) -> Arc<LiquidCompressorStates>;
 }
 
 /// Convert an [`EntryID`] to a t4 key (8-byte little-endian representation).
@@ -38,11 +32,9 @@ pub(crate) fn entry_id_to_key(entry_id: &EntryID) -> Vec<u8> {
 
 /// A default implementation of [`EntryMetadata`].
 ///
-/// All entries share a single [`LiquidCompressorStates`] and lineage expressions are
-/// stored in a flat map keyed by [`EntryID`].
+/// Lineage expressions are stored in a flat map keyed by [`EntryID`].
 #[derive(Debug, Default)]
 pub struct DefaultCacheMetadata {
-    compressor_state: Arc<LiquidCompressorStates>,
     lineages: RwLock<AHashMap<EntryID, Arc<CacheExpression>>>,
 }
 
@@ -50,7 +42,6 @@ impl DefaultCacheMetadata {
     /// Create a new instance of [`DefaultCacheMetadata`].
     pub fn new() -> Self {
         Self {
-            compressor_state: Arc::new(LiquidCompressorStates::new()),
             lineages: RwLock::new(AHashMap::new()),
         }
     }
@@ -65,9 +56,5 @@ impl EntryMetadata for DefaultCacheMetadata {
     fn lineage(&self, entry_id: &EntryID) -> Option<Arc<CacheExpression>> {
         let guard = self.lineages.read().unwrap();
         guard.get(entry_id).cloned()
-    }
-
-    fn get_compressor(&self, _entry_id: &EntryID) -> Arc<LiquidCompressorStates> {
-        self.compressor_state.clone()
     }
 }

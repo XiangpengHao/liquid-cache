@@ -1,6 +1,7 @@
 #[cfg(test)]
 use crate::cache::cached_batch::CacheEntry;
-use crate::sync::{Arc, RwLock};
+#[cfg(test)]
+use crate::sync::Arc;
 use arrow::array::ArrayRef;
 use arrow_schema::ArrowError;
 use bytes::Bytes;
@@ -83,49 +84,6 @@ impl From<usize> for EntryID {
 impl From<EntryID> for usize {
     fn from(val: EntryID) -> Self {
         val.val
-    }
-}
-
-/// States for liquid compressor.
-pub struct LiquidCompressorStates {
-    fsst_compressor: RwLock<Option<Arc<fsst::Compressor>>>,
-}
-
-impl std::fmt::Debug for LiquidCompressorStates {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EtcCompressorStates")
-    }
-}
-
-impl Default for LiquidCompressorStates {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LiquidCompressorStates {
-    /// Create a new instance of LiquidCompressorStates.
-    pub fn new() -> Self {
-        Self {
-            fsst_compressor: RwLock::new(None),
-        }
-    }
-
-    /// Create a new instance of LiquidCompressorStates with an fsst compressor.
-    pub fn new_with_fsst_compressor(fsst_compressor: Arc<fsst::Compressor>) -> Self {
-        Self {
-            fsst_compressor: RwLock::new(Some(fsst_compressor)),
-        }
-    }
-
-    /// Get the fsst compressor.
-    pub fn fsst_compressor(&self) -> Option<Arc<fsst::Compressor>> {
-        self.fsst_compressor.read().unwrap().clone()
-    }
-
-    /// Get the fsst compressor .
-    pub fn fsst_compressor_raw(&self) -> &RwLock<Option<Arc<fsst::Compressor>>> {
-        &self.fsst_compressor
     }
 }
 

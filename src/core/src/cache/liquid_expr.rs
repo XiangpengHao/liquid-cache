@@ -6,7 +6,6 @@ use datafusion_physical_expr::expressions::{
 };
 use datafusion_physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 
-use crate::cache::CacheExpression;
 use crate::sync::Arc;
 use crate::utils::get_bytes_needle;
 
@@ -28,14 +27,10 @@ impl LiquidExpr {
     /// Validate and wrap a physical expression for LiquidCache predicate evaluation.
     ///
     /// Returns `None` when the expression shape or operator is unsupported for the
-    /// provided column type and expression hint.
-    pub fn try_new(
-        expr: Arc<dyn PhysicalExpr>,
-        data_type: &DataType,
-        expression_hint: Option<&CacheExpression>,
-    ) -> Option<Self> {
+    /// provided column type.
+    pub fn try_new(expr: Arc<dyn PhysicalExpr>, data_type: &DataType) -> Option<Self> {
         let normalized = unwrap_dynamic_filter(&expr)?;
-        if supports_expr(&normalized, data_type, expression_hint) {
+        if supports_expr(&normalized, data_type) {
             Some(Self { expr: normalized })
         } else {
             None
@@ -45,11 +40,6 @@ impl LiquidExpr {
     /// Get the underlying validated physical expression.
     pub fn physical_expr(&self) -> &Arc<dyn PhysicalExpr> {
         &self.expr
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_unchecked(expr: Arc<dyn PhysicalExpr>) -> Self {
-        Self { expr }
     }
 }
 
@@ -61,17 +51,13 @@ fn unwrap_dynamic_filter(expr: &Arc<dyn PhysicalExpr>) -> Option<Arc<dyn Physica
     }
 }
 
-fn supports_expr(
-    expr: &Arc<dyn PhysicalExpr>,
-    data_type: &DataType,
-    expression_hint: Option<&CacheExpression>,
-) -> bool {
+fn supports_expr(expr: &Arc<dyn PhysicalExpr>, data_type: &DataType) -> bool {
     if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
-        return supports_binary_expr(binary, data_type, expression_hint);
+        return supports_binary_expr(binary, data_type);
     }
 
     if let Some(like_expr) = expr.downcast_ref::<LikeExpr>() {
-        return supports_like_expr(like_expr, data_type, expression_hint);
+        return supports_like_expr(like_expr, data_type);
     }
 
     if let Some(literal) = expr.downcast_ref::<Literal>() {
@@ -81,11 +67,7 @@ fn supports_expr(
     false
 }
 
-fn supports_binary_expr(
-    binary: &BinaryExpr,
-    data_type: &DataType,
-    expression_hint: Option<&CacheExpression>,
-) -> bool {
+fn supports_binary_expr(binary: &BinaryExpr, data_type: &DataType) -> bool {
     let Some(literal) = binary.right().downcast_ref::<Literal>() else {
         return false;
     };
@@ -104,7 +86,6 @@ fn supports_binary_expr(
             | Operator::GtEq => get_bytes_needle(literal.value()).is_some(),
             Operator::LikeMatch | Operator::NotLikeMatch => {
                 get_bytes_needle(literal.value()).is_some()
-                    && is_substring_hint_enabled(expression_hint)
             }
             _ => false,
         }
@@ -123,15 +104,11 @@ fn supports_binary_expr(
     }
 }
 
-fn supports_like_expr(
-    like_expr: &LikeExpr,
-    data_type: &DataType,
-    expression_hint: Option<&CacheExpression>,
-) -> bool {
+fn supports_like_expr(like_expr: &LikeExpr, data_type: &DataType) -> bool {
     if !is_byte_like(data_type) || like_expr.case_insensitive() {
         return false;
     }
-    if !is_column_like(like_expr.expr()) || !is_substring_hint_enabled(expression_hint) {
+    if !is_column_like(like_expr.expr()) {
         return false;
     }
     like_expr
@@ -139,10 +116,6 @@ fn supports_like_expr(
         .downcast_ref::<Literal>()
         .and_then(|literal| get_bytes_needle(literal.value()))
         .is_some()
-}
-
-fn is_substring_hint_enabled(expression_hint: Option<&CacheExpression>) -> bool {
-    matches!(expression_hint, Some(CacheExpression::SubstringSearch))
 }
 
 fn is_column_like(expr: &Arc<dyn PhysicalExpr>) -> bool {
@@ -209,35 +182,19 @@ mod tests {
             Operator::Eq,
             Arc::new(Literal::new(ScalarValue::Utf8(Some("x".to_string())))),
         ));
-        let liquid_expr = LiquidExpr::try_new(expr, &DataType::Utf8, None);
+        let liquid_expr = LiquidExpr::try_new(expr, &DataType::Utf8);
         assert!(liquid_expr.is_some());
     }
 
     #[test]
-    fn rejects_byte_like_without_substring_hint() {
+    fn accepts_byte_like_like() {
         let expr: Arc<dyn PhysicalExpr> = Arc::new(LikeExpr::new(
             false,
             false,
             Arc::new(Column::new("c", 0)),
             Arc::new(Literal::new(ScalarValue::Utf8(Some("%abc%".to_string())))),
         ));
-        let liquid_expr = LiquidExpr::try_new(expr, &DataType::Utf8, None);
-        assert!(liquid_expr.is_none());
-    }
-
-    #[test]
-    fn accepts_byte_like_with_substring_hint() {
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(LikeExpr::new(
-            false,
-            false,
-            Arc::new(Column::new("c", 0)),
-            Arc::new(Literal::new(ScalarValue::Utf8(Some("%abc%".to_string())))),
-        ));
-        let liquid_expr = LiquidExpr::try_new(
-            expr,
-            &DataType::Utf8,
-            Some(&CacheExpression::SubstringSearch),
-        );
+        let liquid_expr = LiquidExpr::try_new(expr, &DataType::Utf8);
         assert!(liquid_expr.is_some());
     }
 
@@ -248,7 +205,7 @@ mod tests {
             Operator::Gt,
             Arc::new(Literal::new(ScalarValue::Int32(Some(42)))),
         ));
-        let liquid_expr = LiquidExpr::try_new(expr, &DataType::Int32, None);
+        let liquid_expr = LiquidExpr::try_new(expr, &DataType::Int32);
         assert!(liquid_expr.is_some());
     }
 }

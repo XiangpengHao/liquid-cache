@@ -103,11 +103,8 @@ fn main() {
         for (i, id) in ids.iter().enumerate() {
             let len = lens[i];
             let selection = BooleanBuffer::new_set(len);
-            let Some(liquid_expr) = LiquidExpr::try_new(
-                Arc::clone(&pred_expr),
-                &DataType::Utf8,
-                Some(&liquid_cache::cache::CacheExpression::PredicateColumn),
-            ) else {
+            let Some(liquid_expr) = LiquidExpr::try_new(Arc::clone(&pred_expr), &DataType::Utf8)
+            else {
                 continue;
             };
             if storage

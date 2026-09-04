@@ -12,10 +12,14 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1.4", features = ["derive"] }
 arrow = { workspace = true }
 liquid-cache = { workspace = true }
+bytes = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr-common = { workspace = true }
+datafusion-physical-expr = { workspace = true }
 
 [[bin]]
-name = "fsst_view_fuzz"
-path = "fuzz_targets/fsst_view.rs"
+name = "liquid_array"
+path = "fuzz_targets/liquid_array.rs"
 test = false
 doc = false
 bench = false

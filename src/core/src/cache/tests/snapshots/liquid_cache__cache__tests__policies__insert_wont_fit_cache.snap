@@ -1,6 +1,5 @@
 ---
 source: src/core/src/cache/tests/policies.rs
-assertion_line: 62
 expression: trace
 ---
 EventTrace: [
@@ -12,16 +11,16 @@ event=insert_success entry=0 kind=MemoryLiquid
 event=insert_failed entry=1 kind=MemoryArrow
 event=eviction_begin victims=[0]
 event=eviction_victim entry=0
-event=io_write entry=0 kind=DiskLiquid bytes=1320
+event=io_write entry=0 kind=DiskLiquid bytes=[bytes]
 event=insert_success entry=0 kind=DiskLiquid
 event=insert_failed entry=1 kind=MemoryArrow
 event=insert_failed entry=1 kind=MemoryLiquid
-event=io_write entry=1 kind=MemoryLiquid bytes=34600
+event=io_write entry=1 kind=MemoryLiquid bytes=[bytes]
 event=insert_success entry=1 kind=DiskLiquid
 event=read entry=1 selection=false expr=None cached=DiskLiquid
-event=io_read_liquid entry=1 bytes=34600
+event=io_read_liquid entry=1 bytes=[bytes]
 event=hydrate entry=1 cached=DiskLiquid new=MemoryLiquid
 event=insert_failed entry=1 kind=MemoryLiquid
-event=io_write entry=1 kind=MemoryLiquid bytes=34600
+event=io_write entry=1 kind=MemoryLiquid bytes=[bytes]
 event=insert_success entry=1 kind=DiskLiquid
 ]
