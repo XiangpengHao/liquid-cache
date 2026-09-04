@@ -40,8 +40,8 @@ use parquet::{
 use super::source::{CachedMetaReaderFactory, ParquetMetadataCacheReader};
 use crate::{
     cache::{
-        BatchID, ColumnSqueezeHints, InsertArrowArrayError, LiquidCacheParquetRef,
-        ParquetFileIdentity, PrefetchOutcome, RowGroupSnapshots,
+        BatchID, ColumnLineages, InsertArrowArrayError, LiquidCacheParquetRef, ParquetFileIdentity,
+        PrefetchOutcome, RowGroupSnapshots,
     },
     reader::{
         plantime::row_filter::build_row_filter,
@@ -67,7 +67,7 @@ pub(crate) struct LiquidMorselizer {
     pub(crate) liquid_cache: LiquidCacheParquetRef,
     pub(crate) expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     pub(crate) span: Option<Arc<fastrace::Span>>,
-    pub(crate) squeeze_hints: Arc<ColumnSqueezeHints>,
+    pub(crate) lineages: Arc<ColumnLineages>,
     pub(crate) prefetch: bool,
 }
 
@@ -162,7 +162,7 @@ impl Morselizer for LiquidMorselizer {
                 expr_adapter_factory: Arc::clone(&self.expr_adapter_factory),
                 file_identity,
                 span,
-                squeeze_hints: Arc::clone(&self.squeeze_hints),
+                lineages: Arc::clone(&self.lineages),
                 prefetch: self.prefetch,
             })),
         }))
@@ -212,7 +212,7 @@ struct PreparedLiquidOpen {
     expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     file_identity: ParquetFileIdentity,
     span: Option<Arc<fastrace::Span>>,
-    squeeze_hints: Arc<ColumnSqueezeHints>,
+    lineages: Arc<ColumnLineages>,
     prefetch: bool,
 }
 
@@ -556,7 +556,7 @@ fn plan_row_group_morsels(planned: PlannedRowGroups) -> Result<Option<MorselPlan
         .register_or_get_file_with_hints(
             context.prepared.file_identity.clone(),
             Arc::clone(&context.cache_full_schema),
-            Arc::clone(&context.prepared.squeeze_hints),
+            Arc::clone(&context.prepared.lineages),
         );
     let metadata = Arc::clone(context.reader_metadata.metadata());
     let schema_descriptor = metadata.file_metadata().schema_descr();
@@ -784,7 +784,7 @@ async fn prefetch_columns(
         match column.prefetch_snapshot(batch_id).await {
             PrefetchOutcome::Snapshotted => summary.any_snapshotted = true,
             PrefetchOutcome::Missing => summary.any_missing = true,
-            PrefetchOutcome::AlreadySnapshotted | PrefetchOutcome::Squeezed => {}
+            PrefetchOutcome::AlreadySnapshotted => {}
         }
     }
     summary
@@ -935,7 +935,7 @@ mod tests {
     };
     use futures::StreamExt;
     use liquid_cache::{
-        cache::{AlwaysHydrate, squeeze_policies::Evict},
+        cache::{AlwaysHydrate, Evict},
         cache_policies::LiquidPolicy,
     };
     use object_store::local::LocalFileSystem;
@@ -1109,7 +1109,7 @@ mod tests {
             liquid_cache: cache.clone(),
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
             span: None,
-            squeeze_hints: Arc::default(),
+            lineages: Arc::default(),
             prefetch: true,
         };
         let cached_file = cache.register_or_get_file(
@@ -1239,7 +1239,7 @@ mod tests {
             liquid_cache: Arc::clone(&cache),
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
             span: None,
-            squeeze_hints: Arc::default(),
+            lineages: Arc::default(),
             prefetch: true,
         };
         let morselizer_b = LiquidMorselizer {
@@ -1257,7 +1257,7 @@ mod tests {
             liquid_cache: cache,
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
             span: None,
-            squeeze_hints: Arc::default(),
+            lineages: Arc::default(),
             prefetch: true,
         };
 

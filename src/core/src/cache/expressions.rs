@@ -36,10 +36,9 @@ impl VariantRequest {
 
 /// Experimental expression descriptor for cache lookups.
 ///
-/// A `CacheExpression` is a *squeeze hint*: it tells the cache how a column is
-/// consumed by a query so that, under memory pressure, the cache can keep only
-/// the part of the column the query actually needs (e.g. a single date
-/// component, or a handful of variant paths) instead of evicting it wholesale.
+/// A `CacheExpression` records how a query consumes a column. The lineage is
+/// retained even when a cache policy does not use it, allowing representation
+/// decisions to evolve independently from query analysis.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum CacheExpression {
     /// Extract one or more components (YEAR/MONTH/DAY/DOW) from a `Date32` or
@@ -148,7 +147,7 @@ impl CacheExpression {
     /// expression for exactly one component.
     ///
     /// Multi-component extractions return `None`: there is no single-component
-    /// squeezed representation that satisfies all of them, so the squeeze path
+    /// partial representation that satisfies all of them, so the representation-selection path
     /// keeps the column intact rather than dropping a needed component.
     pub fn as_date32_field(&self) -> Option<Date32Field> {
         match self {
@@ -306,7 +305,7 @@ mod tests {
         let encoded = expr.to_metadata_value();
         let decoded = CacheExpression::from_metadata_value(&encoded).unwrap();
         assert_eq!(decoded, expr);
-        // Multi-component extractions do not collapse to a single squeezable field.
+        // Multi-component extractions do not collapse to a single specialized field.
         assert_eq!(decoded.as_date32_field(), None);
         assert_eq!(
             decoded.date32_fields().unwrap(),

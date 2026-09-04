@@ -46,7 +46,7 @@ pub fn transcode_liquid_inner<'a>(
 pub fn transcode_liquid_inner_with_hint<'a>(
     array: &'a ArrayRef,
     state: &LiquidCompressorStates,
-    squeeze_hint: Option<&CacheExpression>,
+    lineage: Option<&CacheExpression>,
 ) -> Result<LiquidArrayRef, &'a ArrayRef> {
     let data_type = array.data_type();
     if data_type.is_primitive() {
@@ -162,7 +162,7 @@ pub fn transcode_liquid_inner_with_hint<'a>(
     }
 
     // Handle string/dictionary types.
-    let build_fingerprints = matches!(squeeze_hint, Some(CacheExpression::SubstringSearch));
+    let build_fingerprints = matches!(lineage, Some(CacheExpression::SubstringSearch));
     match array.data_type() {
         DataType::Utf8View => {
             let options =

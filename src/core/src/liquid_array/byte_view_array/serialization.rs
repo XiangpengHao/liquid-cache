@@ -4,12 +4,12 @@ use fsst::Compressor;
 use std::sync::Arc;
 
 use super::{ArrowByteType, LiquidByteViewArray};
+use crate::liquid_array::LiquidDataType;
 use crate::liquid_array::ipc::LiquidIPCHeader;
 use crate::liquid_array::raw::BitPackedArray;
 use crate::liquid_array::raw::fsst_buffer::{
     FsstArray, PrefixKey, RawFsstBuffer, decode_compact_offsets, empty_compact_offsets,
 };
-use crate::liquid_array::{LiquidDataType, SqueezeResult};
 
 // Header for LiquidByteViewArray serialization
 #[repr(C)]
@@ -119,7 +119,7 @@ impl LiquidByteViewArray<FsstArray> {
     | Optional string fingerprints (u32 per entry)     |
     +--------------------------------------------------+
     */
-    pub(crate) fn to_bytes_inner(&self) -> SqueezeResult<Vec<u8>> {
+    pub(crate) fn to_bytes_inner(&self) -> Vec<u8> {
         let header_size = LiquidIPCHeader::size() + ByteViewArrayHeader::size();
         let mut result = Vec::with_capacity(header_size + 1024);
         result.resize(header_size, 0);
@@ -216,7 +216,7 @@ impl LiquidByteViewArray<FsstArray> {
         header_slice[0..LiquidIPCHeader::size()].copy_from_slice(&ipc.to_bytes());
         header_slice[LiquidIPCHeader::size()..header_size].copy_from_slice(&view_header.to_bytes());
 
-        Ok(result)
+        result
     }
 
     /// Deserialize a LiquidByteViewArray from bytes.

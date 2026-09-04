@@ -14,7 +14,6 @@ mod byte_view_tests {
     use rand::SeedableRng;
     use rand::prelude::*;
 
-    use crate::cache::{CacheExpression, TestSqueezeIo};
     use crate::liquid_array::raw::FsstArray;
     use crate::liquid_array::{LiquidArray, LiquidByteViewArray};
 
@@ -196,37 +195,5 @@ mod byte_view_tests {
             Some(false),
         ]);
         assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn squeeze_and_full_read_roundtrip() {
-        let input = StringArray::from(vec![
-            Some("hello"),
-            Some("world"),
-            Some("hello"),
-            None,
-            Some("byteview"),
-        ]);
-        let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
-        let decode_compressor = compressor.clone();
-        let liquid = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
-
-        let baseline = liquid.to_bytes();
-        let Some((_hybrid, bytes)) = liquid.squeeze(
-            Arc::new(TestSqueezeIo::default()),
-            Some(&CacheExpression::PredicateColumn),
-        ) else {
-            panic!("squeeze should succeed");
-        };
-
-        let restored = crate::liquid_array::ipc::read_from_bytes(
-            bytes.clone(),
-            &crate::liquid_array::ipc::LiquidIPCContext::new(Some(decode_compressor)),
-        );
-
-        let a1 = LiquidArray::to_arrow_array(&liquid);
-        let a2 = restored.to_arrow_array();
-        assert_eq!(a1.as_ref(), a2.as_ref());
-        assert_eq!(baseline, restored.to_bytes());
     }
 }

@@ -97,28 +97,12 @@ define_runtime_stats! {
     (get, "Number of `get` calls issued via `CachedData`.", incr_get),
     (get_with_selection, "Number of `get_with_selection` calls issued via `CachedData`.", incr_get_with_selection),
     (eval_predicate, "Number of `eval_predicate` calls issued via `CachedData`.", incr_eval_predicate),
-    (get_squeezed_success, "Number of Squeezed-Liquid full evaluations finished without IO.", incr_get_squeezed_success),
-    (get_squeezed_needs_io, "Number of Squeezed-Liquid full paths that required IO.", incr_get_squeezed_needs_io),
     (try_read_liquid_calls, "Number of `try_read_liquid` calls issued via `CachedData`.", incr_try_read_liquid),
-    (hit_date32_expression_calls, "Number of `hit_date32_expression` calls.", incr_hit_date32_expression),
     (read_io_count, "Number of read IO operations.", incr_read_io_count),
     (write_io_count, "Number of write IO operations.", incr_write_io_count),
     (disk_evictions, "Number of disk cache entries evicted.", incr_disk_evictions),
     (disk_reservation_failures, "Number of failed disk budget reservations.", incr_disk_reservation_failures),
     (eval_predicate_on_liquid_failed, "Number of `eval_predicate` calls that failed on Liquid array.", incr_eval_predicate_on_liquid_failed),
-    (squeezed_decompressed_count, "Number of decompressed Squeezed-Liquid entries.", __incr_squeezed_decompressed_count),
-    (squeezed_total_count, "Total number of Squeezed-Liquid entries.", __incr_squeezed_total_count),
-    (squeeze_io_saved, "Number of io saved by squeezing.", incr_squeeze_io_saved),
-}
-
-impl RuntimeStats {
-    /// Track the number of decompressed Squeezed-Liquid entries.
-    pub fn track_decompress_squeezed_count(&self, decompressed: usize, total: usize) {
-        self.squeezed_decompressed_count
-            .fetch_add(decompressed as u64, Ordering::Relaxed);
-        self.squeezed_total_count
-            .fetch_add(total as u64, Ordering::Relaxed);
-    }
 }
 
 /// Snapshot of cache statistics.
@@ -130,8 +114,6 @@ pub struct CacheStats {
     pub memory_arrow_entries: usize,
     /// Number of in-memory Liquid entries.
     pub memory_liquid_entries: usize,
-    /// Number of in-memory Squeezed-Liquid entries.
-    pub memory_squeezed_liquid_entries: usize,
     /// Number of on-disk Liquid entries.
     pub disk_liquid_entries: usize,
     /// Number of on-disk Arrow entries.
@@ -140,8 +122,6 @@ pub struct CacheStats {
     pub memory_arrow_bytes: usize,
     /// Total size of in-memory Liquid entries in bytes.
     pub memory_liquid_bytes: usize,
-    /// Total size of in-memory Squeezed-Liquid entries in bytes.
-    pub memory_squeezed_liquid_bytes: usize,
     /// Total memory usage of the cache.
     pub memory_usage_bytes: usize,
     /// Total disk usage of the cache.

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::array::UInt64Array;
 use liquid_cache::cache::{
-    AlwaysHydrate, EntryID, LiquidCacheBuilder, LiquidPolicy, TranscodeSqueezeEvict,
+    AlwaysHydrate, EntryID, LiquidCacheBuilder, LiquidPolicy, TranscodeEvict,
 };
 
 #[tokio::main]
@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_disk_bytes(1024 * 1024 * 1024 * 10) // 10GB
         .with_batch_size(8192)
         .with_cache_policy(Box::new(LiquidPolicy::new()))
-        .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+        .with_eviction_policy(Box::new(TranscodeEvict))
         .with_hydration_policy(Box::new(AlwaysHydrate::new()))
         .build()
         .await;

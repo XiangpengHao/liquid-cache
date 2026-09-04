@@ -41,7 +41,6 @@ pub enum InsertArrowArrayError {
 pub(crate) enum PrefetchOutcome {
     Snapshotted,
     AlreadySnapshotted,
-    Squeezed,
     Missing,
 }
 
@@ -60,21 +59,21 @@ impl CachedColumn {
         is_predicate_column: bool,
         snapshots: Arc<RowGroupSnapshots>,
     ) -> Self {
-        // Register the column's squeeze hint. Squeeze hints are column-scoped;
+        // Register the column's lineage expression. Lineage expressions are column-scoped;
         // `ParquetCacheMetadata` keys them by column (the batch id is masked
         // off), so registering once on any batch covers every batch.
         //
         // The read-path `expression` is the typed lineage hint derived from the
         // plan (date/variant/substring). A pure predicate column carries no such
-        // hint, but still registers `PredicateColumn` to guide squeezing — it is
+        // hint, but still registers `PredicateColumn` to describe its usage — it is
         // deliberately *not* stored as `expression`, since it does not change how
         // the column is materialized on read.
-        let squeeze_hint = expression
+        let lineage = expression
             .clone()
             .or_else(|| is_predicate_column.then(|| Arc::new(CacheExpression::PredicateColumn)));
-        if let Some(hint) = squeeze_hint {
+        if let Some(hint) = lineage {
             let hint_entry_id = column_access_path.entry_id(BatchID::from_raw(0)).into();
-            cache_store.add_squeeze_hint(&hint_entry_id, hint);
+            cache_store.add_lineage(&hint_entry_id, hint);
         }
         Self {
             field,
@@ -246,7 +245,6 @@ impl CachedColumn {
                 self.snapshots.insert(entry_id, entry);
                 PrefetchOutcome::Snapshotted
             }
-            PrefetchResult::Squeezed => PrefetchOutcome::Squeezed,
             PrefetchResult::Absent => PrefetchOutcome::Missing,
         }
     }

@@ -118,6 +118,18 @@ cargo run --release --bin in_process -- \
 ## In process mode
 The benchmark uses a JSON manifest file to describe the data tables and queries to run.
 
+### Cache representation ablation
+
+The core cache benchmark can compare direct Arrow eviction with the Liquid
+transcode-and-evict path. Use the same input and memory budget for both runs:
+
+```bash
+cargo bench -p liquid-cache --bench cache_storage -- \
+  --parquet ../../examples/nano_hits.parquet --max-memory-mb 1 --mode arrow
+cargo bench -p liquid-cache --bench cache_storage -- \
+  --parquet ../../examples/nano_hits.parquet --max-memory-mb 1 --mode liquid
+```
+
 ### JSON Format
 
 ```json

@@ -1,7 +1,7 @@
 use arrow::buffer::BooleanBuffer;
 use divan::Bencher;
 use liquid_cache::cache::AlwaysHydrate;
-use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache::cache::TranscodeEvict;
 use liquid_cache::cache_policies::LiquidPolicy;
 use liquid_cache_datafusion::cache::CachedColumn;
 use liquid_cache_datafusion::{FilterCandidateBuilder, LiquidPredicate};
@@ -47,7 +47,7 @@ fn setup_cache() -> (Arc<CachedColumn>, tempfile::TempDir) {
         usize::MAX,
         store,
         Box::new(LiquidPolicy::new()),
-        Box::new(TranscodeSqueezeEvict),
+        Box::new(TranscodeEvict),
         Box::new(AlwaysHydrate::new()),
     ));
     let field = Arc::new(Field::new("test_column", DataType::Int32, false));

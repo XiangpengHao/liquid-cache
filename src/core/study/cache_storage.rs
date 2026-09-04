@@ -5,7 +5,7 @@ use std::time::Instant;
 use arrow::array::ArrayRef;
 use arrow::buffer::BooleanBuffer;
 use arrow_schema::DataType;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use datafusion::logical_expr::Operator;
 use datafusion::prelude::*;
 use datafusion::scalar::ScalarValue;
@@ -15,7 +15,8 @@ use liquid_cache::cache::LiquidCache;
 use liquid_cache::cache::LiquidCacheBuilder;
 use liquid_cache::cache::LiquidExpr;
 use liquid_cache::cache::LiquidPolicy;
-use liquid_cache::cache::squeeze_policies::TranscodeSqueezeEvict;
+use liquid_cache::cache::TranscodeEvict;
+use liquid_cache::cache::{Evict, EvictionPolicy};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -35,22 +36,41 @@ struct CliArgs {
     /// Cargo passes --bench for harness=false binaries; accept it to avoid parse errors
     #[arg(long, default_value = "false")]
     bench: bool,
+
+    /// Representation used while evicting memory entries.
+    #[arg(long, value_enum, default_value_t = CacheMode::Liquid)]
+    mode: CacheMode,
+
+    /// Memory budget in MiB.
+    #[arg(long, default_value_t = 500)]
+    max_memory_mb: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, ValueEnum)]
+enum CacheMode {
+    Arrow,
+    #[default]
+    Liquid,
 }
 
 fn main() {
     let args = CliArgs::parse();
 
-    // 1) Build cache storage with FILO and a small budget (500 MB)
+    // 1) Build cache storage with the requested representation and budget.
     let cache_dir = args
         .cache_dir
         .clone()
         .unwrap_or_else(|| tempfile::tempdir().unwrap().keep());
     let store_path = cache_dir.join("liquid_cache.t4");
     let store = tokio_test::block_on(t4::mount(&store_path)).expect("failed to mount t4 store");
+    let eviction_policy: Box<dyn EvictionPolicy> = match args.mode {
+        CacheMode::Arrow => Box::new(Evict),
+        CacheMode::Liquid => Box::new(TranscodeEvict),
+    };
     let storage = tokio_test::block_on(async {
         LiquidCacheBuilder::new()
-            .with_max_memory_bytes(500 * 1024 * 1024)
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .with_max_memory_bytes(args.max_memory_mb * 1024 * 1024)
+            .with_eviction_policy(eviction_policy)
             .with_cache_policy(Box::new(LiquidPolicy::new()))
             .with_store(store)
             .build()
@@ -72,7 +92,7 @@ fn main() {
     let pred_expr: Arc<dyn datafusion::physical_plan::PhysicalExpr> = Arc::new(BinaryExpr::new(
         Arc::new(Column::new("col", 0)),
         Operator::Eq,
-        Arc::new(Literal::new(ScalarValue::Utf8View(Some(String::new())))),
+        Arc::new(Literal::new(ScalarValue::Utf8(Some(String::new())))),
     ));
 
     // 4) Scan all entries with selection=all-true and time get_with_predicate
@@ -85,7 +105,7 @@ fn main() {
             let selection = BooleanBuffer::new_set(len);
             let Some(liquid_expr) = LiquidExpr::try_new(
                 Arc::clone(&pred_expr),
-                &DataType::Utf8View,
+                &DataType::Utf8,
                 Some(&liquid_cache::cache::CacheExpression::PredicateColumn),
             ) else {
                 continue;

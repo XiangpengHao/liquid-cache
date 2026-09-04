@@ -9,12 +9,12 @@ use rand::{RngExt as _, SeedableRng};
 use std::sync::Arc;
 
 use crate::cache::transcode_liquid_inner_with_hint;
-use crate::cache::{CacheExpression, LiquidCompressorStates, TestSqueezeIo};
+use crate::cache::{CacheExpression, LiquidCompressorStates};
 use crate::liquid_array::byte_view_array::operator::{
     ByteViewOperator, Comparison, Equality, SubString,
 };
-use crate::liquid_array::raw::fsst_buffer::{DiskBuffer, FsstArray, PrefixKey};
-use crate::liquid_array::{LiquidArray, LiquidDataType, LiquidSqueezedArray};
+use crate::liquid_array::raw::fsst_buffer::{FsstArray, PrefixKey};
+use crate::liquid_array::{LiquidArray, LiquidDataType};
 
 #[test]
 fn test_dictionary_view_structure() {
@@ -36,42 +36,6 @@ fn test_original_arrow_data_type_returns_utf8() {
     let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
     let array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
     assert_eq!(array.original_arrow_data_type(), DataType::Utf8);
-}
-
-#[test]
-fn test_hybrid_original_arrow_data_type_returns_utf8() {
-    let input = StringArray::from(vec!["foo", "bar"]);
-    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
-    let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
-    let (hybrid, _) = in_memory
-        .squeeze(
-            Arc::new(TestSqueezeIo::default()),
-            Some(&CacheExpression::PredicateColumn),
-        )
-        .expect("squeeze should succeed");
-    let disk_view = hybrid
-        .as_any()
-        .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
-        .expect("should downcast to disk array");
-    assert_eq!(disk_view.original_arrow_data_type(), DataType::Utf8);
-}
-
-#[test]
-fn test_squeeze_builds_string_fingerprints() {
-    let input = StringArray::from(vec!["alpha", "beta", "alphabet"]);
-    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
-    let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
-    let (hybrid, _) = in_memory
-        .squeeze(
-            Arc::new(TestSqueezeIo::default()),
-            Some(&CacheExpression::substring_search()),
-        )
-        .expect("squeeze should succeed");
-    let disk_view = hybrid
-        .as_any()
-        .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
-        .expect("should downcast to disk array");
-    assert!(disk_view.string_fingerprints.is_some());
 }
 
 #[test]
@@ -101,42 +65,6 @@ fn test_ipc_roundtrip_preserves_string_fingerprints() {
         byte_view.string_fingerprints.as_ref().unwrap().as_ref(),
         decoded.string_fingerprints.as_ref().unwrap().as_ref()
     );
-}
-
-#[tokio::test]
-async fn test_string_fingerprint_skips_disk_read_for_impossible_substring() {
-    let input = StringArray::from(vec!["alpha", "ALP", "beta", "gamma"]);
-    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
-    let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
-
-    let io = Arc::new(TestSqueezeIo::default());
-    let (hybrid, bytes) = in_memory
-        .squeeze(io.clone(), Some(&CacheExpression::substring_search()))
-        .expect("squeeze should succeed");
-    io.set_bytes(bytes);
-
-    let disk_view = hybrid
-        .as_any()
-        .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
-        .expect("should downcast to disk array");
-
-    let fingerprints = disk_view
-        .string_fingerprints
-        .as_ref()
-        .expect("fingerprints should be present");
-    let result = disk_view
-        .compare_like_substring(b"zzz", SubString::Contains, fingerprints)
-        .await;
-    let expected = BooleanArray::from(vec![false, false, false, false]);
-    assert_eq!(result, expected);
-    assert_eq!(io.reads(), 0);
-
-    let result = disk_view
-        .compare_like_substring(b"alp", SubString::Contains, fingerprints)
-        .await;
-    let expected = BooleanArray::from(vec![true, false, false, false]);
-    assert_eq!(result, expected);
-    assert_eq!(io.reads(), 1);
 }
 
 #[test]
@@ -679,78 +607,6 @@ fn test_compare_with_prefix_optimization_utf8_and_binary() {
     assert_eq!(lte_result, lte_expected);
 }
 
-fn test_compare_equals(input: StringArray, needle: &[u8], expected: BooleanArray) {
-    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
-    let liquid_array = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
-    let result = liquid_array.compare_equals(needle);
-    assert_eq!(result, expected);
-}
-
-#[test]
-fn test_compare_equals_on_disk() {
-    let input = StringArray::from(vec![
-        Some("apple_orange"),
-        None,
-        Some("apple_orange_long_string"),
-        Some("apple_b"),
-        Some("apple_oo_long_string"),
-        Some("apple_b"),
-        Some("apple"),
-    ]);
-    test_compare_equals(
-        input.clone(),
-        b"apple",
-        BooleanArray::from(vec![
-            Some(false),
-            None,
-            Some(false),
-            Some(false),
-            Some(false),
-            Some(false),
-            Some(true),
-        ]),
-    );
-    test_compare_equals(
-        input.clone(),
-        b"",
-        BooleanArray::from(vec![
-            Some(false),
-            None,
-            Some(false),
-            Some(false),
-            Some(false),
-            Some(false),
-            Some(false),
-        ]),
-    );
-    test_compare_equals(
-        input.clone(),
-        b"apple_b",
-        BooleanArray::from(vec![
-            Some(false),
-            None,
-            Some(false),
-            Some(true),
-            Some(false),
-            Some(true),
-            Some(false),
-        ]),
-    );
-    test_compare_equals(
-        input.clone(),
-        b"apple_oo_long_string",
-        BooleanArray::from(vec![
-            Some(false),
-            None,
-            Some(false),
-            Some(false),
-            Some(true),
-            Some(false),
-            Some(false),
-        ]),
-    );
-}
-
 #[test]
 fn test_compare_equals_long_string_len_byte_255() {
     let common = "prefix_";
@@ -848,35 +704,6 @@ fn test_compare_with_like_fallback() {
         liquid_array.compare_with(b"Al%", &ByteViewOperator::SubString(SubString::NotContains));
     let expected = BooleanArray::from(vec![Some(false), Some(true), Some(true), None, Some(true)]);
     assert_eq!(result, expected);
-}
-
-#[tokio::test]
-async fn test_compare_equals_on_disk_long_prefix() {
-    let common = "prefix_";
-    let long_len = 260;
-    let suffix_len = long_len - common.len();
-    let long_a = format!("{}{}", common, "a".repeat(suffix_len));
-    let long_b = format!("{}{}", common, "b".repeat(suffix_len));
-
-    let input = StringArray::from(vec![long_a.as_str(), long_b.as_str(), "z"]);
-    let compressor = LiquidByteViewArray::<FsstArray>::train_compressor(input.iter());
-    let in_memory = LiquidByteViewArray::<FsstArray>::from_string_array(&input, compressor);
-
-    let io = Arc::new(TestSqueezeIo::default());
-    let (hybrid, bytes) = in_memory
-        .squeeze(io.clone(), Some(&CacheExpression::PredicateColumn))
-        .expect("squeeze should succeed");
-    io.set_bytes(bytes);
-
-    let disk_view = hybrid
-        .as_any()
-        .downcast_ref::<LiquidByteViewArray<DiskBuffer>>()
-        .expect("should downcast to disk array");
-
-    let result = disk_view.compare_equals(long_b.as_bytes()).await;
-    let expected = BooleanArray::from(vec![false, true, false]);
-    assert_eq!(result, expected);
-    assert_eq!(io.reads(), 1);
 }
 
 // Benchmark tests for v2 offset compression improvements

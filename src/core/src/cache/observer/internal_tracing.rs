@@ -13,10 +13,10 @@ pub(crate) enum InternalEvent {
         entry: EntryID,
         kind: CachedBatchType,
     },
-    SqueezeBegin {
+    EvictionBegin {
         victims: Vec<EntryID>,
     },
-    SqueezeVictim {
+    EvictionVictim {
         entry: EntryID,
     },
     IoWrite {
@@ -25,10 +25,6 @@ pub(crate) enum InternalEvent {
         bytes: usize,
     },
     DiskEvict {
-        entry: EntryID,
-        bytes: usize,
-    },
-    IoReadSqueezedBacking {
         entry: EntryID,
         bytes: usize,
     },
@@ -56,17 +52,8 @@ pub(crate) enum InternalEvent {
         selection: bool,
         cached: CachedBatchType,
     },
-    ReadSqueezedData {
-        entry: EntryID,
-        expression: CacheExpression,
-    },
     TryReadLiquid {
         entry: EntryID,
-    },
-    DecompressSqueezed {
-        entry: EntryID,
-        decompressed: usize,
-        total: usize,
     },
 }
 
@@ -106,13 +93,13 @@ impl fmt::Display for InternalEvent {
                     kind
                 )
             }
-            InternalEvent::SqueezeBegin { victims } => {
+            InternalEvent::EvictionBegin { victims } => {
                 let mut buf = String::new();
                 fmt_entry_list(&mut buf, victims)?;
-                write!(f, "event=squeeze_begin victims={}", buf)
+                write!(f, "event=eviction_begin victims={}", buf)
             }
-            InternalEvent::SqueezeVictim { entry } => {
-                write!(f, "event=squeeze_victim entry={}", usize::from(*entry))
+            InternalEvent::EvictionVictim { entry } => {
+                write!(f, "event=eviction_victim entry={}", usize::from(*entry))
             }
             InternalEvent::IoWrite { entry, kind, bytes } => {
                 write!(
@@ -127,14 +114,6 @@ impl fmt::Display for InternalEvent {
                 write!(
                     f,
                     "event=disk_evict entry={} bytes={}",
-                    usize::from(*entry),
-                    bytes
-                )
-            }
-            InternalEvent::IoReadSqueezedBacking { entry, bytes } => {
-                write!(
-                    f,
-                    "event=io_read_squeezed_backing entry={} bytes={}",
                     usize::from(*entry),
                     bytes
                 )
@@ -190,27 +169,6 @@ impl fmt::Display for InternalEvent {
             ),
             InternalEvent::TryReadLiquid { entry } => {
                 write!(f, "event=try_read_liquid entry={}", usize::from(*entry))
-            }
-            InternalEvent::ReadSqueezedData { entry, expression } => {
-                write!(
-                    f,
-                    "event=read_squeezed_data entry={} expression={}",
-                    usize::from(*entry),
-                    expression
-                )
-            }
-            InternalEvent::DecompressSqueezed {
-                entry,
-                decompressed,
-                total,
-            } => {
-                write!(
-                    f,
-                    "event=decompress_squeezed entry={} decompressed={} total={}",
-                    usize::from(*entry),
-                    decompressed,
-                    total
-                )
             }
         }
     }

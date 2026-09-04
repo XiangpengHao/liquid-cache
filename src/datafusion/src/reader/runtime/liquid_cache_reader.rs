@@ -511,7 +511,7 @@ mod tests {
         scalar::ScalarValue,
     };
     use futures::{StreamExt, pin_mut};
-    use liquid_cache::cache::{AlwaysHydrate, squeeze_policies::Evict};
+    use liquid_cache::cache::{AlwaysHydrate, Evict};
     use liquid_cache::cache_policies::LiquidPolicy;
     use object_store::local::LocalFileSystem;
     use parquet::arrow::{

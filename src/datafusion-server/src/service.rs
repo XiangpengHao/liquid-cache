@@ -5,13 +5,13 @@ use datafusion::{
     physical_plan::{ExecutionPlan, display::DisplayableExecutionPlan},
     prelude::SessionContext,
 };
-use liquid_cache::{ByteCache, cache::squeeze_policies::SqueezePolicy};
+use liquid_cache::{ByteCache, cache::EvictionPolicy};
 use liquid_cache::{cache::HydrationPolicy, cache_policies::CachePolicy};
 use liquid_cache_common::rpc::ExecutionMetricsResponse;
 use liquid_cache_datafusion::{
-    cache::{ColumnSqueezeHints, LiquidCacheParquet, LiquidCacheParquetRef},
+    cache::{ColumnLineages, LiquidCacheParquet, LiquidCacheParquetRef},
     extract_execution_metrics,
-    optimizers::{SqueezeHintMap, rewrite_data_source_plan_with_hints},
+    optimizers::{LineageHints, rewrite_data_source_plan_with_hints},
 };
 use log::{debug, info};
 use object_store::ObjectStore;
@@ -49,7 +49,7 @@ impl LiquidCacheServiceInner {
         max_memory_bytes: Option<usize>,
         disk_cache_dir: PathBuf,
         cache_policy: Box<dyn CachePolicy>,
-        squeeze_policy: Box<dyn SqueezePolicy>,
+        eviction_policy: Box<dyn EvictionPolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
     ) -> Self {
         let batch_size = default_ctx.state().config().batch_size();
@@ -68,7 +68,7 @@ impl LiquidCacheServiceInner {
                 usize::MAX,
                 store,
                 cache_policy,
-                squeeze_policy,
+                eviction_policy,
                 hydration_policy,
             )
             .await,
@@ -151,15 +151,15 @@ impl LiquidCacheServiceInner {
         &self,
         handle: Uuid,
         plan: Arc<dyn ExecutionPlan>,
-        squeeze_hints: ColumnSqueezeHints,
+        lineages: ColumnLineages,
     ) {
         let cache = self.cache();
         // Hints the server can derive from the fragment itself (e.g. a
         // `date_part` inside a pushed-down partial aggregate). The client ships
         // hints for lineage that only exists in the client-side part of the
         // plan; those take precedence on conflict.
-        let mut hints = SqueezeHintMap::analyze(&plan).for_fragment(&plan);
-        hints.extend(squeeze_hints);
+        let mut hints = LineageHints::analyze(&plan).for_fragment(&plan);
+        hints.extend(lineages);
         self.execution_plans.write().unwrap().insert(
             handle,
             ExecutionPlanEntry::new(rewrite_data_source_plan_with_hints(plan, cache, &hints)),
@@ -228,7 +228,7 @@ impl LiquidCacheServiceInner {
 mod tests {
     use super::*;
     use liquid_cache::{
-        cache::{AlwaysHydrate, squeeze_policies::TranscodeSqueezeEvict},
+        cache::{AlwaysHydrate, TranscodeEvict},
         cache_policies::LiquidPolicy,
     };
     #[tokio::test]
@@ -239,7 +239,7 @@ mod tests {
             None,
             temp_dir.path().to_path_buf(),
             Box::new(LiquidPolicy::new()),
-            Box::new(TranscodeSqueezeEvict),
+            Box::new(TranscodeEvict),
             Box::new(AlwaysHydrate::new()),
         )
         .await;

@@ -1,9 +1,9 @@
-//! Policy modules for cache eviction, hydration, and squeezing.
+//! Policy modules for cache eviction and hydration.
 
 pub mod cache;
+pub mod eviction;
 pub mod hydration;
-pub mod squeeze;
 
 pub use cache::*;
+pub use eviction::*;
 pub use hydration::*;
-pub use squeeze::*;

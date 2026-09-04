@@ -10,8 +10,8 @@ use std::sync::Arc;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::{common::config::ConfigNonZeroUsize, error::Result};
-use liquid_cache::cache::squeeze_policies::{SqueezePolicy, TranscodeSqueezeEvict};
 use liquid_cache::cache::{AlwaysHydrate, HydrationPolicy, default_max_memory_bytes};
+use liquid_cache::cache::{EvictionPolicy, TranscodeEvict};
 use liquid_cache::cache_policies::{CachePolicy, LiquidPolicy};
 use liquid_cache_datafusion::optimizers::LocalModeOptimizer;
 use liquid_cache_datafusion::{
@@ -65,8 +65,8 @@ pub struct LiquidCacheLocalBuilder {
     cache_dir: PathBuf,
     /// Cache policy
     cache_policy: Box<dyn CachePolicy>,
-    /// Squeeze policy
-    squeeze_policy: Box<dyn SqueezePolicy>,
+    /// Eviction policy
+    eviction_policy: Box<dyn EvictionPolicy>,
     /// Hydration policy
     hydration_policy: Box<dyn HydrationPolicy>,
     prefetch: bool,
@@ -83,7 +83,7 @@ impl Default for LiquidCacheLocalBuilder {
             max_disk_bytes,
             cache_dir: std::env::temp_dir(),
             cache_policy: Box::new(LiquidPolicy::new()),
-            squeeze_policy: Box::new(TranscodeSqueezeEvict),
+            eviction_policy: Box::new(TranscodeEvict),
             hydration_policy: Box::new(AlwaysHydrate::new()),
             prefetch: true,
             span: fastrace::Span::enter_with_local_parent("liquid_cache_datafusion_local_builder"),
@@ -123,9 +123,9 @@ impl LiquidCacheLocalBuilder {
         self
     }
 
-    /// Set squeeze policy
-    pub fn with_squeeze_policy(mut self, squeeze_policy: Box<dyn SqueezePolicy>) -> Self {
-        self.squeeze_policy = squeeze_policy;
+    /// Set eviction policy
+    pub fn with_eviction_policy(mut self, eviction_policy: Box<dyn EvictionPolicy>) -> Self {
+        self.eviction_policy = eviction_policy;
         self
     }
 
@@ -179,19 +179,19 @@ impl LiquidCacheLocalBuilder {
             self.max_disk_bytes,
             store,
             self.cache_policy,
-            self.squeeze_policy,
+            self.eviction_policy,
             self.hydration_policy,
         )
         .await;
 
         #[cfg(test)]
-        let cache = LiquidCacheParquet::new_with_squeeze_victim_concurrency(
+        let cache = LiquidCacheParquet::new_with_eviction_concurrency(
             self.batch_size,
             self.max_memory_bytes,
             self.max_disk_bytes,
             store,
             self.cache_policy,
-            self.squeeze_policy,
+            self.eviction_policy,
             self.hydration_policy,
             false,
         )

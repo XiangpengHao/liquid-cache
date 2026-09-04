@@ -57,6 +57,7 @@ where
         self.nulls.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn bit_width(&self) -> Option<NonZero<u8>> {
         self.bit_width
     }

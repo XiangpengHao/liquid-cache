@@ -42,7 +42,6 @@ parquet = { version = "59.2.0", features = [
 	"variant_experimental",
 ] }
 parquet-variant-json = { version = "59.2.0" }
-parquet-variant-compute = { version = "59.2.0" }
 datafusion = { version = "55.0.0" }
 datafusion-datasource = { version = "55.0.0" }
 datafusion-common = { version = "55.0.0" }

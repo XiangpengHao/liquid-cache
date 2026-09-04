@@ -1,6 +1,6 @@
 //! Optimizers for the Parquet module
 
-mod squeeze_hint;
+mod lineage;
 
 use std::sync::Arc;
 
@@ -13,16 +13,16 @@ use datafusion::{
     physical_plan::ExecutionPlan,
 };
 
-pub(crate) use squeeze_hint::HintAnalyzer;
-pub use squeeze_hint::SqueezeHintMap;
+pub(crate) use lineage::HintAnalyzer;
+pub use lineage::LineageHints;
 
-use crate::{LiquidCacheParquetRef, LiquidParquetSource, cache::ColumnSqueezeHints};
+use crate::{LiquidCacheParquetRef, LiquidParquetSource, cache::ColumnLineages};
 
 /// Physical optimizer rule for local mode liquid cache.
 ///
 /// Rewrites `DataSourceExec` parquet scans to use [`LiquidParquetSource`], and
-/// in the same pass derives typed squeeze hints from the full physical plan
-/// (via the squeeze-hint analyzer) and attaches each scan's hints to its source.
+/// in the same pass derives typed lineage expressions from the full physical plan
+/// (via the lineage analyzer) and attaches each scan's hints to its source.
 #[derive(Debug)]
 pub struct LocalModeOptimizer {
     cache: LiquidCacheParquetRef,
@@ -59,14 +59,10 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
         let analysis = HintAnalyzer::analyze(&plan);
         let cache = self.cache.clone();
         let prefetch = self.prefetch;
-        let mut convert = |node: &Arc<dyn ExecutionPlan>, hints: ColumnSqueezeHints| {
+        let mut convert = |node: &Arc<dyn ExecutionPlan>, hints: ColumnLineages| {
             convert_parquet_scan(node, &cache, hints, prefetch)
         };
-        Ok(squeeze_hint::rewrite_with_hints(
-            plan,
-            &mut convert,
-            &analysis,
-        ))
+        Ok(lineage::rewrite_with_hints(plan, &mut convert, &analysis))
     }
 
     fn name(&self) -> &str {
@@ -87,7 +83,7 @@ impl PhysicalOptimizerRule for LocalModeOptimizer {
 pub fn rewrite_data_source_plan_with_hints(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
-    hints: &ColumnSqueezeHints,
+    hints: &ColumnLineages,
 ) -> Arc<dyn ExecutionPlan> {
     plan.transform_up(
         |node| match convert_parquet_scan(&node, cache, hints.clone(), true) {
@@ -103,12 +99,12 @@ pub fn rewrite_data_source_plan_with_hints(
     .data
 }
 
-/// Rewrite the data source plan to use liquid cache (no squeeze hints).
+/// Rewrite the data source plan to use liquid cache (no lineage expressions).
 pub fn rewrite_data_source_plan(
     plan: Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
 ) -> Arc<dyn ExecutionPlan> {
-    rewrite_data_source_plan_with_hints(plan, cache, &ColumnSqueezeHints::default())
+    rewrite_data_source_plan_with_hints(plan, cache, &ColumnLineages::default())
 }
 
 /// If `node` is a `DataSourceExec` over a `ParquetSource`, return an equivalent
@@ -116,7 +112,7 @@ pub fn rewrite_data_source_plan(
 fn convert_parquet_scan(
     node: &Arc<dyn ExecutionPlan>,
     cache: &LiquidCacheParquetRef,
-    hints: ColumnSqueezeHints,
+    hints: ColumnLineages,
     prefetch: bool,
 ) -> Option<Arc<dyn ExecutionPlan>> {
     let data_source_exec = node.downcast_ref::<DataSourceExec>()?;
@@ -125,7 +121,7 @@ fn convert_parquet_scan(
 
     let new_source =
         LiquidParquetSource::from_parquet_source(parquet_source.clone(), cache.clone())
-            .with_squeeze_hints(Arc::new(hints))
+            .with_lineages(Arc::new(hints))
             .with_prefetch(prefetch);
 
     let mut new_config = file_scan_config.clone();
@@ -151,7 +147,7 @@ mod tests {
         prelude::SessionContext,
     };
     use liquid_cache::{
-        cache::{AlwaysHydrate, squeeze_policies::TranscodeSqueezeEvict},
+        cache::{AlwaysHydrate, TranscodeEvict},
         cache_policies::LiquidPolicy,
     };
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -169,7 +165,7 @@ mod tests {
                 usize::MAX,
                 store,
                 Box::new(LiquidPolicy::new()),
-                Box::new(TranscodeSqueezeEvict),
+                Box::new(TranscodeEvict),
                 Box::new(AlwaysHydrate::new()),
             )
             .await,

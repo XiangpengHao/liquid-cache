@@ -128,14 +128,12 @@ impl LiquidCacheParquet {
             let row_count = match cached_batch {
                 CacheEntry::MemoryArrow(array) => Some(array.len() as u64),
                 CacheEntry::MemoryLiquid(array) => Some(array.len() as u64),
-                CacheEntry::MemorySqueezedLiquid(array) => Some(array.len() as u64),
                 CacheEntry::DiskLiquid { .. } => None,
                 CacheEntry::DiskArrow { .. } => None, // We'd need to read it to get the count
             };
             let cache_type = match cached_batch {
                 CacheEntry::MemoryArrow(_) => "InMemory",
                 CacheEntry::MemoryLiquid(_) => "LiquidMemory",
-                CacheEntry::MemorySqueezedLiquid(_) => "LiquidSqueezed",
                 CacheEntry::DiskLiquid { .. } => "OnDiskLiquid",
                 CacheEntry::DiskArrow { .. } => "OnDiskArrow",
             };
@@ -173,7 +171,7 @@ mod tests {
     };
     use bytes::Bytes;
     use liquid_cache::{
-        cache::{AlwaysHydrate, squeeze_policies::Evict},
+        cache::{AlwaysHydrate, Evict},
         cache_policies::LiquidPolicy,
     };
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;

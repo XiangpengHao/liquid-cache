@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::any::Any;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
@@ -16,30 +17,12 @@ use fastlanes::BitPacking;
 use num_traits::{AsPrimitive, FromPrimitive};
 
 use super::LiquidDataType;
-use crate::cache::{CacheExpression, LiquidExpr};
-use crate::liquid_array::hybrid_primitive_array::{
-    LiquidPrimitiveClampedArray, LiquidPrimitiveQuantizedArray,
-};
+use crate::cache::LiquidExpr;
 use crate::liquid_array::ipc::{LiquidIPCHeader, PhysicalTypeMarker, get_physical_type_id};
 use crate::liquid_array::raw::BitPackedArray;
-use crate::liquid_array::{
-    LiquidArray, LiquidSqueezedArrayRef, PrimitiveKind, SqueezeIoHandler, SqueezedDate32Array,
-    eval_predicate_on_array,
-};
+use crate::liquid_array::{LiquidArray, PrimitiveKind, eval_predicate_on_array};
 use crate::utils::get_bit_width;
 use arrow::datatypes::ArrowNativeType;
-use bytes::Bytes;
-
-/// Squeeze policy for primitive integer arrays.
-/// Users can choose whether to clamp or quantize when squeezing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum IntegerSqueezePolicy {
-    /// Clamp values above the squeezed range to a sentinel (recoverable for non-clamped rows).
-    Clamp = 0,
-    /// Quantize values into buckets (good for coarse filtering; requires disk to recover values).
-    #[default]
-    Quantize = 1,
-}
 
 mod private {
     pub trait Sealed {}
@@ -124,7 +107,6 @@ pub type LiquidDate64Array = LiquidPrimitiveArray<Date64Type>;
 pub struct LiquidPrimitiveArray<T: LiquidPrimitiveType> {
     bit_packed: BitPackedArray<T::UnSignedType>,
     reference_value: T::Native,
-    squeeze_policy: IntegerSqueezePolicy,
 }
 
 /// Liquid's primitive array which uses delta encoding for compression
@@ -140,9 +122,7 @@ where
 {
     /// Get the memory size of the Liquid primitive array.
     pub fn get_array_memory_size(&self) -> usize {
-        self.bit_packed.get_array_memory_size()
-            + std::mem::size_of::<T::Native>()
-            + std::mem::size_of::<IntegerSqueezePolicy>()
+        self.bit_packed.get_array_memory_size() + std::mem::size_of::<T::Native>()
     }
 
     /// Get the length of the Liquid primitive array.
@@ -164,7 +144,6 @@ where
                 return Self {
                     bit_packed: BitPackedArray::new_null_array(arrow_array.len()),
                     reference_value: T::Native::ZERO,
-                    squeeze_policy: IntegerSqueezePolicy::default(),
                 };
             }
         };
@@ -201,24 +180,7 @@ where
         Self {
             bit_packed: bit_packed_array,
             reference_value: min,
-            squeeze_policy: IntegerSqueezePolicy::default(),
         }
-    }
-
-    /// Get the current squeeze policy for this array.
-    pub fn squeeze_policy(&self) -> IntegerSqueezePolicy {
-        self.squeeze_policy
-    }
-
-    /// Set the squeeze policy for this array.
-    pub fn set_squeeze_policy(&mut self, policy: IntegerSqueezePolicy) {
-        self.squeeze_policy = policy;
-    }
-
-    /// Set the squeeze policy, returning self for chaining.
-    pub fn with_squeeze_policy(mut self, policy: IntegerSqueezePolicy) -> Self {
-        self.squeeze_policy = policy;
-        self
     }
 }
 
@@ -385,119 +347,6 @@ where
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::Integer
     }
-
-    fn squeeze(
-        &self,
-        io: Arc<dyn SqueezeIoHandler>,
-        expression_hint: Option<&CacheExpression>,
-    ) -> Option<(LiquidSqueezedArrayRef, Bytes)> {
-        let expression_hint = expression_hint?;
-        // Full bytes (original format) are what we store to disk
-        let full_bytes = Bytes::from(self.to_bytes_inner());
-        let disk_range = 0u64..(full_bytes.len() as u64);
-
-        if T::DATA_TYPE == DataType::Date32 {
-            // Special handle for Date32 arrays with component extraction support.
-            let field = expression_hint.as_date32_field()?;
-            let squeezed =
-                SqueezedDate32Array::from_liquid_date32(self, field).with_backing(io, disk_range);
-            return Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, full_bytes));
-        }
-        if matches!(T::DATA_TYPE, DataType::Timestamp(_, _)) {
-            let field = expression_hint.as_date32_field()?;
-            let squeezed = SqueezedDate32Array::from_liquid_timestamp(self, field)
-                .with_backing(io, disk_range);
-            return Some((Arc::new(squeezed) as LiquidSqueezedArrayRef, full_bytes));
-        }
-
-        // Only squeeze if we have a concrete bit width and it is large enough
-        let orig_bw = self.bit_packed.bit_width()?;
-        if orig_bw.get() < 8 {
-            return None;
-        }
-
-        // New squeezed bit width is half of the original
-        let new_bw_u8 = std::num::NonZero::new((orig_bw.get() / 2).max(1)).unwrap();
-
-        // Decode original unsigned offsets
-        let unsigned_array = self.bit_packed.to_primitive();
-        let (_dt, values, nulls) = unsigned_array.into_parts();
-
-        match self.squeeze_policy {
-            IntegerSqueezePolicy::Clamp => {
-                // Sentinel is the max representable value with new_bw bits
-                type U<TT> =
-                    <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
-                let sentinel: U<T> = U::<T>::usize_as((1usize << new_bw_u8.get()) - 1);
-
-                // Clamp values to the squeezed width; values >= sentinel become sentinel
-                let squeezed_values: ScalarBuffer<U<T>> = ScalarBuffer::from_iter(
-                    values
-                        .iter()
-                        .map(|&v| if v >= sentinel { sentinel } else { v }),
-                );
-                let squeezed_unsigned =
-                    PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(
-                        squeezed_values,
-                        nulls,
-                    );
-                let squeezed_bitpacked =
-                    BitPackedArray::from_primitive(squeezed_unsigned, new_bw_u8);
-
-                let hybrid = LiquidPrimitiveClampedArray::<T> {
-                    squeezed: squeezed_bitpacked,
-                    reference_value: self.reference_value,
-                    disk_range,
-                    io: io.clone(),
-                };
-                Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
-            }
-            IntegerSqueezePolicy::Quantize => {
-                // Quantize value offsets into buckets of width W.
-                // Determine actual max offset value.
-                type U<TT> =
-                    <<TT as LiquidPrimitiveType>::UnSignedType as ArrowPrimitiveType>::Native;
-                let max_offset: U<T> = if let Some(m) = values.iter().copied().max() {
-                    m
-                } else {
-                    U::<T>::ZERO
-                };
-
-                // Compute bucket count and width: ceil((max_offset+1)/bucket_count)
-                let bucket_count_u64 = 1u64 << (new_bw_u8.get() as u64);
-                let max_off_u64: u64 = num_traits::AsPrimitive::<u64>::as_(max_offset);
-                let range_size = max_off_u64.saturating_add(1);
-                let bucket_width_u64 = (range_size.div_ceil(bucket_count_u64)).max(1);
-
-                let quantized_values: ScalarBuffer<U<T>> =
-                    ScalarBuffer::from_iter(values.iter().map(|&v| {
-                        // v / bucket_width, clamped to last bucket
-                        let v_u64: u64 = num_traits::AsPrimitive::<u64>::as_(v);
-                        let mut idx_u64 = v_u64 / bucket_width_u64;
-                        if idx_u64 >= bucket_count_u64 {
-                            idx_u64 = bucket_count_u64 - 1;
-                        }
-                        U::<T>::usize_as(idx_u64 as usize)
-                    }));
-                let quantized_unsigned =
-                    PrimitiveArray::<<T as LiquidPrimitiveType>::UnSignedType>::new(
-                        quantized_values,
-                        nulls,
-                    );
-                let quantized_bitpacked =
-                    BitPackedArray::from_primitive(quantized_unsigned, new_bw_u8);
-
-                let hybrid = LiquidPrimitiveQuantizedArray::<T> {
-                    quantized: quantized_bitpacked,
-                    reference_value: self.reference_value,
-                    bucket_width: bucket_width_u64,
-                    disk_range,
-                    io,
-                };
-                Some((Arc::new(hybrid) as LiquidSqueezedArrayRef, full_bytes))
-            }
-        }
-    }
 }
 
 impl<T> LiquidArray for LiquidPrimitiveDeltaArray<T>
@@ -585,15 +434,6 @@ where
     fn data_type(&self) -> LiquidDataType {
         LiquidDataType::Integer
     }
-
-    fn squeeze(
-        &self,
-        _io: Arc<dyn SqueezeIoHandler>,
-        _expression_hint: Option<&CacheExpression>,
-    ) -> Option<(crate::liquid_array::LiquidSqueezedArrayRef, bytes::Bytes)> {
-        // Not implemented for delta arrays
-        None
-    }
 }
 
 impl<T> LiquidPrimitiveArray<T>
@@ -674,7 +514,6 @@ where
         Self {
             bit_packed,
             reference_value,
-            squeeze_policy: IntegerSqueezePolicy::default(),
         }
     }
 }

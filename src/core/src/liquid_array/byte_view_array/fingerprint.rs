@@ -1,7 +1,3 @@
-use std::sync::Arc;
-
-use arrow::buffer::{Buffer, OffsetBuffer};
-
 const FINGERPRINT_BUCKETS: u8 = 32;
 const FINGERPRINT_MASK: u8 = FINGERPRINT_BUCKETS - 1;
 
@@ -33,27 +29,6 @@ impl StringFingerprint {
     pub(super) fn might_contain(self, needle: Self) -> bool {
         (self.0 & needle.0) == needle.0
     }
-}
-
-pub(super) fn build_fingerprints(values: &Buffer, offsets: &OffsetBuffer<i32>) -> Arc<[u32]> {
-    let offsets = offsets.as_ref();
-    if offsets.len() < 2 {
-        return Arc::from([]);
-    }
-
-    let mut fingerprints = Vec::with_capacity(offsets.len().saturating_sub(1));
-    let values = values.as_slice();
-
-    for window in offsets.windows(2) {
-        let start = window[0] as usize;
-        let end = window[1] as usize;
-        debug_assert!(start <= end);
-        debug_assert!(end <= values.len());
-        let bytes = &values[start..end];
-        fingerprints.push(StringFingerprint::from_bytes(bytes).0);
-    }
-
-    Arc::from(fingerprints.into_boxed_slice())
 }
 
 pub(super) fn substring_pattern_bytes(pattern: &[u8]) -> Option<&[u8]> {

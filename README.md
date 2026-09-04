@@ -125,9 +125,7 @@ For performance testing, disable background transcoding:
 
 ```rust
 let (ctx, _) = LiquidCacheLocalBuilder::new()
-    .with_squeeze_policy(Box::new(
-        squeeze_policies::Evict,
-    ))
+    .with_eviction_policy(Box::new(Evict))
     .build(config)
     .await?;
 ```

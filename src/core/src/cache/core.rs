@@ -15,15 +15,10 @@ use super::{
     policies::{CachePolicy, HydrationPolicy, HydrationRequest, MaterializedEntry},
     utils::CacheConfig,
 };
-use crate::cache::DefaultSqueezeIo;
-use crate::cache::policies::{SqueezeOutcome, SqueezePolicy};
+use crate::cache::policies::{EvictionOutcome, EvictionPolicy};
 use crate::cache::utils::{LiquidCompressorStates, arrow_to_bytes};
 use crate::cache::{CacheExpression, LiquidExpr, index::ArtIndex, utils::EntryID};
 use crate::cache::{CacheFull, CacheStats, EventTrace};
-use crate::liquid_array::{
-    LiquidSqueezedArrayRef, SqueezeIoHandler, SqueezedBacking, SqueezedDate32Array,
-    VariantStructSqueezedArray,
-};
 use crate::sync::Arc;
 
 // CacheStats and RuntimeStats moved to stats.rs
@@ -55,19 +50,17 @@ pub struct LiquidCache {
     budget: BudgetAccounting,
     cache_policy: Box<dyn CachePolicy>,
     hydration_policy: Box<dyn HydrationPolicy>,
-    squeeze_policy: Box<dyn SqueezePolicy>,
+    eviction_policy: Box<dyn EvictionPolicy>,
     observer: Arc<Observer>,
     metadata: Arc<dyn EntryMetadata>,
     store: t4::Store,
-    squeeze_victims_concurrently: bool,
+    evict_victims_concurrently: bool,
 }
 
 /// Outcome of [`LiquidCache::prefetch`].
 pub enum PrefetchResult {
     /// A memory-form snapshot of the entry (Arrow or Liquid), ready to hand to a reader.
     Snapshot(Arc<CacheEntry>),
-    /// The entry is squeezed; prefetch leaves it alone.
-    Squeezed,
     /// The entry is not in the index, or its disk blob is gone.
     Absent,
 }
@@ -81,13 +74,11 @@ impl LiquidCache {
 
         let mut memory_arrow_entries = 0usize;
         let mut memory_liquid_entries = 0usize;
-        let mut memory_squeezed_liquid_entries = 0usize;
         let mut disk_liquid_entries = 0usize;
         let mut disk_arrow_entries = 0usize;
 
         let mut memory_arrow_bytes = 0usize;
         let mut memory_liquid_bytes = 0usize;
-        let mut memory_squeezed_liquid_bytes = 0usize;
 
         self.index.for_each(|_, batch| match batch {
             CacheEntry::MemoryArrow(array) => {
@@ -97,10 +88,6 @@ impl LiquidCache {
             CacheEntry::MemoryLiquid(array) => {
                 memory_liquid_entries += 1;
                 memory_liquid_bytes += array.get_array_memory_size();
-            }
-            CacheEntry::MemorySqueezedLiquid(array) => {
-                memory_squeezed_liquid_entries += 1;
-                memory_squeezed_liquid_bytes += array.get_array_memory_size();
             }
             CacheEntry::DiskLiquid { .. } => disk_liquid_entries += 1,
             CacheEntry::DiskArrow { .. } => disk_arrow_entries += 1,
@@ -114,12 +101,10 @@ impl LiquidCache {
             total_entries,
             memory_arrow_entries,
             memory_liquid_entries,
-            memory_squeezed_liquid_entries,
             disk_liquid_entries,
             disk_arrow_entries,
             memory_arrow_bytes,
             memory_liquid_bytes,
-            memory_squeezed_liquid_bytes,
             memory_usage_bytes,
             disk_usage_bytes,
             max_memory_bytes: self.config.max_memory_bytes(),
@@ -176,7 +161,6 @@ impl LiquidCache {
                     .await;
                 PrefetchResult::Snapshot(Arc::new(CacheEntry::memory_liquid(array)))
             }
-            CacheEntry::MemorySqueezedLiquid(_) => PrefetchResult::Squeezed,
         }
     }
 
@@ -200,13 +184,6 @@ impl LiquidCache {
                     .await;
                 Some(liquid)
             }
-            CacheEntry::MemorySqueezedLiquid(array) => match array.disk_backing() {
-                SqueezedBacking::Liquid(_) => {
-                    let liquid = self.read_disk_liquid_array(entry_id).await?;
-                    Some(liquid)
-                }
-                SqueezedBacking::Arrow(_) => None,
-            },
             CacheEntry::DiskArrow { .. } | CacheEntry::MemoryArrow(_) => None,
         }
     }
@@ -254,9 +231,9 @@ impl LiquidCache {
         self.metadata.get_compressor(entry_id)
     }
 
-    /// Add a squeeze hint for an entry.
-    pub fn add_squeeze_hint(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
-        self.metadata.add_squeeze_hint(entry_id, expression);
+    /// Add a lineage expression for an entry.
+    pub fn add_lineage(&self, entry_id: &EntryID, expression: Arc<CacheExpression>) {
+        self.metadata.add_lineage(entry_id, expression);
     }
 
     /// Flush all entries to disk.
@@ -301,12 +278,6 @@ impl LiquidCache {
                         Err(CacheFull) => self.drop_memory_entry(entry_id, &batch),
                     }
                 }
-                CacheEntry::MemorySqueezedLiquid(array) => {
-                    // We don't have to do anything, because it's already on disk
-                    let disk_entry = Self::disk_entry_from_squeezed(array);
-                    self.try_insert(entry_id, disk_entry)
-                        .expect("failed to insert disk entry");
-                }
                 CacheEntry::DiskArrow { .. } | CacheEntry::DiskLiquid { .. } => {
                     // Already on disk, skip
                 }
@@ -325,23 +296,17 @@ impl LiquidCache {
     ) -> Result<CacheEntry, CacheFull> {
         match &batch {
             batch @ CacheEntry::MemoryArrow(_) => {
-                let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(DefaultSqueezeIo::new(
-                    self.store.clone(),
-                    entry_id,
-                    self.observer.clone(),
-                ));
-                let outcome = self.squeeze_policy.squeeze(
+                let outcome = self.eviction_policy.evict(
                     batch,
                     self.metadata.get_compressor(&entry_id).as_ref(),
                     None,
-                    &squeeze_io,
                 );
-                let SqueezeOutcome::Replace {
+                let EvictionOutcome::Replace {
                     entry: new_batch,
                     bytes_to_write,
                 } = outcome
                 else {
-                    unreachable!("memory arrow squeeze cannot remove entry");
+                    unreachable!("memory Arrow eviction cannot remove entry");
                 };
                 if let Some(bytes_to_write) = bytes_to_write {
                     self.write_batch_to_disk(entry_id, &new_batch, bytes_to_write)
@@ -358,15 +323,6 @@ impl LiquidCache {
                     liquid_array.original_arrow_data_type(),
                     disk_bytes,
                 ))
-            }
-            CacheEntry::MemorySqueezedLiquid(squeezed_array) => {
-                // The full data is already on disk, so we just need to mark ourself as disk entry
-                let data_type = squeezed_array.original_arrow_data_type();
-                let entry = match squeezed_array.disk_backing() {
-                    SqueezedBacking::Liquid(n) => CacheEntry::disk_liquid(data_type, n),
-                    SqueezedBacking::Arrow(n) => CacheEntry::disk_arrow(data_type, n),
-                };
-                Ok(entry)
             }
             CacheEntry::DiskLiquid { .. } | CacheEntry::DiskArrow { .. } => {
                 unreachable!("Unexpected batch in write_in_memory_batch_to_disk")
@@ -400,7 +356,7 @@ impl LiquidCache {
                 batch_to_cache = on_disk_batch;
                 continue;
             }
-            self.squeeze_victims(victims).await?;
+            self.evict_victims(victims).await?;
 
             batch_to_cache = not_inserted;
             crate::utils::yield_now_if_shuttle();
@@ -413,12 +369,12 @@ impl LiquidCache {
         batch_size: usize,
         max_memory_bytes: usize,
         max_disk_bytes: usize,
-        squeeze_policy: Box<dyn SqueezePolicy>,
+        eviction_policy: Box<dyn EvictionPolicy>,
         cache_policy: Box<dyn CachePolicy>,
         hydration_policy: Box<dyn HydrationPolicy>,
         metadata: Arc<dyn EntryMetadata>,
         store: t4::Store,
-        squeeze_victims_concurrently: bool,
+        evict_victims_concurrently: bool,
     ) -> Self {
         let config = CacheConfig::new(batch_size, max_memory_bytes, max_disk_bytes);
         let observer = Arc::new(Observer::new());
@@ -432,11 +388,11 @@ impl LiquidCache {
             config,
             cache_policy,
             hydration_policy,
-            squeeze_policy,
+            eviction_policy,
             observer,
             metadata,
             store,
-            squeeze_victims_concurrently,
+            evict_victims_concurrently,
         }
     }
 
@@ -480,9 +436,7 @@ impl LiquidCache {
         assert!(
             matches!(
                 removed.as_ref(),
-                CacheEntry::MemoryArrow(_)
-                    | CacheEntry::MemoryLiquid(_)
-                    | CacheEntry::MemorySqueezedLiquid(_)
+                CacheEntry::MemoryArrow(_) | CacheEntry::MemoryLiquid(_)
             ),
             "flush should only drop memory entries"
         );
@@ -529,80 +483,63 @@ impl LiquidCache {
     }
 
     #[fastrace::trace]
-    async fn squeeze_victims(&self, victims: Vec<EntryID>) -> Result<(), CacheFull> {
-        self.trace(InternalEvent::SqueezeBegin {
+    async fn evict_victims(&self, victims: Vec<EntryID>) -> Result<(), CacheFull> {
+        self.trace(InternalEvent::EvictionBegin {
             victims: victims.clone(),
         });
-        if self.squeeze_victims_concurrently {
+        if self.evict_victims_concurrently {
             let results = futures::stream::iter(victims)
-                .map(|victim| self.squeeze_victim_inner(victim))
+                .map(|victim| self.evict_victim_inner(victim))
                 .buffer_unordered(usize::MAX)
                 .collect::<Vec<_>>()
                 .await;
             results.into_iter().collect::<Result<Vec<_>, _>>()?;
         } else {
             for victim in victims {
-                self.squeeze_victim_inner(victim).await?;
+                self.evict_victim_inner(victim).await?;
             }
         }
         Ok(())
     }
 
-    async fn squeeze_victim_inner(&self, to_squeeze: EntryID) -> Result<(), CacheFull> {
-        let Some(mut to_squeeze_batch) = self.index.get(&to_squeeze) else {
+    async fn evict_victim_inner(&self, victim: EntryID) -> Result<(), CacheFull> {
+        let Some(mut victim_entry) = self.index.get(&victim) else {
             return Ok(());
         };
-        self.trace(InternalEvent::SqueezeVictim { entry: to_squeeze });
-        let compressor = self.metadata.get_compressor(&to_squeeze);
-        let squeeze_hint_arc = self.metadata.squeeze_hint(&to_squeeze);
-        let squeeze_hint = squeeze_hint_arc.as_deref();
-        let squeeze_io: Arc<dyn SqueezeIoHandler> = Arc::new(DefaultSqueezeIo::new(
-            self.store.clone(),
-            to_squeeze,
-            self.observer.clone(),
-        ));
-
+        self.trace(InternalEvent::EvictionVictim { entry: victim });
+        let compressor = self.metadata.get_compressor(&victim);
+        let lineage_arc = self.metadata.lineage(&victim);
+        let lineage = lineage_arc.as_deref();
         loop {
-            let outcome = self.squeeze_policy.squeeze(
-                to_squeeze_batch.as_ref(),
-                compressor.as_ref(),
-                squeeze_hint,
-                &squeeze_io,
-            );
+            let outcome =
+                self.eviction_policy
+                    .evict(victim_entry.as_ref(), compressor.as_ref(), lineage);
 
             match outcome {
-                SqueezeOutcome::Replace {
+                EvictionOutcome::Replace {
                     entry: new_batch,
                     bytes_to_write,
                 } => {
                     if let Some(bytes_to_write) = bytes_to_write {
-                        self.write_batch_to_disk(to_squeeze, &new_batch, bytes_to_write)
+                        self.write_batch_to_disk(victim, &new_batch, bytes_to_write)
                             .await?;
                     }
-                    match self.try_insert(to_squeeze, new_batch) {
+                    match self.try_insert(victim, new_batch) {
                         Ok(()) => {
                             break;
                         }
                         Err(batch) => {
-                            to_squeeze_batch = Arc::new(batch);
+                            victim_entry = Arc::new(batch);
                         }
                     }
                 }
-                SqueezeOutcome::Remove => {
-                    self.remove_disk_entry(to_squeeze).await;
+                EvictionOutcome::Remove => {
+                    self.remove_disk_entry(victim).await;
                     break;
                 }
             }
         }
         Ok(())
-    }
-
-    fn disk_entry_from_squeezed(array: &LiquidSqueezedArrayRef) -> CacheEntry {
-        let data_type = array.original_arrow_data_type();
-        match array.disk_backing() {
-            SqueezedBacking::Liquid(n) => CacheEntry::disk_liquid(data_type, n),
-            SqueezedBacking::Arrow(n) => CacheEntry::disk_arrow(data_type, n),
-        }
     }
 
     async fn maybe_hydrate(
@@ -612,13 +549,11 @@ impl LiquidCache {
         materialized: MaterializedEntry<'_>,
         expression: Option<&CacheExpression>,
     ) {
-        let compressor = self.metadata.get_compressor(entry_id);
         if let Some(new_entry) = self.hydration_policy.hydrate(&HydrationRequest {
             entry_id: *entry_id,
             cached,
             materialized,
             expression,
-            compressor,
         }) {
             let cached_type = CachedBatchType::from(cached);
             let new_type = CachedBatchType::from(&new_entry);
@@ -690,10 +625,6 @@ impl LiquidCache {
                 self.read_disk_array(entry, entry_id, expression, selection)
                     .await
             }
-            CacheEntry::MemorySqueezedLiquid(array) => {
-                self.read_squeezed_array(array, entry_id, expression, selection)
-                    .await
-            }
         }
     }
 
@@ -747,107 +678,6 @@ impl LiquidCache {
                 }
             }
             _ => unreachable!("Unexpected batch in read_disk_array"),
-        }
-    }
-
-    async fn read_squeezed_array(
-        &self,
-        array: &LiquidSqueezedArrayRef,
-        entry_id: &EntryID,
-        expression: Option<&CacheExpression>,
-        selection: Option<&BooleanBuffer>,
-    ) -> Option<ArrayRef> {
-        if let Some(array) = self.try_read_squeezed_date32_array(array, expression, selection) {
-            self.observer.on_get_squeezed_success();
-            self.trace(InternalEvent::ReadSqueezedData {
-                entry: *entry_id,
-                expression: expression.unwrap().clone(),
-            });
-            return Some(array);
-        }
-
-        if let Some(array) = self
-            .try_read_squeezed_variant_array(array, entry_id, expression, selection)
-            .await
-        {
-            self.observer.on_get_squeezed_success();
-            self.trace(InternalEvent::ReadSqueezedData {
-                entry: *entry_id,
-                expression: expression.unwrap().clone(),
-            });
-            return Some(array);
-        }
-
-        // no shortcut, needs to read full data
-        let out = match selection {
-            Some(selection) => array.filter(selection).await,
-            None => array.to_arrow_array().await,
-        };
-        Some(out)
-    }
-
-    fn try_read_squeezed_date32_array(
-        &self,
-        array: &LiquidSqueezedArrayRef,
-        expression: Option<&CacheExpression>,
-        selection: Option<&BooleanBuffer>,
-    ) -> Option<ArrayRef> {
-        if let Some(field) = expression.and_then(CacheExpression::as_date32_field)
-            && let Some(squeezed) = array.as_any().downcast_ref::<SqueezedDate32Array>()
-            && squeezed.field() == field
-        {
-            let component = squeezed.to_component_array();
-            self.observer.on_hit_date32_expression();
-            if let Some(selection) = selection {
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                let filtered = arrow::compute::filter(&component, &selection_array).ok()?;
-                return Some(filtered);
-            }
-            return Some(component);
-        }
-        None
-    }
-
-    async fn try_read_squeezed_variant_array(
-        &self,
-        array: &LiquidSqueezedArrayRef,
-        entry_id: &EntryID,
-        expression: Option<&CacheExpression>,
-        selection: Option<&BooleanBuffer>,
-    ) -> Option<ArrayRef> {
-        let requests = expression.and_then(|expr| expr.variant_requests())?;
-        let variant_squeezed = array
-            .as_any()
-            .downcast_ref::<VariantStructSqueezedArray>()?;
-        let all_paths_present = requests
-            .iter()
-            .all(|request| variant_squeezed.contains_path(request.path()));
-
-        let full_array = if !all_paths_present {
-            let batch = CacheEntry::MemorySqueezedLiquid(array.clone());
-            self.observer.on_get_squeezed_needs_io();
-            let full_array = self.read_disk_arrow_array(entry_id).await?;
-            self.maybe_hydrate(
-                entry_id,
-                &batch,
-                MaterializedEntry::Arrow(&full_array),
-                expression,
-            )
-            .await;
-            full_array
-        } else {
-            let requested_paths = requests.iter().map(|r| r.path());
-            variant_squeezed
-                .to_arrow_array_with_paths(requested_paths)
-                .unwrap()
-        };
-
-        match selection {
-            Some(selection) => {
-                let selection_array = BooleanArray::new(selection.clone(), None);
-                arrow::compute::filter(&full_array, &selection_array).ok()
-            }
-            None => Some(full_array),
         }
     }
 
@@ -1010,25 +840,7 @@ impl LiquidCache {
                 });
                 Some(liquid.try_eval_predicate(predicate, selection))
             }
-            CacheEntry::MemorySqueezedLiquid(array) => {
-                self.eval_predicate_on_squeezed(array, selection_opt, predicate)
-                    .await
-            }
         }
-    }
-
-    async fn eval_predicate_on_squeezed(
-        &self,
-        array: &LiquidSqueezedArrayRef,
-        selection_opt: Option<&BooleanBuffer>,
-        predicate: &LiquidExpr,
-    ) -> Option<BooleanArray> {
-        let mut owned = None;
-        let selection = selection_opt.unwrap_or_else(|| {
-            owned = Some(BooleanBuffer::new_set(array.len()));
-            owned.as_ref().unwrap()
-        });
-        Some(array.try_eval_predicate(predicate, selection).await)
     }
 
     fn eval_predicate_on_array(&self, array: ArrayRef, predicate: &LiquidExpr) -> BooleanArray {
@@ -1054,19 +866,15 @@ impl LiquidCache {
 mod tests {
     use super::*;
     use crate::cache::{
-        CacheEntry, CacheExpression, CachePolicy, LiquidCacheBuilder, LiquidPolicy,
-        TranscodeSqueezeEvict, transcode_liquid_inner,
+        CacheEntry, CachePolicy, LiquidCacheBuilder, LiquidPolicy, TranscodeEvict,
+        transcode_liquid_inner,
         utils::{
             LiquidCompressorStates, arrow_to_bytes, create_cache_store, create_test_array,
             create_test_arrow_array,
         },
     };
-    use crate::liquid_array::{
-        Date32Field, LiquidPrimitiveArray, LiquidSqueezedArrayRef, SqueezedDate32Array,
-    };
     use crate::sync::thread;
-    use arrow::array::{Array, ArrayRef, Date32Array, Int32Array};
-    use arrow::datatypes::Date32Type;
+    use arrow::array::{Array, ArrayRef, Int32Array};
     use std::future::Future;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1131,43 +939,6 @@ mod tests {
 
         assert_eq!(store.budget.memory_usage_bytes(), size3 + size2);
         assert!(store.index().get(&EntryID::from(999)).is_none());
-    }
-
-    #[tokio::test]
-    async fn get_arrow_array_with_expression_extracts_year() {
-        let store = create_cache_store(1 << 20, Box::new(LiquidPolicy::new())).await;
-        let entry_id = EntryID::from(42);
-
-        let date_values = Date32Array::from(vec![Some(2), Some(365 + 1), None, Some(365 + 100)]);
-        let liquid = LiquidPrimitiveArray::<Date32Type>::from_arrow_array(date_values.clone());
-        let squeezed = SqueezedDate32Array::from_liquid_date32(&liquid, Date32Field::Year);
-        let squeezed: LiquidSqueezedArrayRef = Arc::new(squeezed);
-
-        store
-            .insert_inner(
-                entry_id,
-                CacheEntry::memory_squeezed_liquid(squeezed.clone()),
-            )
-            .await
-            .unwrap();
-
-        let expr = Arc::new(CacheExpression::extract_date32(Date32Field::Year));
-        let result = store
-            .get(&entry_id)
-            .with_expression_hint(expr)
-            .read()
-            .await
-            .expect("array present");
-
-        let result = result
-            .as_any()
-            .downcast_ref::<Date32Array>()
-            .expect("date32 result");
-        assert_eq!(result.len(), 4);
-        assert_eq!(result.value(0), 0);
-        assert_eq!(result.value(1), 365);
-        assert!(result.is_null(2));
-        assert_eq!(result.value(3), 365);
     }
 
     #[tokio::test]
@@ -1270,7 +1041,7 @@ mod tests {
         // Build a small cache in blocking liquid mode to avoid background tasks
         let storage = LiquidCacheBuilder::new()
             .with_max_memory_bytes(10 * 1024 * 1024)
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .with_eviction_policy(Box::new(TranscodeEvict))
             .build()
             .await;
 
@@ -1365,7 +1136,7 @@ mod tests {
         let cache = LiquidCacheBuilder::new()
             .with_max_memory_bytes(0)
             .with_max_disk_bytes(0)
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .with_eviction_policy(Box::new(TranscodeEvict))
             .build()
             .await;
         let array: ArrayRef = Arc::new(Int32Array::from_iter_values(0..16));
@@ -1385,7 +1156,7 @@ mod tests {
         let cache = LiquidCacheBuilder::new()
             .with_max_memory_bytes(1 << 20)
             .with_max_disk_bytes(first_bytes.max(second_bytes))
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .with_eviction_policy(Box::new(TranscodeEvict))
             .with_cache_policy(Box::new(LiquidPolicy::new()))
             .build()
             .await;
@@ -1414,7 +1185,7 @@ mod tests {
         let cache = LiquidCacheBuilder::new()
             .with_max_memory_bytes(1 << 20)
             .with_max_disk_bytes(disk_bytes)
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .with_eviction_policy(Box::new(TranscodeEvict))
             .with_cache_policy(Box::new(LiquidPolicy::new()))
             .build()
             .await;
@@ -1436,7 +1207,7 @@ mod tests {
         let cache = LiquidCacheBuilder::new()
             .with_max_memory_bytes(1 << 20)
             .with_max_disk_bytes(disk_bytes)
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .with_eviction_policy(Box::new(TranscodeEvict))
             .with_cache_policy(Box::new(LiquidPolicy::new()))
             .build()
             .await;
@@ -1456,7 +1227,7 @@ mod tests {
         let cache = LiquidCacheBuilder::new()
             .with_max_memory_bytes(1 << 20)
             .with_max_disk_bytes(0)
-            .with_squeeze_policy(Box::new(TranscodeSqueezeEvict))
+            .with_eviction_policy(Box::new(TranscodeEvict))
             .build()
             .await;
         let entry_id = EntryID::from(901usize);
