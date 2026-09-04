@@ -18,7 +18,6 @@ liquid-cache-common = { workspace = true }
 datafusion-common = { workspace = true }
 datafusion-expr-common = { workspace = true }
 datafusion-physical-expr = { workspace = true }
-datafusion-physical-expr-common = { workspace = true }
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 ahash = { workspace = true }
@@ -55,12 +54,10 @@ tempfile = { workspace = true }
 shuttle = "0.9.1"
 tokio-test = "0.4"
 tracing-subscriber = "0.3.23"
-rand = "0.10.1"
 serde.workspace = true
 serde_json = { workspace = true }
 mimalloc = "0.1.52"
 clap = { version = "4.6.1", features = ["derive"] }
-divan = "0.1.21"
 insta = { workspace = true }
 datafusion = { workspace = true }
 
