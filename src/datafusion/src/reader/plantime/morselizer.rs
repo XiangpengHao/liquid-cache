@@ -67,6 +67,7 @@ pub(crate) struct LiquidMorselizer {
     pub(crate) parquet_file_reader_factory: Arc<dyn ParquetFileReaderFactory>,
     pub(crate) object_store_url: ObjectStoreUrl,
     pub(crate) reorder_filters: bool,
+    pub(crate) enable_bloom_filter: bool,
     pub(crate) liquid_cache: LiquidCacheParquetRef,
     pub(crate) expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     pub(crate) span: Option<Arc<fastrace::Span>>,
@@ -188,6 +189,7 @@ impl Morselizer for LiquidMorselizer {
                 projection,
                 predicate,
                 reorder_filters: self.reorder_filters,
+                enable_bloom_filter: self.enable_bloom_filter,
                 liquid_cache: self.liquid_cache.clone(),
                 expr_adapter_factory: Arc::clone(&self.expr_adapter_factory),
                 file_identity,
@@ -238,6 +240,7 @@ struct PreparedLiquidOpen {
     projection: ProjectionExprs,
     predicate: Option<Arc<dyn PhysicalExpr>>,
     reorder_filters: bool,
+    enable_bloom_filter: bool,
     liquid_cache: LiquidCacheParquetRef,
     expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory>,
     file_identity: ParquetFileIdentity,
@@ -468,7 +471,10 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
         },
         row_groups,
     };
-    if prepared.context.pruning_predicate.is_some() && !prepared.row_groups.is_empty() {
+    let read_bloom_filters = prepared.context.pruning_predicate.is_some()
+        && prepared.context.prepared.enable_bloom_filter
+        && !prepared.row_groups.is_empty();
+    if read_bloom_filters {
         Ok(LiquidOpenState::LoadBloomFilters(
             async move {
                 let mut prepared = prepared;
@@ -494,6 +500,17 @@ fn prepare_and_prune_by_stats(mut loaded: MetadataLoadedLiquidOpen) -> Result<Li
             .boxed(),
         ))
     } else {
+        if prepared.context.pruning_predicate.is_some() {
+            // Bloom filters are not consulted, so every remaining row group
+            // counts as matched by them, as in DataFusion's own opener.
+            prepared
+                .context
+                .prepared
+                .metrics
+                .file_metrics
+                .row_groups_pruned_bloom_filter
+                .add_matched(prepared.row_groups.remaining_row_group_count());
+        }
         Ok(LiquidOpenState::PlanRowGroups(Box::new(prune_pages(
             prepared,
         ))))
@@ -1135,6 +1152,7 @@ mod tests {
             )),
             object_store_url: object_store_url.clone(),
             reorder_filters: false,
+            enable_bloom_filter: true,
             liquid_cache: cache.clone(),
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
             span: None,
@@ -1277,6 +1295,7 @@ mod tests {
             ))),
             object_store_url: ObjectStoreUrl::parse("data-cache-a:///").unwrap(),
             reorder_filters: false,
+            enable_bloom_filter: true,
             liquid_cache: Arc::clone(&cache),
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
             span: None,
@@ -1295,6 +1314,7 @@ mod tests {
             ))),
             object_store_url: ObjectStoreUrl::parse("data-cache-b:///").unwrap(),
             reorder_filters: false,
+            enable_bloom_filter: true,
             liquid_cache: cache,
             expr_adapter_factory: Arc::new(DefaultPhysicalExprAdapterFactory),
             span: None,
