@@ -230,7 +230,7 @@ mod tests {
         physical_plan::{
             PhysicalExpr, collect, display::DisplayableExecutionPlan, filter_pushdown::PushedDown,
         },
-        prelude::SessionContext,
+        prelude::{SessionConfig, SessionContext},
     };
     use liquid_cache::{
         cache::{AlwaysHydrate, TranscodeEvict},
@@ -391,13 +391,21 @@ mod tests {
         writer.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn prunes_row_group_with_bloom_filter() {
+    /// Scan `a = 2` over a file whose two row groups both span `1..=4`, so
+    /// statistics keep both and only the bloom filter can rule one out. Returns
+    /// the rows produced and the bloom-filter pruning metric.
+    async fn scan_bloom_file(
+        bloom_filter_on_read: bool,
+    ) -> (usize, datafusion::physical_plan::metrics::PruningMetrics) {
         let tmp_dir = tempfile::tempdir().unwrap();
         let parquet_path = tmp_dir.path().join("bloom.parquet");
         write_bloom_file(&parquet_path);
 
-        let ctx = SessionContext::new();
+        let config = SessionConfig::new().set_bool(
+            "datafusion.execution.parquet.bloom_filter_on_read",
+            bloom_filter_on_read,
+        );
+        let ctx = SessionContext::new_with_config(config);
         ctx.register_parquet("t", parquet_path.to_str().unwrap(), Default::default())
             .await
             .unwrap();
@@ -413,7 +421,7 @@ mod tests {
         let metrics = liquid_source(&rewritten).metrics().clone();
 
         let batches = collect(rewritten, ctx.task_ctx()).await.unwrap();
-        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+        let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
 
         let metric = metrics
             .clone_inner()
@@ -425,7 +433,26 @@ mod tests {
         else {
             panic!("unexpected metric: {metric:?}");
         };
+        (rows, pruning_metrics)
+    }
+
+    #[tokio::test]
+    async fn prunes_row_group_with_bloom_filter() {
+        let (rows, pruning_metrics) = scan_bloom_file(true).await;
+        assert_eq!(rows, 1);
         assert_eq!(pruning_metrics.pruned(), 1);
+        assert_eq!(pruning_metrics.matched(), 1);
+    }
+
+    /// `bloom_filter_on_read = false` must keep the reader off the bloom
+    /// filters entirely: the row group the filter would have pruned is read,
+    /// and the predicate alone still produces the right answer.
+    #[tokio::test]
+    async fn skips_bloom_filter_when_bloom_filter_on_read_is_off() {
+        let (rows, pruning_metrics) = scan_bloom_file(false).await;
+        assert_eq!(rows, 1);
+        assert_eq!(pruning_metrics.pruned(), 0);
+        assert_eq!(pruning_metrics.matched(), 2);
     }
 
     /// Declining a scan costs it the cache, so the guard must key on what the scan

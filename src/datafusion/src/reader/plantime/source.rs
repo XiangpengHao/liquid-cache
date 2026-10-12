@@ -48,6 +48,10 @@ impl LiquidParquetSource {
         self.table_parquet_options.global.reorder_filters
     }
 
+    fn bloom_filter_on_read(&self) -> bool {
+        self.table_parquet_options.global.bloom_filter_on_read
+    }
+
     /// Set the span for the LiquidParquetSource
     pub fn with_span(&self, span: fastrace::Span) -> Self {
         Self {
@@ -175,6 +179,7 @@ impl FileSource for LiquidParquetSource {
             parquet_file_reader_factory,
             object_store_url: base_config.object_store_url.clone(),
             reorder_filters: self.reorder_filters(),
+            enable_bloom_filter: self.bloom_filter_on_read(),
             expr_adapter_factory,
             span: execution_span.map(Arc::new),
             lineages: Arc::clone(&self.lineages),
