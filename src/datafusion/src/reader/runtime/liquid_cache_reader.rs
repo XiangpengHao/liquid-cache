@@ -58,7 +58,6 @@ struct LiquidCacheReaderInner {
 }
 
 pub(crate) struct LiquidCacheReaderConfig {
-    pub(crate) batch_size: usize,
     pub(crate) selection: RowSelection,
     pub(crate) row_filter: Option<LiquidRowFilter>,
     pub(crate) cached_row_group: CachedRowGroupRef,
@@ -92,13 +91,17 @@ pub(crate) struct ParquetFallback {
 
 impl LiquidCacheReader {
     pub(crate) fn new(config: LiquidCacheReaderConfig) -> Self {
-        debug_assert_eq!(
-            config.batch_size,
-            config.cached_row_group.batch_size(),
-            "DataFusion and LiquidCache batch sizes must agree"
-        );
+        // The selection is walked in cache-sized windows, not session-sized
+        // ones. `current_batch_id` indexes stored chunks, and both the cache
+        // read and the parquet fallback turn that id back into rows with the
+        // cache batch size; windowing at `datafusion.execution.batch_size`
+        // would address different rows than the id names whenever a caller
+        // sets it to anything other than the cache's own size. The caller is
+        // unaffected either way: `DataSourceExec` re-splits every source
+        // stream to the session batch size.
+        let batch_size = config.cached_row_group.batch_size();
         let inner = LiquidCacheReaderInner::new(
-            config.batch_size,
+            batch_size,
             config.selection,
             config.cached_row_group,
             config.projection_columns,
@@ -526,7 +529,6 @@ mod tests {
     use std::sync::Arc;
 
     struct TestRowGroup {
-        batch_size: usize,
         row_group: CachedRowGroupRef,
         schema: SchemaRef,
         fallback: ParquetFallbackConfig,
@@ -543,7 +545,6 @@ mod tests {
     impl TestRowGroup {
         fn reader(&self, request: ReaderRequest) -> LiquidCacheReader {
             LiquidCacheReader::new(LiquidCacheReaderConfig {
-                batch_size: self.batch_size,
                 selection: request.selection,
                 row_filter: request.row_filter,
                 cached_row_group: Arc::clone(&self.row_group),
@@ -622,7 +623,6 @@ mod tests {
         }
 
         TestRowGroup {
-            batch_size,
             row_group,
             schema,
             fallback: ParquetFallbackConfig {
