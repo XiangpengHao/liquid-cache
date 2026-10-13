@@ -31,7 +31,6 @@ pub(crate) struct LiquidRowGroupPlanner {
     pub(crate) row_filter: Option<LiquidRowFilter>,
     pub(crate) cached_file: CachedFileRef,
     pub(crate) projection: ProjectionMask,
-    pub(crate) batch_size: usize,
     pub(crate) stream_schema: SchemaRef,
     pub(crate) output_schema: SchemaRef,
     pub(crate) projector: Arc<Projector>,
@@ -151,7 +150,6 @@ impl LiquidRowGroupPlanner {
 
         Some(LiquidRowGroupMorsel {
             config: LiquidCacheReaderConfig {
-                batch_size: self.batch_size,
                 selection,
                 row_filter: self.row_filter.clone(),
                 cached_row_group,
