@@ -108,7 +108,7 @@ fn main() {
                 continue;
             };
             if storage
-                .eval_predicate(id, &liquid_expr)
+                .eval_predicate(id, 0, &liquid_expr)
                 .with_selection(&selection)
                 .await
                 .is_some()
@@ -161,7 +161,7 @@ fn load_and_insert_referer(
             let id = EntryID::from(idx);
             ids.push(id);
             total_size += array.get_array_memory_size();
-            storage.insert(id, array).await.unwrap();
+            storage.insert(id, 0, array).await.unwrap();
             idx += 1;
         }
 

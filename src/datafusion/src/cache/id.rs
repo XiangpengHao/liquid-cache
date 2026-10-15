@@ -51,8 +51,11 @@ const _: () = assert!(std::mem::align_of::<ParquetArrayID>() == 8);
 
 impl ParquetArrayID {
     /// Creates a new CacheEntryID.
+    ///
+    /// Only the low 16 bits of `file_id` are kept, so distinct files can
+    /// produce the same id. The cache tells them apart by the full file id it
+    /// is given alongside the entry id.
     pub fn new(file_id: u64, row_group_id: u64, column_id: u64, batch_id: BatchID) -> Self {
-        debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
         debug_assert!(column_id <= u16::MAX as u64);
         Self {
@@ -146,8 +149,9 @@ pub struct ColumnAccessPath {
 
 impl ColumnAccessPath {
     /// Create a new instance of ColumnAccessPath.
+    ///
+    /// Only the low 16 bits of `file_id` are kept; see [`ParquetArrayID::new`].
     pub fn new(file_id: u64, row_group_id: u64, column_id: u64) -> Self {
-        debug_assert!(file_id <= u16::MAX as u64);
         debug_assert!(row_group_id <= u16::MAX as u64);
         debug_assert!(column_id <= u16::MAX as u64);
         Self {
@@ -226,9 +230,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn test_cache_entry_id_new_panic_file_id() {
-        ParquetArrayID::new((u16::MAX as u64) + 1, 0, 0, BatchID::from_raw(0));
+    fn test_cache_entry_id_new_keeps_low_16_bits_of_file_id() {
+        let wrapped = ParquetArrayID::new((u16::MAX as u64) + 6, 2, 3, BatchID::from_raw(4));
+        assert_eq!(wrapped, ParquetArrayID::new(5, 2, 3, BatchID::from_raw(4)));
     }
 
     #[test]

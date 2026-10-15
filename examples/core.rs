@@ -18,13 +18,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let entry_id = EntryID::from(7);
+    // The identity names the source this data belongs to. One source here,
+    // so any constant will do.
+    let identity = 0;
     let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
-    storage.insert(entry_id, arrow_array.clone()).await.unwrap();
+    storage
+        .insert(entry_id, identity, arrow_array.clone())
+        .await
+        .unwrap();
 
     // Move data to disk so the read demonstrates async I/O
     storage.flush_all_to_disk().await.unwrap();
 
-    let retrieved = storage.get(&entry_id).await.unwrap();
+    let retrieved = storage.get(&entry_id, identity).await.unwrap();
     assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 
     Ok(())

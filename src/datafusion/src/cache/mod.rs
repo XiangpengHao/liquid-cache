@@ -119,6 +119,7 @@ impl CachedRowGroup {
                 Arc::clone(field),
                 Arc::clone(&cache_store),
                 column_access_path,
+                file_idx,
                 expression.clone(),
                 *is_predicate_column,
                 Arc::clone(&snapshots),
@@ -218,7 +219,11 @@ impl CachedRowGroup {
                     let entry_id = column.entry_id(batch_id).into();
                     let liquid_array = match snapshot_liquid {
                         Some(array) => Some(array),
-                        None => self.cache_store.try_read_liquid(&entry_id).await,
+                        None => {
+                            self.cache_store
+                                .try_read_liquid(&entry_id, column.file_identity())
+                                .await
+                        }
                     };
                     let liquid_array = match liquid_array {
                         None => {
@@ -927,5 +932,71 @@ mod tests {
         // Expected: row 1 (name="Bob"), row 3 (city="Tokyo") -> indices 1, 3
         let expected = BooleanBuffer::collect_bool(batch_size, |i| i == 1 || i == 3).into();
         assert_eq!(result, expected);
+    }
+
+    /// A cache key holds 16 bits of file id, so the 65,537th file registered
+    /// computes the same keys as the first. Its reads must not be served the
+    /// first file's data, and its own data must still be cacheable.
+    #[tokio::test]
+    async fn files_whose_keys_collide_do_not_share_entries() {
+        let batch_size = 64;
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let store = t4::mount(tmp_dir.path().join("liquid_cache.t4"))
+            .await
+            .unwrap();
+        let cache = LiquidCacheParquet::new(
+            batch_size,
+            usize::MAX,
+            usize::MAX,
+            store,
+            Box::new(LiquidPolicy::new()),
+            Box::new(TranscodeEvict),
+            Box::new(AlwaysHydrate::new()),
+        )
+        .await;
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let identity =
+            |path: String| ParquetFileIdentity::new(ObjectStoreUrl::local_filesystem(), path);
+        let batch_id = BatchID::from_row_id(0, batch_size);
+
+        let first = cache.register_or_get_file(identity("first".to_string()), schema.clone());
+        let first_column = first.create_row_group(0, vec![]).get_column(0).unwrap();
+        let first_data: ArrayRef = Arc::new(Int32Array::from_iter_values(0..batch_size as i32));
+        first_column
+            .insert(batch_id, first_data.clone())
+            .await
+            .unwrap();
+
+        for i in 1..=u16::MAX as u32 {
+            cache.register_or_get_file(identity(format!("filler-{i}")), schema.clone());
+        }
+
+        let colliding = cache.register_or_get_file(identity("colliding".to_string()), schema);
+        let colliding_column = colliding.create_row_group(0, vec![]).get_column(0).unwrap();
+        assert_eq!(
+            colliding_column.entry_id(batch_id),
+            first_column.entry_id(batch_id),
+            "the 65,537th file should compute the first file's key"
+        );
+
+        assert!(
+            colliding_column
+                .get_arrow_array_test_only(batch_id)
+                .await
+                .is_none(),
+            "a file was served another file's cached data"
+        );
+
+        let colliding_data: ArrayRef =
+            Arc::new(Int32Array::from_iter_values((0..batch_size as i32).rev()));
+        colliding_column
+            .insert(batch_id, colliding_data.clone())
+            .await
+            .expect("a file could not cache its own data");
+        let read = colliding_column
+            .get_arrow_array_test_only(batch_id)
+            .await
+            .unwrap();
+        assert_eq!(read.as_ref(), colliding_data.as_ref());
     }
 }
