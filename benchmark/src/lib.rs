@@ -8,7 +8,7 @@ use fastrace::Span;
 use fastrace::future::FutureExt as _;
 use liquid_cache::cache::CacheStats;
 use liquid_cache::cache::{Evict, EvictionPolicy, TranscodeEvict};
-use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_common::metrics::ExecutionMetricsResponse;
 use liquid_cache_datafusion_server::{ApiResponse, ExecutionStats};
 use log::info;
 use serde::Serialize;

@@ -17,7 +17,7 @@ futures = { workspace = true }
 tokio = { workspace = true }
 ahash = { workspace = true }
 log = { workspace = true }
-object_store = { workspace = true, features = ["http"] }
+object_store = { workspace = true }
 liquid-cache-common = { workspace = true }
 liquid-cache = { workspace = true }
 fastrace = { workspace = true }
