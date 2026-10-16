@@ -17,7 +17,7 @@ use datafusion::{
     datasource::physical_plan::FileScanConfig,
     physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext},
 };
-use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_common::metrics::ExecutionMetricsResponse;
 use liquid_cache_datafusion::LiquidParquetSource;
 use log::info;
 use serde::Serialize;

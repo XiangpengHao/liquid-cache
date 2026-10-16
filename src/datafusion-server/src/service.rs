@@ -7,7 +7,7 @@ use datafusion::{
 };
 use liquid_cache::{ByteCache, cache::EvictionPolicy};
 use liquid_cache::{cache::HydrationPolicy, cache_policies::CachePolicy};
-use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_common::metrics::ExecutionMetricsResponse;
 use liquid_cache_datafusion::{
     cache::{ColumnLineages, LiquidCacheParquet, LiquidCacheParquetRef},
     extract_execution_metrics,

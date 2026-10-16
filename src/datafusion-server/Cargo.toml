@@ -21,7 +21,7 @@ tokio = { workspace = true }
 url = { workspace = true }
 liquid-cache-datafusion = { workspace = true }
 object_store = { workspace = true, features = ["aws", "http"] }
-liquid-cache-common = { workspace = true }
+liquid-cache-common = { workspace = true, features = ["rpc"] }
 tempfile = { workspace = true }
 axum = "0.8.9"
 serde = { workspace = true }

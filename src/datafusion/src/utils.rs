@@ -9,7 +9,7 @@ use datafusion::{
     datasource::source::DataSourceExec,
     physical_plan::{ExecutionPlan, metrics::MetricValue},
 };
-use liquid_cache_common::rpc::ExecutionMetricsResponse;
+use liquid_cache_common::metrics::ExecutionMetricsResponse;
 use parquet::arrow::arrow_reader::RowSelector;
 
 use crate::cache::LiquidCacheParquetRef;
