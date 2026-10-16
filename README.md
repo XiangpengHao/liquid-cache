@@ -40,18 +40,21 @@ use std::sync::Arc;
 tokio_test::block_on(async {
     let cache = LiquidCacheBuilder::new().build().await;
     let entry_id = EntryID::from(1);
+    // The identity names the source the data belongs to; reads under any
+    // other identity miss. One source here, so any constant will do.
+    let identity = 0;
     let values = Arc::new(UInt64Array::from(vec![10, 11, 12, 13, 14, 15]));
 
     // 1) insert
-    cache.insert(entry_id, values.clone()).await;
+    cache.insert(entry_id, identity, values.clone()).await;
 
     // 2) get
-    let all_rows = cache.get(&entry_id).await.expect("entry should exist");
+    let all_rows = cache.get(&entry_id, identity).await.expect("entry should exist");
 
     // 3) get filtered (selection pushdown): keep rows 0, 2, 4
     let selection = BooleanBuffer::from(vec![true, false, true, false, true, false]);
     let selected_rows = cache
-        .get(&entry_id)
+        .get(&entry_id, identity)
         .with_selection(&selection)
         .await
         .expect("entry should exist");
@@ -63,7 +66,7 @@ tokio_test::block_on(async {
         Arc::new(Literal::new(ScalarValue::UInt64(Some(12)))),
     ));
     let predicate_mask = cache
-        .eval_predicate(&entry_id, &predicate)
+        .eval_predicate(&entry_id, identity, &predicate)
         .await
         .expect("entry should exist")
         .expect("predicate should be evaluated in cache");

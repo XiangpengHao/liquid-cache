@@ -26,12 +26,12 @@ async fn default_policies() {
 
     for i in 0..5 {
         let entry_id = EntryID::from(i);
-        cache.insert(entry_id, test_array.clone()).await.unwrap();
+        cache.insert(entry_id, 0, test_array.clone()).await.unwrap();
     }
 
     for i in 0..5 {
         let entry_id = EntryID::from(i);
-        let array = cache.get(&entry_id).read().await.unwrap();
+        let array = cache.get(&entry_id, 0).read().await.unwrap();
         assert_eq!(array.len(), test_array.len());
     }
 
@@ -54,17 +54,17 @@ async fn insert_wont_fit_cache() {
         .build()
         .await;
     cache
-        .insert(EntryID::from(0), test_array.clone())
+        .insert(EntryID::from(0), 0, test_array.clone())
         .await
         .unwrap();
     let array_3x = arrow::compute::concat(&[&test_array, &test_array, &test_array]).unwrap();
     let array_9x = arrow::compute::concat(&[&array_3x, &array_3x, &array_3x]).unwrap();
     let array_27x = arrow::compute::concat(&[&array_9x, &array_9x, &array_9x]).unwrap();
     cache
-        .insert(EntryID::from(1), array_27x.clone())
+        .insert(EntryID::from(1), 0, array_27x.clone())
         .await
         .unwrap();
-    cache.get(&EntryID::from(1)).read().await.unwrap();
+    cache.get(&EntryID::from(1), 0).read().await.unwrap();
 
     let trace = cache.consume_event_trace();
     let json_trace = serde_json::to_string(&trace).unwrap();
@@ -100,7 +100,7 @@ async fn liquid_eviction_reads_memory_and_disk() {
     .into_iter()
     .enumerate()
     {
-        cache.insert(EntryID::from(id), array).await.unwrap();
+        cache.insert(EntryID::from(id), 0, array).await.unwrap();
     }
 
     let mut states = Vec::new();
@@ -113,13 +113,13 @@ async fn liquid_eviction_reads_memory_and_disk() {
 
     let id = EntryID::from(0);
     assert_eq!(
-        cache.get(&id).read().await.unwrap().as_ref(),
+        cache.get(&id, 0).read().await.unwrap().as_ref(),
         integers.as_ref()
     );
 
     let selection = BooleanBuffer::from_iter((0..integers.len()).map(|index| index % 3 == 0));
     let selected = cache
-        .get(&id)
+        .get(&id, 0)
         .with_selection(&selection)
         .read()
         .await
@@ -137,7 +137,11 @@ async fn liquid_eviction_reads_memory_and_disk() {
         Arc::new(Literal::new(ScalarValue::Int64(Some(1_000)))),
     ));
     let predicate = LiquidExpr::try_new(physical, &DataType::Int64).unwrap();
-    let actual = cache.eval_predicate(&id, &predicate).read().await.unwrap();
+    let actual = cache
+        .eval_predicate(&id, 0, &predicate)
+        .read()
+        .await
+        .unwrap();
     let expected = arrow::array::BooleanArray::from_iter(
         integers
             .as_any()
@@ -157,7 +161,7 @@ async fn liquid_eviction_reads_memory_and_disk() {
     )));
     assert!(disk_states.contains(&CachedBatchType::DiskLiquid));
     assert_eq!(
-        cache.get(&id).read().await.unwrap().as_ref(),
+        cache.get(&id, 0).read().await.unwrap().as_ref(),
         integers.as_ref()
     );
 }

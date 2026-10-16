@@ -24,10 +24,12 @@ let storage = LiquidCacheBuilder::new().build().await;
 let entry_id = EntryID::from(42);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..1000));
 
-// Insert once; replacement/placement is handled by the cache policy
-storage.insert(entry_id, arrow_array.clone()).await;
+// Insert once; replacement/placement is handled by the cache policy.
+// `0` is the identity: the source this data belongs to. Reads under any
+// other identity miss. One source here, so any constant will do.
+storage.insert(entry_id, 0, arrow_array.clone()).await;
 
-assert!(storage.contains(&entry_id));
+assert!(storage.contains(&entry_id, 0));
 });
 ```
 
@@ -43,13 +45,13 @@ let storage = LiquidCacheBuilder::new().build().await;
 
 let entry_id = EntryID::from(7);
 let arrow_array = Arc::new(UInt64Array::from_iter_values(0..16));
-storage.insert(entry_id, arrow_array.clone()).await;
+storage.insert(entry_id, 0, arrow_array.clone()).await;
 
 // Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk().await;
 
 // Read asynchronously
-let retrieved = storage.get(&entry_id).await.unwrap();
+let retrieved = storage.get(&entry_id, 0).await.unwrap();
 assert_eq!(retrieved.as_ref(), arrow_array.as_ref());
 });
 ```
@@ -74,7 +76,7 @@ let entry_id = EntryID::from(8);
 let data = Arc::new(StringArray::from(vec![
     Some("apple"), Some("banana"), None, Some("apple"), Some("cherry"),
 ]));
-storage.insert(entry_id, data.clone()).await;
+storage.insert(entry_id, 0, data.clone()).await;
 
 // Move data to disk so the read will demonstrate async I/O
 storage.flush_all_to_disk().await;
@@ -93,7 +95,7 @@ let liquid_expr = liquid_cache::cache::LiquidExpr::try_new(
 
 // Read with predicate pushdown
 let mask = storage
-    .eval_predicate(&entry_id, &liquid_expr)
+    .eval_predicate(&entry_id, 0, &liquid_expr)
     .with_selection(&selection)
     .await
     .unwrap();
